@@ -18,6 +18,7 @@
     "deploy": "npm run deploy:api && npm run deploy:web"
   },
   "devDependencies": {
+    "babel-plugin-module-resolver": "^5.0.3",
     "babel-preset-expo": "^54.0.10"
   }
 }

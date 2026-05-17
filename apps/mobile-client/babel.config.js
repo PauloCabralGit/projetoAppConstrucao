@@ -1,12 +1,13 @@
-const path = require('path');
-
-if (!process.env.EXPO_ROUTER_APP_ROOT) {
-  process.env.EXPO_ROUTER_APP_ROOT = path.resolve(__dirname, 'app');
-}
-
 module.exports = function (api) {
   api.cache(true);
   return {
     presets: ['babel-preset-expo'],
+    plugins: [
+      ['module-resolver', {
+        root: ['.'],
+        alias: { '@': './src' },
+        extensions: ['.ios.js', '.android.js', '.js', '.ts', '.tsx', '.json'],
+      }],
+    ],
   };
 };
