@@ -23,7 +23,6 @@
     "react-native-gesture-handler": "~2.20.0",
     "@supabase/supabase-js": "^2.49.0",
     "@expo/vector-icons": "^14.0.0",
-    "react-native-url-polyfill": "^2.0.0",
     "@construconnect/shared": "0.1.0"
   },
   "devDependencies": {
