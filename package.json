@@ -1,0 +1,17 @@
+{
+  "name": "construconnect-poc",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm --workspace apps/web run dev",
+    "dev:api": "npm --workspace apps/api run dev",
+    "build": "npm run build:web && npm run build:api",
+    "build:web": "npm --workspace apps/web run build",
+    "build:api": "npm --workspace apps/api run build",
+    "typecheck": "npm --workspace apps/web run typecheck && npm --workspace apps/api run typecheck"
+  }
+}

@@ -1,0 +1,6 @@
+name = "construconnect-api"
+main = "src/index.ts"
+compatibility_date = "2026-05-16"
+
+[vars]
+APP_NAME = "ConstruConnect"
