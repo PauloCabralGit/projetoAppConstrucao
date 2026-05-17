@@ -1,7 +1,9 @@
-import { useState } from "react";
-import type { RegistrationPayload, UserRole } from "@construconnect/shared";
-import { dashboardMetrics, providerProfiles, serviceRequests } from "./data";
+import { useState, useEffect } from "react";
+import type { RegistrationPayload, UserRole, ProviderProfile, ServiceRequest } from "@construconnect/shared";
+import { dashboardMetrics, providerProfiles as staticProviders, serviceRequests as staticRequests } from "./data";
 import { registerBiometricCredential } from "./lib/webauthn";
+
+const API_URL = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
 const roleLabels: Record<UserRole, string> = {
   client: "Cliente",
@@ -23,21 +25,53 @@ const initialRegistration: RegistrationPayload = {
 
 type ProviderFilter = "todos" | "builder" | "contractor";
 
+function mapProvider(raw: any): ProviderProfile {
+  const user = Array.isArray(raw.app_users) ? raw.app_users[0] : raw.app_users;
+  return {
+    id: raw.user_id,
+    name: user?.full_name ?? "",
+    role: user?.role ?? "builder",
+    city: user?.city ?? "",
+    rating: Number(raw.average_rating ?? 5.0),
+    completedJobs: raw.completed_jobs ?? 0,
+    priceFrom: Number(raw.price_from ?? 0),
+    availability: raw.status ?? "available",
+    bio: raw.description ?? "",
+    skills: (raw.provider_skills ?? []).map((ps: any) => ({
+      id: ps.skill_id,
+      label: ps.skills?.label ?? ""
+    }))
+  };
+}
+
 export function App() {
   const [selectedRole, setSelectedRole] = useState<UserRole>("client");
   const [registration, setRegistration] = useState<RegistrationPayload>(initialRegistration);
   const [filter, setFilter] = useState<ProviderFilter>("todos");
-  const [message, setMessage] = useState("Biometria opcional na POC, pronta para virar login com passkey.");
+  const [message, setMessage] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [providers, setProviders] = useState<ProviderProfile[]>(staticProviders);
+  const [requests, setRequests] = useState<ServiceRequest[]>(staticRequests);
+
+  useEffect(() => {
+    fetch(`${API_URL}/v1/providers`)
+      .then((r) => r.json())
+      .then(({ data }) => { if (data?.length) setProviders(data.map(mapProvider)); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetch(`${API_URL}/v1/requests`)
+      .then((r) => r.json())
+      .then(({ data }) => { if (data?.length) setRequests(data); })
+      .catch(() => {});
+  }, []);
 
   const filteredProviders =
-    filter === "todos" ? providerProfiles : providerProfiles.filter((profile) => profile.role === filter);
+    filter === "todos" ? providers : providers.filter((p) => p.role === filter);
 
   function updateField<K extends keyof RegistrationPayload>(field: K, value: RegistrationPayload[K]) {
-    setRegistration((current) => ({
-      ...current,
-      role: selectedRole,
-      [field]: value
-    }));
+    setRegistration((current) => ({ ...current, role: selectedRole, [field]: value }));
   }
 
   async function handleBiometricSetup() {
@@ -45,16 +79,36 @@ export function App() {
       const result = await registerBiometricCredential(registration.fullName || "Novo usuario");
       setMessage(`Biometria preparada com credencial ${result.credentialId.slice(0, 12)}...`);
     } catch (error) {
-      const details = error instanceof Error ? error.message : "Falha desconhecida.";
-      setMessage(details);
+      setMessage(error instanceof Error ? error.message : "Falha desconhecida.");
     }
   }
 
-  function handleRegistrationSubmit(event: React.FormEvent<HTMLFormElement>) {
+  async function handleRegistrationSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setMessage(
-      `${roleLabels[selectedRole]} ${registration.fullName || "sem nome"} cadastrado na POC. Proximo passo: persistir no Postgres e validar WebAuthn na API.`
-    );
+    setSubmitting(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${API_URL}/v1/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...registration, role: selectedRole })
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setMessage(`Erro: ${data.error ?? "Falha no cadastro."}`);
+        return;
+      }
+
+      setMessage(`${roleLabels[selectedRole]} ${registration.fullName} cadastrado com sucesso!`);
+      setRegistration(initialRegistration);
+    } catch {
+      setMessage("Erro de conexao. Verifique sua internet e tente novamente.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -69,7 +123,7 @@ export function App() {
             </div>
           </div>
           <a className="ghost-button" href="#cadastro">
-            Criar POC
+            Criar conta
           </a>
         </nav>
 
@@ -166,8 +220,9 @@ export function App() {
               <label>
                 Nome completo
                 <input
+                  required
                   value={registration.fullName}
-                  onChange={(event) => updateField("fullName", event.target.value)}
+                  onChange={(e) => updateField("fullName", e.target.value)}
                   placeholder="Ex.: Marcos da Silva"
                 />
               </label>
@@ -175,9 +230,10 @@ export function App() {
               <label>
                 E-mail
                 <input
+                  required
                   type="email"
                   value={registration.email}
-                  onChange={(event) => updateField("email", event.target.value)}
+                  onChange={(e) => updateField("email", e.target.value)}
                   placeholder="voce@exemplo.com"
                 />
               </label>
@@ -186,8 +242,9 @@ export function App() {
                 <label>
                   Telefone
                   <input
+                    required
                     value={registration.phone}
-                    onChange={(event) => updateField("phone", event.target.value)}
+                    onChange={(e) => updateField("phone", e.target.value)}
                     placeholder="(11) 99999-9999"
                   />
                 </label>
@@ -195,8 +252,9 @@ export function App() {
                 <label>
                   Cidade
                   <input
+                    required
                     value={registration.city}
-                    onChange={(event) => updateField("city", event.target.value)}
+                    onChange={(e) => updateField("city", e.target.value)}
                     placeholder="Sao Paulo, SP"
                   />
                 </label>
@@ -205,8 +263,9 @@ export function App() {
               <label>
                 Documento
                 <input
+                  required
                   value={registration.document}
-                  onChange={(event) => updateField("document", event.target.value)}
+                  onChange={(e) => updateField("document", e.target.value)}
                   placeholder="CPF ou CNPJ"
                 />
               </label>
@@ -217,13 +276,10 @@ export function App() {
                     Especialidades
                     <input
                       value={registration.specialties?.join(", ") || ""}
-                      onChange={(event) =>
+                      onChange={(e) =>
                         updateField(
                           "specialties",
-                          event.target.value
-                            .split(",")
-                            .map((item) => item.trim())
-                            .filter(Boolean)
+                          e.target.value.split(",").map((s) => s.trim()).filter(Boolean)
                         )
                       }
                       placeholder="Alvenaria, piso, pintura"
@@ -234,7 +290,7 @@ export function App() {
                     Nome da empresa ou equipe
                     <input
                       value={registration.companyName || ""}
-                      onChange={(event) => updateField("companyName", event.target.value)}
+                      onChange={(e) => updateField("companyName", e.target.value)}
                       placeholder="Opcional"
                     />
                   </label>
@@ -243,7 +299,7 @@ export function App() {
                     <input
                       type="checkbox"
                       checked={registration.acceptsEmergencyJobs || false}
-                      onChange={(event) => updateField("acceptsEmergencyJobs", event.target.checked)}
+                      onChange={(e) => updateField("acceptsEmergencyJobs", e.target.checked)}
                     />
                     Aceita chamados urgentes
                   </label>
@@ -251,14 +307,14 @@ export function App() {
               )}
 
               <div className="form-actions">
-                <button className="primary-button" type="submit">
-                  Salvar cadastro
+                <button className="primary-button" type="submit" disabled={submitting}>
+                  {submitting ? "Salvando..." : "Salvar cadastro"}
                 </button>
                 <button className="secondary-button" type="button" onClick={handleBiometricSetup}>
                   Ativar biometria
                 </button>
               </div>
-              <p className="status-box">{message}</p>
+              {message && <p className="status-box">{message}</p>}
             </form>
           </div>
         </section>
@@ -273,18 +329,10 @@ export function App() {
               <button className={filter === "todos" ? "chip active" : "chip"} onClick={() => setFilter("todos")} type="button">
                 Todos
               </button>
-              <button
-                className={filter === "builder" ? "chip active" : "chip"}
-                onClick={() => setFilter("builder")}
-                type="button"
-              >
+              <button className={filter === "builder" ? "chip active" : "chip"} onClick={() => setFilter("builder")} type="button">
                 Pedreiros
               </button>
-              <button
-                className={filter === "contractor" ? "chip active" : "chip"}
-                onClick={() => setFilter("contractor")}
-                type="button"
-              >
+              <button className={filter === "contractor" ? "chip active" : "chip"} onClick={() => setFilter("contractor")} type="button">
                 Empreiteiros
               </button>
             </div>
@@ -308,16 +356,12 @@ export function App() {
                 </div>
                 <div className="tag-row">
                   {profile.skills.map((skill) => (
-                    <span className="tag" key={skill.id}>
-                      {skill.label}
-                    </span>
+                    <span className="tag" key={skill.id}>{skill.label}</span>
                   ))}
                 </div>
                 <footer className="provider-footer">
                   <span>{profile.city}</span>
-                  <button className="ghost-button" type="button">
-                    Solicitar
-                  </button>
+                  <button className="ghost-button" type="button">Solicitar</button>
                 </footer>
               </article>
             ))}
@@ -335,7 +379,7 @@ export function App() {
             <article className="panel large">
               <h3>Chamados recentes</h3>
               <div className="request-list">
-                {serviceRequests.map((request) => (
+                {requests.map((request) => (
                   <div className="request-item" key={request.id}>
                     <div>
                       <strong>{request.category}</strong>
@@ -343,9 +387,7 @@ export function App() {
                     </div>
                     <div className="request-side">
                       <span>{request.city}</span>
-                      <span>
-                        R$ {request.budgetMin} - R$ {request.budgetMax}
-                      </span>
+                      <span>R$ {request.budgetMin} - R$ {request.budgetMax}</span>
                       <span className={`request-status ${request.status}`}>{request.status}</span>
                     </div>
                   </div>
