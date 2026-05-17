@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { createClient } from "@supabase/supabase-js";
 import type { RegistrationPayload } from "@construconnect/shared";
 
@@ -9,6 +10,12 @@ type Bindings = {
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
+
+app.use(cors({
+  origin: ["https://projetoappconstrucao.pages.dev", "http://localhost:5173"],
+  allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowHeaders: ["Content-Type", "Authorization"]
+}));
 
 const db = (env: Bindings) =>
   createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
