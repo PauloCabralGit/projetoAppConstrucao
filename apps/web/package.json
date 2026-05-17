@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
-    "deploy": "vite build && wrangler pages deploy dist --project-name construconnect-web",
+    "deploy": "vite build && wrangler pages deploy dist --project-name projetoappconstrucao",
     "typecheck": "tsc -p tsconfig.json",
     "preview": "vite preview"
   },
