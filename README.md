@@ -17,7 +17,14 @@ POC de um app estilo 99/Uber para contratacao de servicos de construcao, com foc
 - `database/schema.sql`: schema inicial do banco
 - `docs/architecture.md`: arquitetura e evolucao para AWS
 
-## Como rodar
+## URLs de Producao (Cloudflare)
+
+| Servico  | URL                                                                 |
+|----------|---------------------------------------------------------------------|
+| Frontend | https://construconnect-web.pages.dev                                |
+| API      | https://construconnect-api.orionsystem.workers.dev                  |
+
+## Como rodar localmente
 
 1. Instale as dependencias:
 
@@ -37,6 +44,56 @@ npm run dev:web
 npm run dev:api
 ```
 
+## Como fazer deploy no Cloudflare
+
+### Pre-requisitos
+
+1. Ter o [Wrangler](https://developers.cloudflare.com/workers/wrangler/) instalado (ja incluso nas devDependencies)
+2. Estar autenticado:
+
+```bash
+npx wrangler login
+```
+
+### Deploy da API (Cloudflare Workers)
+
+```bash
+npm run deploy:api
+```
+
+Ou diretamente:
+
+```bash
+cd apps/api
+npx wrangler deploy src/index.ts
+```
+
+A API sera publicada em: `https://construconnect-api.<seu-usuario>.workers.dev`
+
+### Deploy do Frontend (Cloudflare Pages)
+
+```bash
+npm run deploy:web
+```
+
+Ou diretamente:
+
+```bash
+cd apps/web
+npx vite build
+npx wrangler pages deploy dist --project-name construconnect-web --branch main
+```
+
+O frontend sera publicado em: `https://construconnect-web.pages.dev`
+
+### Deploy completo (API + Frontend)
+
+```bash
+npm run deploy
+```
+
+> **Nota:** Na primeira vez, o Wrangler pode perguntar se deseja criar o projeto Pages. Confirme com Enter.
+
 ## Produto
 
 Funcionalidades entregues na POC:
@@ -47,6 +104,18 @@ Funcionalidades entregues na POC:
 - captura de dados para biometria com WebAuthn
 - dashboard com pedidos, agenda e etapas futuras
 - API com rotas mockadas para onboarding, profissionais e corridas de servico
+
+## Rotas da API
+
+| Metodo | Rota                                  | Descricao                        |
+|--------|---------------------------------------|----------------------------------|
+| GET    | /                                     | Status da API                    |
+| GET    | /health                               | Health check                     |
+| GET    | /v1/providers                         | Lista profissionais (filtros: role, city) |
+| GET    | /v1/requests                          | Lista chamados de servico         |
+| POST   | /v1/register                          | Cadastro de usuario               |
+| POST   | /v1/auth/webauthn/register-options    | Opcoes de registro WebAuthn       |
+| POST   | /v1/auth/webauthn/verify-registration | Verificacao de registro WebAuthn  |
 
 ## Evolucao recomendada
 
