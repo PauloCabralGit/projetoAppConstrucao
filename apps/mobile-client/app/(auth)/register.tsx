@@ -64,14 +64,21 @@ export default function RegisterScreen() {
 
     if (authError || !data.user) {
       setLoading(false);
-      setError(authError?.message ?? 'Erro ao criar conta.');
+      const msg = authError?.message ?? '';
+      if (msg.includes('rate') || msg.includes('wait') || msg.includes('seconds')) {
+        setError('Muitas tentativas. Aguarde alguns minutos e tente novamente.');
+      } else if (msg.includes('already registered') || msg.includes('already been registered')) {
+        setError('Este e-mail já possui conta. Use a opção "Entrar".');
+      } else {
+        setError(msg || 'Erro ao criar conta.');
+      }
       return;
     }
 
     try {
       const body: Record<string, unknown> = {
-        user_id: data.user.id,
-        full_name: name.trim(),
+        userId: data.user.id,
+        fullName: name.trim(),
         email: email.trim(),
         phone: phone.trim(),
         city: city.trim(),
@@ -81,8 +88,8 @@ export default function RegisterScreen() {
 
       if (isProvider) {
         body.specialties = specialties.trim();
-        body.company_name = companyName.trim();
-        body.accepts_urgent = acceptsUrgent;
+        body.companyName = companyName.trim();
+        body.acceptsEmergencyJobs = acceptsUrgent;
       }
 
       const response = await fetch(`${API_BASE}/register`, {

@@ -41,13 +41,14 @@ export interface ServiceRequest {
 }
 
 export interface RegistrationPayload {
+  userId: string;
   role: UserRole;
   fullName: string;
   email: string;
   phone: string;
   city: string;
-  document: string;
-  specialties?: string[];
+  document?: string;
+  specialties?: string;
   companyName?: string;
   acceptsEmergencyJobs?: boolean;
 }

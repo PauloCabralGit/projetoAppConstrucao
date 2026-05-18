@@ -73,32 +73,37 @@ app.get("/v1/requests", async (c) => {
 app.post("/v1/register", async (c) => {
   const payload = (await c.req.json()) as RegistrationPayload;
 
+  if (!payload.userId || !payload.fullName || !payload.email) {
+    return c.json({ message: "Campos obrigatórios ausentes: userId, fullName, email." }, 400);
+  }
+
   const { data: user, error: userError } = await db(c.env)
     .from("app_users")
-    .insert({
+    .upsert({
+      id: payload.userId,
       role: payload.role ?? "client",
       full_name: payload.fullName,
       email: payload.email,
-      phone: payload.phone,
+      phone: payload.phone ?? "",
       document_number: payload.document ?? "",
-      city: payload.city ?? ""
-    })
+      city: payload.city ?? "",
+    }, { onConflict: "id" })
     .select()
     .single();
 
-  if (userError) return c.json({ error: userError.message }, 400);
+  if (userError) return c.json({ message: userError.message }, 400);
 
   if (["builder", "contractor", "company", "supplier"].includes(user.role)) {
     const { error: profileError } = await db(c.env)
       .from("provider_profiles")
-      .insert({
+      .upsert({
         user_id: user.id,
         description: "",
         company_name: payload.companyName ?? null,
-        accepts_emergency_jobs: payload.acceptsEmergencyJobs ?? false
-      });
+        accepts_emergency_jobs: payload.acceptsEmergencyJobs ?? false,
+      }, { onConflict: "user_id" });
 
-    if (profileError) return c.json({ error: profileError.message }, 400);
+    if (profileError) return c.json({ message: profileError.message }, 400);
   }
 
   return c.json({ message: "Cadastro realizado com sucesso.", data: user }, 201);

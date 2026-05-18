@@ -51,7 +51,14 @@ export default function ProviderRegisterScreen() {
 
     if (authError || !data.user) {
       setLoading(false);
-      setError(authError?.message ?? 'Erro ao criar conta.');
+      const msg = authError?.message ?? '';
+      if (msg.includes('rate') || msg.includes('wait') || msg.includes('seconds')) {
+        setError('Muitas tentativas. Aguarde alguns minutos e tente novamente.');
+      } else if (msg.includes('already registered') || msg.includes('already been registered')) {
+        setError('Este e-mail já possui conta. Use a opção "Entrar".');
+      } else {
+        setError(msg || 'Erro ao criar conta.');
+      }
       return;
     }
 
@@ -60,16 +67,16 @@ export default function ProviderRegisterScreen() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          user_id: data.user.id,
-          full_name: name.trim(),
+          userId: data.user.id,
+          fullName: name.trim(),
           email: email.trim(),
           phone: phone.trim(),
           city: city.trim(),
           document: document.trim(),
           role: 'builder',
           specialties: specialties.trim(),
-          company_name: companyName.trim(),
-          accepts_urgent: false,
+          companyName: companyName.trim(),
+          acceptsEmergencyJobs: false,
         }),
       });
 
