@@ -31,6 +31,24 @@ app.get("/", (c) =>
 
 app.get("/health", (c) => c.json({ ok: true }));
 
+// ── Push notification helper ───────────────────────────────────────────────
+async function sendPush(env: Bindings, userId: string, title: string, body: string) {
+  try {
+    const { data } = await db(env)
+      .from("app_users")
+      .select("push_token")
+      .eq("id", userId)
+      .maybeSingle();
+    const token = data?.push_token;
+    if (!token || !token.startsWith("ExponentPushToken")) return;
+    await fetch("https://exp.host/--/api/v2/push/send", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ to: token, title, body, sound: "default" }),
+    });
+  } catch {}
+}
+
 app.get("/v1/providers", async (c) => {
   const role = c.req.query("role");
   const city = c.req.query("city");
@@ -127,6 +145,12 @@ app.patch("/v1/service-requests/:id/complete", async (c) => {
     return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
   }
 
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id")
+    .eq("id", jobId)
+    .maybeSingle();
+
   const { error } = await db(c.env)
     .from("service_requests")
     .update({ status: "completed" })
@@ -134,6 +158,10 @@ app.patch("/v1/service-requests/:id/complete", async (c) => {
     .eq("provider_user_id", body.provider_user_id);
 
   if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.client_user_id) {
+    await sendPush(c.env, req.client_user_id, "✅ Serviço concluído!", "O prestador concluiu o serviço. Confira as fotos de evidência.");
+  }
 
   return c.json({ message: "Serviço concluído com sucesso." });
 });
@@ -542,55 +570,86 @@ app.post("/v1/service-requests/:id/quote", async (c) => {
     .eq("id", c.req.param("id"))
     .eq("status", "requested")
     .is("quote_status", null)
-    .select("id", { count: "exact", head: true });
+    .select("id, client_user_id");
 
   if (error) return c.json({ message: error.message }, 400);
-  if ((count ?? 0) === 0) {
+  if (!updated || updated.length === 0) {
     return c.json({ message: "Este chamado já possui um orçamento ou não está disponível." }, 409);
   }
+
+  const amountStr = `R$ ${body.quote_amount.toFixed(2).replace(".", ",")}`;
+  await sendPush(c.env, updated[0].client_user_id, "💰 Orçamento recebido!", `Um profissional enviou um orçamento de ${amountStr}. Toque para ver.`);
+
   return c.json({ message: "Orçamento enviado com sucesso." });
 });
 
 // ── Client accepts quote → status: accepted ────────────────────────────────
 app.patch("/v1/service-requests/:id/accept-quote", async (c) => {
   const body = await c.req.json<{ client_user_id: string }>();
+  const id = c.req.param("id");
+
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("provider_user_id, quote_amount")
+    .eq("id", id)
+    .maybeSingle();
 
   const { error } = await db(c.env)
     .from("service_requests")
     .update({ status: "accepted", quote_status: "accepted" })
-    .eq("id", c.req.param("id"))
+    .eq("id", id)
     .eq("client_user_id", body.client_user_id)
     .eq("quote_status", "quoted");
 
   if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.provider_user_id) {
+    const amountStr = req.quote_amount ? `R$ ${Number(req.quote_amount).toFixed(2).replace(".", ",")}` : "";
+    await sendPush(c.env, req.provider_user_id, "✅ Orçamento aceito!", `O cliente aceitou seu orçamento${amountStr ? ` de ${amountStr}` : ""}. Prepare-se para o deslocamento!`);
+  }
+
   return c.json({ message: "Orçamento aceito." });
 });
 
 // ── Client counter-proposes ────────────────────────────────────────────────
 app.patch("/v1/service-requests/:id/counter", async (c) => {
   const body = await c.req.json<{ client_user_id: string; counter_amount: number }>();
+  const id = c.req.param("id");
 
   if (body.counter_amount == null) return c.json({ message: "Valor obrigatório." }, 400);
+
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("provider_user_id")
+    .eq("id", id)
+    .maybeSingle();
 
   const { error } = await db(c.env)
     .from("service_requests")
     .update({ counter_amount: body.counter_amount, quote_status: "negotiating" })
-    .eq("id", c.req.param("id"))
+    .eq("id", id)
     .eq("client_user_id", body.client_user_id);
 
   if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.provider_user_id) {
+    const amountStr = `R$ ${Number(body.counter_amount).toFixed(2).replace(".", ",")}`;
+    await sendPush(c.env, req.provider_user_id, "🔄 Contra-proposta recebida", `O cliente propôs ${amountStr}. Abra o app para responder.`);
+  }
+
   return c.json({ message: "Contra-proposta enviada." });
 });
 
 // ── Provider accepts counter → status: accepted ────────────────────────────
 app.patch("/v1/service-requests/:id/accept-counter", async (c) => {
   const body = await c.req.json<{ provider_user_id: string }>();
+  const id = c.req.param("id");
 
   const adminDb = db(c.env);
   const { data: req } = await adminDb
     .from("service_requests")
-    .select("counter_amount")
-    .eq("id", c.req.param("id"))
+    .select("counter_amount, client_user_id")
+    .eq("id", id)
     .maybeSingle();
 
   const { error } = await adminDb
@@ -600,26 +659,43 @@ app.patch("/v1/service-requests/:id/accept-counter", async (c) => {
       quote_status: "accepted",
       quote_amount: req?.counter_amount ?? null,
     })
-    .eq("id", c.req.param("id"))
+    .eq("id", id)
     .eq("provider_user_id", body.provider_user_id)
     .eq("quote_status", "negotiating");
 
   if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.client_user_id) {
+    await sendPush(c.env, req.client_user_id, "✅ Proposta aceita!", "O prestador aceitou sua contra-proposta. Ele está a caminho!");
+  }
+
   return c.json({ message: "Contra-proposta aceita. Serviço confirmado." });
 });
 
 // ── Provider starts job → status: in_progress ─────────────────────────────
 app.patch("/v1/service-requests/:id/start", async (c) => {
   const body = await c.req.json<{ provider_user_id: string }>();
+  const id = c.req.param("id");
+
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id")
+    .eq("id", id)
+    .maybeSingle();
 
   const { error } = await db(c.env)
     .from("service_requests")
     .update({ status: "in_progress" })
-    .eq("id", c.req.param("id"))
+    .eq("id", id)
     .eq("provider_user_id", body.provider_user_id)
     .eq("status", "accepted");
 
   if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.client_user_id) {
+    await sendPush(c.env, req.client_user_id, "🔨 Serviço iniciado!", "O prestador chegou ao local e iniciou o serviço.");
+  }
+
   return c.json({ message: "Serviço iniciado." });
 });
 

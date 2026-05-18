@@ -65,12 +65,23 @@ function formatETA(km: number): string {
   return `~${Math.max(1, Math.ceil((km / 25) * 60))} min`;
 }
 
+async function requestCameraPermission(): Promise<boolean> {
+  const { status } = await ImagePicker.requestCameraPermissionsAsync();
+  if (status !== 'granted') {
+    Alert.alert(
+      'Câmera necessária',
+      'Precisamos da câmera para tirar a foto de evidência. Ative nas configurações do dispositivo.'
+    );
+    return false;
+  }
+  return true;
+}
+
 export default function ActiveScreen() {
   const mapRef = useRef<MapView>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const userIdRef = useRef<string | null>(null);
   const mapReadyRef = useRef(false);
-  const activeJobRef = useRef<ActiveJob | null>(null);
 
   const [activeJob, setActiveJob] = useState<ActiveJob | null>(null);
   const [clientProfile, setClientProfile] = useState<ClientProfile | null>(null);
@@ -86,18 +97,12 @@ export default function ActiveScreen() {
     };
   }, []);
 
-  // Keep ref in sync with state for use inside async callbacks
-  useEffect(() => {
-    activeJobRef.current = activeJob;
-  }, [activeJob]);
-
-  // Animate map whenever providerCoord updates
+  // Animate map whenever providerCoord or activeJob updates
   useEffect(() => {
     if (!providerCoord || !mapReadyRef.current) return;
-    const job = activeJobRef.current;
     const clientCoord =
-      job?.latitude && job?.longitude
-        ? { latitude: job.latitude, longitude: job.longitude }
+      activeJob?.latitude && activeJob?.longitude
+        ? { latitude: activeJob.latitude, longitude: activeJob.longitude }
         : null;
 
     if (clientCoord) {
@@ -112,7 +117,7 @@ export default function ActiveScreen() {
     } else {
       mapRef.current?.animateToRegion({ ...providerCoord, latitudeDelta: 0.02, longitudeDelta: 0.02 }, 600);
     }
-  }, [providerCoord]);
+  }, [providerCoord, activeJob]);
 
   async function loadActiveJob() {
     setLoading(true);
@@ -179,13 +184,13 @@ export default function ActiveScreen() {
     if (data) setClientProfile(data as ClientProfile);
   }
 
-  async function uploadJobPhoto(type: 'provider_start' | 'provider_end', base64: string) {
+  async function uploadJobPhoto(jobId: string, type: 'provider_start' | 'provider_end', base64: string) {
     try {
       await fetch(`${API_BASE}/photos/upload`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          request_id: activeJobRef.current!.id,
+          request_id: jobId,
           photo_type: type,
           file_data: base64,
           file_name: `${type}_${Date.now()}.jpg`,
@@ -195,19 +200,23 @@ export default function ActiveScreen() {
     } catch {}
   }
 
+  // Uses activeJob from closure — safe because handler is recreated on each render
   async function handleStartJob() {
-    if (!activeJobRef.current || !userIdRef.current) return;
+    if (!activeJob || !userIdRef.current) return;
+
+    const canUseCamera = await requestCameraPermission();
+    if (!canUseCamera) return;
 
     const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
     if (result.canceled) return;
 
     setStarting(true);
     if (result.assets[0].base64) {
-      await uploadJobPhoto('provider_start', result.assets[0].base64);
+      await uploadJobPhoto(activeJob.id, 'provider_start', result.assets[0].base64);
     }
 
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${activeJobRef.current.id}/start`, {
+      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ provider_user_id: userIdRef.current }),
@@ -216,7 +225,8 @@ export default function ActiveScreen() {
         setActiveJob((prev) => (prev ? { ...prev, status: 'in_progress' } : null));
         Alert.alert('Serviço iniciado!', 'O cliente foi notificado. Bom trabalho!');
       } else {
-        Alert.alert('Erro', 'Não foi possível iniciar o serviço.');
+        const json = await res.json().catch(() => ({}));
+        Alert.alert('Erro', (json as any)?.message ?? 'Não foi possível iniciar o serviço.');
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
@@ -225,11 +235,14 @@ export default function ActiveScreen() {
   }
 
   async function handleCompleteJob() {
-    if (!activeJobRef.current || !userIdRef.current) return;
+    if (!activeJob || !userIdRef.current) return;
+
+    const canUseCamera = await requestCameraPermission();
+    if (!canUseCamera) return;
 
     Alert.alert(
       'Concluir serviço',
-      'Tire uma foto como evidência da conclusão do serviço.',
+      'Tire uma foto como evidência da conclusão antes de confirmar.',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
@@ -240,18 +253,15 @@ export default function ActiveScreen() {
 
             setCompleting(true);
             if (result.assets[0].base64) {
-              await uploadJobPhoto('provider_end', result.assets[0].base64);
+              await uploadJobPhoto(activeJob.id, 'provider_end', result.assets[0].base64);
             }
 
             try {
-              const res = await fetch(
-                `${API_BASE}/service-requests/${activeJobRef.current!.id}/complete`,
-                {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ provider_user_id: userIdRef.current }),
-                }
-              );
+              const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ provider_user_id: userIdRef.current }),
+              });
               setCompleting(false);
               if (res.ok) {
                 locationSubRef.current?.remove();
@@ -273,10 +283,9 @@ export default function ActiveScreen() {
   }
 
   function handleOpenMaps() {
-    const job = activeJobRef.current;
-    if (!job?.latitude || !job?.longitude) return;
-    const lat = job.latitude;
-    const lng = job.longitude;
+    if (!activeJob?.latitude || !activeJob?.longitude) return;
+    const lat = activeJob.latitude;
+    const lng = activeJob.longitude;
     const label = encodeURIComponent(clientProfile?.full_name ?? 'Cliente');
     const url =
       Platform.OS === 'ios'
@@ -406,6 +415,13 @@ export default function ActiveScreen() {
         </View>
 
         {isAccepted && (
+          <View style={styles.actionHint}>
+            <Ionicons name="camera-outline" size={14} color={Colors.textSecondary} />
+            <Text style={styles.actionHintText}>Tire uma foto ao chegar como evidência</Text>
+          </View>
+        )}
+
+        {isAccepted && (
           <TouchableOpacity
             style={[styles.startBtn, starting && styles.disabled]}
             onPress={handleStartJob}
@@ -423,6 +439,13 @@ export default function ActiveScreen() {
         )}
 
         {isInProgress && (
+          <View style={styles.actionHint}>
+            <Ionicons name="camera-outline" size={14} color={Colors.textSecondary} />
+            <Text style={styles.actionHintText}>Tire uma foto do trabalho concluído como evidência</Text>
+          </View>
+        )}
+
+        {isInProgress && (
           <TouchableOpacity
             style={[styles.completeBtn, completing && styles.disabled]}
             onPress={handleCompleteJob}
@@ -432,7 +455,7 @@ export default function ActiveScreen() {
               <ActivityIndicator color={Colors.cardWhite} />
             ) : (
               <>
-                <Ionicons name="camera-outline" size={18} color={Colors.cardWhite} />
+                <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
                 <Text style={styles.completeBtnText}>Concluir serviço</Text>
               </>
             )}
@@ -533,6 +556,16 @@ const styles = StyleSheet.create({
   divider: { width: 1, backgroundColor: Colors.border, marginVertical: 4 },
   statLabel: { fontSize: 11, color: Colors.textSecondary, fontWeight: '500' },
   statValue: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
+  actionHint: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: Colors.background,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  actionHintText: { fontSize: 12, color: Colors.textSecondary, flex: 1 },
   startBtn: {
     flexDirection: 'row',
     alignItems: 'center',

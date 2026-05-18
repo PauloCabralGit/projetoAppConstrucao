@@ -39,6 +39,14 @@
       "expo-router",
       "expo-location",
       [
+        "expo-notifications",
+        {
+          "icon": "./assets/icon.png",
+          "color": "#FF6B35",
+          "defaultChannel": "default"
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Acesse suas fotos para enviar evidências do serviço.",
