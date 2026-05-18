@@ -31,6 +31,7 @@ interface ServiceRequest {
   budget_min: number | null;
   budget_max: number | null;
   created_at: string;
+  payment_status: string | null;
 }
 
 const STATUS_CONFIG: Record<
@@ -79,7 +80,7 @@ export default function RequestsScreen() {
 
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, city, budget_min, budget_max, created_at')
+      .select('id, category, description, status, city, budget_min, budget_max, created_at, payment_status')
       .eq('client_user_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -100,14 +101,17 @@ export default function RequestsScreen() {
   }
 
   function handleRequestPress(req: ServiceRequest) {
-    if (req.status !== 'completed' && req.status !== 'cancelled' && req.status !== 'draft') {
+    const paymentDone = req.payment_status === 'confirmed';
+    if (req.status !== 'cancelled' && req.status !== 'draft') {
+      if (req.status === 'completed' && paymentDone) return;
       router.push(`/tracking/${req.id}`);
     }
   }
 
   function renderItem({ item }: { item: ServiceRequest }) {
     const statusConf = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.draft;
-    const canTrack = item.status !== 'completed' && item.status !== 'cancelled' && item.status !== 'draft';
+    const paymentDone = item.payment_status === 'confirmed';
+    const canTrack = item.status !== 'cancelled' && item.status !== 'draft' && !(item.status === 'completed' && paymentDone);
 
     return (
       <TouchableOpacity
@@ -157,7 +161,13 @@ export default function RequestsScreen() {
           <View style={styles.trackingRow}>
             <Ionicons name="navigate" size={14} color={Colors.primary} />
             <Text style={styles.trackingText}>
-              {item.status === 'requested' ? 'Ver pedido / negociar orçamento' : 'Acompanhar em tempo real'}
+              {item.status === 'requested'
+                ? 'Ver pedido / negociar orçamento'
+                : item.status === 'completed'
+                ? item.payment_status === 'client_paid'
+                  ? 'Pagamento enviado — aguardando confirmação'
+                  : 'Realizar pagamento'
+                : 'Acompanhar em tempo real'}
             </Text>
           </View>
         )}

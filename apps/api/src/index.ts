@@ -7,6 +7,7 @@ type Bindings = {
   APP_NAME: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
+  MERCADOPAGO_ACCESS_TOKEN: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -760,6 +761,154 @@ app.patch("/v1/service-requests/:id/start", async (c) => {
   }
 
   return c.json({ message: "Serviço iniciado." });
+});
+
+// ── Mercado Pago helper ───────────────────────────────────────────────────
+async function createMercadoPagoPix(env: Bindings, params: {
+  amount: number;
+  description: string;
+  payerEmail: string;
+  payerName: string;
+  payerDocument?: string;
+  externalReference: string;
+}) {
+  const nameParts = params.payerName.trim().split(" ");
+  const firstName = nameParts[0] ?? "Cliente";
+  const lastName = nameParts.slice(1).join(" ") || "ConstruConnect";
+
+  const payer: Record<string, unknown> = {
+    email: params.payerEmail,
+    first_name: firstName,
+    last_name: lastName,
+  };
+  if (params.payerDocument) {
+    payer.identification = { type: "CPF", number: params.payerDocument.replace(/\D/g, "") };
+  }
+
+  const res = await fetch("https://api.mercadopago.com/v1/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${env.MERCADOPAGO_ACCESS_TOKEN}`,
+      "X-Idempotency-Key": params.externalReference,
+    },
+    body: JSON.stringify({
+      transaction_amount: params.amount,
+      description: params.description,
+      payment_method_id: "pix",
+      external_reference: params.externalReference,
+      payer,
+    }),
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(err);
+  }
+
+  const data = await res.json() as any;
+  return {
+    mpPaymentId: String(data.id),
+    qrCode: (data.point_of_interaction?.transaction_data?.qr_code ?? "") as string,
+    qrCodeBase64: (data.point_of_interaction?.transaction_data?.qr_code_base64 ?? "") as string,
+  };
+}
+
+// ── Gerar Pix via Mercado Pago ────────────────────────────────────────────
+app.post("/v1/service-requests/:id/create-pix", async (c) => {
+  const id = c.req.param("id");
+
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
+  }
+
+  const adminDb = db(c.env);
+
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("quote_amount, category, client_user_id, status")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!req || req.status !== "completed") {
+    return c.json({ message: "Serviço não encontrado ou não concluído." }, 400);
+  }
+  if (!req.quote_amount) {
+    return c.json({ message: "Valor do serviço não definido." }, 400);
+  }
+
+  const { data: client } = await adminDb
+    .from("app_users")
+    .select("full_name, email, document_number")
+    .eq("id", req.client_user_id)
+    .maybeSingle();
+
+  try {
+    const pixData = await createMercadoPagoPix(c.env, {
+      amount: Number(req.quote_amount),
+      description: `Serviço de ${req.category} - ConstruConnect`,
+      payerEmail: (client as any)?.email ?? `cliente_${req.client_user_id}@construconnect.app`,
+      payerName: (client as any)?.full_name ?? "Cliente",
+      payerDocument: (client as any)?.document_number || undefined,
+      externalReference: id,
+    });
+
+    return c.json({
+      qrCode: pixData.qrCode,
+      qrCodeBase64: pixData.qrCodeBase64,
+      mpPaymentId: pixData.mpPaymentId,
+      amount: Number(req.quote_amount),
+    });
+  } catch (err: any) {
+    return c.json({ message: err.message ?? "Erro ao gerar Pix." }, 500);
+  }
+});
+
+// ── Webhook Mercado Pago (pagamento aprovado) ─────────────────────────────
+app.post("/v1/webhooks/mercadopago", async (c) => {
+  try {
+    const body = await c.req.json<{ type?: string; data?: { id?: string } }>();
+
+    if (body.type !== "payment" || !body.data?.id) return c.json({ ok: true });
+    if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ ok: true });
+
+    const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${body.data.id}`, {
+      headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
+    });
+    if (!mpRes.ok) return c.json({ ok: true });
+
+    const payment = await mpRes.json() as any;
+    if (payment.status !== "approved") return c.json({ ok: true });
+
+    const serviceRequestId = payment.external_reference;
+    if (!serviceRequestId) return c.json({ ok: true });
+
+    const adminDb = db(c.env);
+
+    const { data: req } = await adminDb
+      .from("service_requests")
+      .select("client_user_id, provider_user_id, payment_status")
+      .eq("id", serviceRequestId)
+      .maybeSingle();
+
+    if (!req || req.payment_status === "confirmed") return c.json({ ok: true });
+
+    await adminDb
+      .from("service_requests")
+      .update({ payment_status: "confirmed", payment_method: "pix" })
+      .eq("id", serviceRequestId);
+
+    if (req.client_user_id) {
+      await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", "Seu Pix foi aprovado automaticamente.");
+    }
+    if (req.provider_user_id) {
+      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", "O pagamento via Pix foi aprovado. O cliente será notificado.");
+    }
+
+    return c.json({ ok: true });
+  } catch {
+    return c.json({ ok: true });
+  }
 });
 
 export default app;

@@ -5,3 +5,5 @@ compatibility_date = "2026-05-16"
 [vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
+# Mercado Pago — substitua pela sua Access Token (sandbox começa com TEST-, produção com APP_USR-)
+MERCADOPAGO_ACCESS_TOKEN = ""

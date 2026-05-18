@@ -12,6 +12,7 @@ import {
   TextInput,
   Image,
   ScrollView,
+  Share,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useLocalSearchParams, router } from 'expo-router';
@@ -99,6 +100,9 @@ export default function TrackingScreen() {
   // Payment state
   const [paymentMethod, setPaymentMethod] = useState<'pix' | 'cash' | 'card'>('pix');
   const [sendingPayment, setSendingPayment] = useState(false);
+  const [generatingPix, setGeneratingPix] = useState(false);
+  const [pixQrCode, setPixQrCode] = useState<string | null>(null);
+  const [pixCopiaECola, setPixCopiaECola] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -276,6 +280,28 @@ export default function TrackingScreen() {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
     }
     setCountering(false);
+  }
+
+  async function handleGeneratePix() {
+    setGeneratingPix(true);
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/create-pix`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      const data = await res.json() as any;
+      if (res.ok && data.qrCode) {
+        setPixCopiaECola(data.qrCode);
+        setPixQrCode(data.qrCodeBase64);
+      } else if (res.status === 503) {
+        Alert.alert('Pagamento Pix', 'A integração com Mercado Pago ainda não foi configurada. Use outro método de pagamento ou entre em contato com o prestador.');
+      } else {
+        Alert.alert('Erro', data.message ?? 'Não foi possível gerar o QR Code Pix.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setGeneratingPix(false);
   }
 
   async function handleSendPayment() {
@@ -596,30 +622,72 @@ export default function TrackingScreen() {
                 </TouchableOpacity>
               ))}
             </View>
-            {paymentMethod === 'pix' && providerProfile?.pix_key ? (
-              <View style={styles.pixKeyBox}>
-                <Text style={styles.pixKeyLabel}>Chave Pix do prestador</Text>
-                <Text style={styles.pixKeyValue}>{providerProfile.pix_key}</Text>
+            {paymentMethod === 'pix' && !pixCopiaECola && (
+              <TouchableOpacity
+                style={[styles.generatePixBtn, generatingPix && styles.btnDisabled]}
+                onPress={handleGeneratePix}
+                disabled={generatingPix}
+              >
+                {generatingPix ? (
+                  <ActivityIndicator color={Colors.cardWhite} size="small" />
+                ) : (
+                  <>
+                    <Ionicons name="qr-code-outline" size={18} color={Colors.cardWhite} />
+                    <Text style={styles.generatePixBtnText}>Gerar QR Code Pix</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            )}
+
+            {paymentMethod === 'pix' && pixCopiaECola && (
+              <View style={styles.pixQrSection}>
+                {!!pixQrCode && (
+                  <Image
+                    source={{ uri: `data:image/png;base64,${pixQrCode}` }}
+                    style={styles.pixQrImage}
+                    resizeMode="contain"
+                  />
+                )}
+                <Text style={styles.pixCopiaLabel}>Pix Copia e Cola</Text>
+                <Text style={styles.pixCopiaText} numberOfLines={2}>{pixCopiaECola}</Text>
+                <TouchableOpacity
+                  style={styles.sharePixBtn}
+                  onPress={() => Share.share({ message: pixCopiaECola })}
+                >
+                  <Ionicons name="copy-outline" size={16} color={Colors.darkNavy} />
+                  <Text style={styles.sharePixBtnText}>Compartilhar / Copiar código</Text>
+                </TouchableOpacity>
+                <View style={styles.pixAwaitingRow}>
+                  <ActivityIndicator size="small" color={Colors.warningAmber} />
+                  <Text style={styles.pixAwaitingText}>Aguardando confirmação do banco...</Text>
+                </View>
               </View>
-            ) : paymentMethod === 'pix' && !providerProfile?.pix_key ? (
-              <Text style={styles.pixKeyMissing}>
-                Chave Pix não cadastrada. Entre em contato com o prestador.
-              </Text>
-            ) : null}
-            <TouchableOpacity
-              style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-              onPress={handleSendPayment}
-              disabled={sendingPayment}
-            >
-              {sendingPayment ? (
-                <ActivityIndicator color={Colors.cardWhite} size="small" />
-              ) : (
-                <>
-                  <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                  <Text style={styles.sendPaymentBtnText}>Confirmar pagamento enviado</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            )}
+
+            {paymentMethod !== 'pix' && (
+              <>
+                {paymentMethod === 'cash' && providerProfile?.pix_key && (
+                  <View style={styles.pixKeyBox}>
+                    <Text style={styles.pixKeyLabel}>Chave Pix do prestador (para referência)</Text>
+                    <Text style={styles.pixKeyValue}>{providerProfile.pix_key}</Text>
+                  </View>
+                )}
+                <TouchableOpacity
+                  style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
+                  onPress={handleSendPayment}
+                  disabled={sendingPayment}
+                >
+                  {sendingPayment ? (
+                    <ActivityIndicator color={Colors.cardWhite} size="small" />
+                  ) : (
+                    <>
+                      <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
+                      <Text style={styles.sendPaymentBtnText}>Confirmar pagamento enviado</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              </>
+            )}
           </View>
         )}
 
@@ -944,6 +1012,60 @@ const styles = StyleSheet.create({
   },
   pixKeyValue: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
   pixKeyMissing: { fontSize: 13, color: Colors.textSecondary, fontStyle: 'italic' },
+  generatePixBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: Colors.darkNavy,
+    elevation: 3,
+  },
+  generatePixBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  pixQrSection: { alignItems: 'center', gap: 10 },
+  pixQrImage: {
+    width: 200,
+    height: 200,
+    borderRadius: 12,
+    backgroundColor: Colors.border,
+  },
+  pixCopiaLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    alignSelf: 'flex-start',
+  },
+  pixCopiaText: {
+    fontSize: 11,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.background,
+    borderRadius: 8,
+    padding: 10,
+    width: '100%',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  sharePixBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.darkNavy,
+    backgroundColor: Colors.cardWhite,
+    width: '100%',
+  },
+  sharePixBtnText: { fontSize: 14, fontWeight: '700', color: Colors.darkNavy },
+  pixAwaitingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  pixAwaitingText: { fontSize: 13, color: Colors.textSecondary },
   sendPaymentBtn: {
     flexDirection: 'row',
     alignItems: 'center',
