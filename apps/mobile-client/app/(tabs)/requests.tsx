@@ -36,6 +36,7 @@ interface ServiceRequest {
   quote_amount: number | null;
   created_at: string;
   payment_status: string | null;
+  payment_method: string | null;
   client_rating: number | null;
 }
 
@@ -65,6 +66,20 @@ function formatDate(dateStr: string): string {
   return date.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+function paymentMethodLabel(method: string | null): string {
+  if (!method || method === 'pix') return 'Pix';
+  if (method === 'cash') return 'Dinheiro';
+  if (method === 'card') return 'Cartão';
+  return method;
+}
+
+function photoTypeLabel(type: string): string {
+  if (type === 'client_request') return 'Cliente';
+  if (type === 'provider_start') return 'Início';
+  if (type === 'provider_end') return 'Conclusão';
+  return '';
+}
+
 function formatBudget(min: number | null, max: number | null): string {
   if (min === null && max === null) return 'A combinar';
   if (min !== null && max !== null) {
@@ -76,7 +91,7 @@ function formatBudget(min: number | null, max: number | null): string {
 
 export default function RequestsScreen() {
   const [requests, setRequests] = useState<ServiceRequest[]>([]);
-  const [photosByRequest, setPhotosByRequest] = useState<Record<string, string[]>>({});
+  const [photosByRequest, setPhotosByRequest] = useState<Record<string, { url: string; type: string }[]>>({});
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -87,7 +102,7 @@ export default function RequestsScreen() {
 
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, city, budget_min, budget_max, quote_amount, created_at, payment_status, client_rating')
+      .select('id, category, description, status, city, budget_min, budget_max, quote_amount, created_at, payment_status, payment_method, client_rating')
       .eq('client_user_id', user.id)
       .order('created_at', { ascending: false });
 
@@ -98,13 +113,13 @@ export default function RequestsScreen() {
       if (ids.length > 0) {
         const { data: photos } = await supabase
           .from('request_photos')
-          .select('request_id, url')
+          .select('request_id, url, photo_type')
           .in('request_id', ids);
         if (photos) {
-          const map: Record<string, string[]> = {};
-          for (const p of photos as { request_id: string; url: string }[]) {
+          const map: Record<string, { url: string; type: string }[]> = {};
+          for (const p of photos as { request_id: string; url: string; photo_type: string }[]) {
             if (!map[p.request_id]) map[p.request_id] = [];
-            map[p.request_id].push(p.url);
+            map[p.request_id].push({ url: p.url, type: p.photo_type ?? '' });
           }
           setPhotosByRequest(map);
         }
@@ -186,7 +201,9 @@ export default function RequestsScreen() {
         {item.payment_status === 'confirmed' && (
           <View style={styles.historyChip}>
             <Ionicons name="checkmark-circle" size={13} color={Colors.successGreen} />
-            <Text style={[styles.historyChipText, { color: Colors.successGreen }]}>Pagamento confirmado</Text>
+            <Text style={[styles.historyChipText, { color: Colors.successGreen }]}>
+              Pago via {paymentMethodLabel(item.payment_method)}
+            </Text>
           </View>
         )}
         {item.payment_status === 'client_paid' && (
@@ -206,11 +223,21 @@ export default function RequestsScreen() {
 
         {itemPhotos.length > 0 && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow} style={styles.photosScroll}>
-            {itemPhotos.map((url, i) => (
-              <TouchableOpacity key={i} onPress={() => setPhotoViewer(url)} activeOpacity={0.85}>
-                <Image source={{ uri: url }} style={styles.photoThumb} />
-              </TouchableOpacity>
-            ))}
+            {itemPhotos.map((photo, i) => {
+              const label = photoTypeLabel(photo.type);
+              return (
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(photo.url)} activeOpacity={0.85}>
+                  <View>
+                    <Image source={{ uri: photo.url }} style={styles.photoThumb} />
+                    {label ? (
+                      <View style={styles.photoTypeBadge}>
+                        <Text style={styles.photoTypeText}>{label}</Text>
+                      </View>
+                    ) : null}
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
           </ScrollView>
         )}
 
@@ -457,7 +484,19 @@ const styles = StyleSheet.create({
   },
   photosScroll: { marginTop: 10 },
   photosRow: { gap: 8 },
-  photoThumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: Colors.border },
+  photoThumb: { width: 80, height: 80, borderRadius: 10, backgroundColor: Colors.border },
+  photoTypeBadge: {
+    position: 'absolute',
+    bottom: 4,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderBottomLeftRadius: 10,
+    borderBottomRightRadius: 10,
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  photoTypeText: { fontSize: 9, color: '#fff', fontWeight: '600' },
   viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
   viewerClose: { position: 'absolute', top: 52, right: 20, zIndex: 10, padding: 8 },
   viewerImage: { width: '100%', height: '80%' },

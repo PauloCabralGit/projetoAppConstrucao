@@ -15,6 +15,7 @@ import {
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -405,6 +406,116 @@ export default function ActiveScreen() {
   const isCompleted = activeJob.status === 'completed';
   const paymentClientPaid = activeJob.payment_status === 'client_paid';
 
+  // ── Completed state: show a card instead of the map ──────────────────────
+  if (isCompleted) {
+    return (
+      <View style={styles.completedScreen}>
+        <View style={styles.completedHeader}>
+          <Ionicons name="checkmark-circle" size={28} color={Colors.successGreen} />
+          <Text style={styles.completedHeaderTitle}>Serviço concluído</Text>
+        </View>
+
+        <TouchableOpacity
+          style={styles.completedCard}
+          onPress={() => router.push('/(tabs)/history')}
+          activeOpacity={0.85}
+        >
+          <View style={styles.completedCardTop}>
+            <View style={styles.categoryBadge}>
+              <Text style={styles.categoryBadgeText}>
+                {CATEGORY_LABELS[activeJob.category] ?? activeJob.category}
+              </Text>
+            </View>
+            <View style={styles.doneBadge}>
+              <Ionicons name="checkmark-done-outline" size={13} color={Colors.successGreen} />
+              <Text style={styles.doneBadgeText}>Concluído</Text>
+            </View>
+          </View>
+
+          <View style={styles.completedClientRow}>
+            <View style={styles.avatar}>
+              <Text style={styles.avatarText}>
+                {clientProfile?.full_name?.charAt(0).toUpperCase() ?? 'C'}
+              </Text>
+            </View>
+            <View>
+              <Text style={styles.completedClientName}>{clientProfile?.full_name ?? 'Cliente'}</Text>
+              {activeJob.quote_amount != null && (
+                <Text style={styles.completedAmount}>
+                  R$ {Number(activeJob.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </Text>
+              )}
+            </View>
+          </View>
+
+          {jobPhotos.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.photosRow}
+              style={styles.photosScroll}
+            >
+              {jobPhotos.map((url, i) => (
+                <TouchableOpacity
+                  key={i}
+                  onPress={() => setPhotoViewer(url)}
+                  activeOpacity={0.85}
+                >
+                  <Image source={{ uri: url }} style={styles.photoThumb} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
+
+          {paymentClientPaid ? (
+            <View style={styles.paymentSentChip}>
+              <Ionicons name="cash-outline" size={14} color={Colors.successGreen} />
+              <Text style={styles.paymentSentChipText}>Pagamento enviado pelo cliente</Text>
+            </View>
+          ) : (
+            <View style={styles.paymentPendingChip}>
+              <Ionicons name="hourglass-outline" size={14} color={Colors.textSecondary} />
+              <Text style={styles.paymentPendingChipText}>Aguardando pagamento</Text>
+            </View>
+          )}
+
+          <View style={styles.openHistoryRow}>
+            <Text style={styles.openHistoryText}>Ver histórico completo</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+          </View>
+        </TouchableOpacity>
+
+        {paymentClientPaid && (
+          <TouchableOpacity
+            style={[styles.confirmPaymentBtn, confirmingPayment && styles.disabled]}
+            onPress={handleConfirmPayment}
+            disabled={confirmingPayment}
+          >
+            {confirmingPayment ? (
+              <ActivityIndicator color={Colors.cardWhite} />
+            ) : (
+              <>
+                <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
+                <Text style={styles.confirmPaymentBtnText}>Confirmar recebimento</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
+
+        <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
+          <View style={styles.viewerOverlay}>
+            <TouchableOpacity style={styles.viewerClose} onPress={() => setPhotoViewer(null)}>
+              <Ionicons name="close" size={28} color="#fff" />
+            </TouchableOpacity>
+            {photoViewer && (
+              <Image source={{ uri: photoViewer }} style={styles.viewerImage} resizeMode="contain" />
+            )}
+          </View>
+        </Modal>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       <MapView
@@ -551,71 +662,7 @@ export default function ActiveScreen() {
           </TouchableOpacity>
         )}
 
-        {/* Photos section for completed jobs */}
-        {isCompleted && jobPhotos.length > 0 && (
-          <View style={styles.photosSection}>
-            <Text style={styles.photosSectionLabel}>
-              <Ionicons name="images-outline" size={13} color={Colors.textSecondary} />
-              {'  '}Fotos do serviço
-            </Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
-              {jobPhotos.map((url, i) => (
-                <TouchableOpacity key={i} onPress={() => setPhotoViewer(url)} activeOpacity={0.85}>
-                  <Image source={{ uri: url }} style={styles.photoThumb} />
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Payment section for completed jobs */}
-        {isCompleted && !paymentClientPaid && (
-          <View style={styles.paymentWaitingCard}>
-            <Ionicons name="time-outline" size={20} color={Colors.textSecondary} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.paymentWaitingTitle}>Aguardando pagamento</Text>
-              {activeJob.quote_amount != null && (
-                <Text style={styles.paymentWaitingAmount}>
-                  R$ {Number(activeJob.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </Text>
-              )}
-              <Text style={styles.paymentWaitingHint}>Aguarde o cliente enviar o pagamento.</Text>
-            </View>
-          </View>
-        )}
-
-        {isCompleted && paymentClientPaid && (
-          <View style={styles.paymentReceivedCard}>
-            <Ionicons name="cash-outline" size={20} color={Colors.successGreen} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.paymentReceivedTitle}>Pagamento enviado pelo cliente!</Text>
-              {activeJob.quote_amount != null && (
-                <Text style={styles.paymentReceivedAmount}>
-                  R$ {Number(activeJob.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </Text>
-              )}
-            </View>
-          </View>
-        )}
-
-        {isCompleted && paymentClientPaid && (
-          <TouchableOpacity
-            style={[styles.confirmPaymentBtn, confirmingPayment && styles.disabled]}
-            onPress={handleConfirmPayment}
-            disabled={confirmingPayment}
-          >
-            {confirmingPayment ? (
-              <ActivityIndicator color={Colors.cardWhite} />
-            ) : (
-              <>
-                <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                <Text style={styles.confirmPaymentBtnText}>Confirmar recebimento</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        )}
-
-        {!isCompleted && clientCoord && (
+        {clientCoord && (
           <TouchableOpacity style={styles.mapsBtn} onPress={handleOpenMaps}>
             <Ionicons name="map-outline" size={18} color={Colors.darkNavy} />
             <Text style={styles.mapsBtnText}>Abrir rota no Maps</Text>
@@ -623,16 +670,6 @@ export default function ActiveScreen() {
         )}
       </ScrollView>
 
-      <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
-        <View style={styles.viewerOverlay}>
-          <TouchableOpacity style={styles.viewerClose} onPress={() => setPhotoViewer(null)}>
-            <Ionicons name="close" size={28} color="#fff" />
-          </TouchableOpacity>
-          {photoViewer && (
-            <Image source={{ uri: photoViewer }} style={styles.viewerImage} resizeMode="contain" />
-          )}
-        </View>
-      </Modal>
     </View>
   );
 }
@@ -769,32 +806,6 @@ const styles = StyleSheet.create({
     borderColor: Colors.darkNavy,
   },
   mapsBtnText: { fontSize: 14, fontWeight: '700', color: Colors.darkNavy },
-  // Payment styles
-  paymentWaitingCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    backgroundColor: Colors.background,
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: Colors.border,
-  },
-  paymentWaitingTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary, marginBottom: 2 },
-  paymentWaitingAmount: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
-  paymentWaitingHint: { fontSize: 12, color: Colors.textSecondary },
-  paymentReceivedCard: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 12,
-    backgroundColor: '#ECFDF5',
-    borderRadius: 12,
-    padding: 14,
-    borderWidth: 1.5,
-    borderColor: Colors.successGreen,
-  },
-  paymentReceivedTitle: { fontSize: 14, fontWeight: '700', color: Colors.successGreen, marginBottom: 2 },
-  paymentReceivedAmount: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary },
   confirmPaymentBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -806,10 +817,50 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   confirmPaymentBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
-  photosSection: { gap: 6 },
-  photosSectionLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
-  photosRow: { gap: 8, paddingRight: 4 },
-  photoThumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: Colors.border },
+  // Completed card screen
+  completedScreen: {
+    flex: 1,
+    backgroundColor: Colors.background,
+    paddingTop: 60,
+    paddingHorizontal: 20,
+    gap: 16,
+  },
+  completedHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 4,
+  },
+  completedHeaderTitle: { fontSize: 22, fontWeight: '800', color: Colors.textPrimary },
+  completedCard: {
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.07,
+    shadowRadius: 8,
+    elevation: 4,
+    gap: 12,
+  },
+  completedCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  categoryBadge: { backgroundColor: '#FFF4EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  categoryBadgeText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  doneBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#ECFDF5', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  doneBadgeText: { fontSize: 12, fontWeight: '600', color: Colors.successGreen },
+  completedClientRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  completedClientName: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  completedAmount: { fontSize: 18, fontWeight: '800', color: Colors.successGreen, marginTop: 2 },
+  photosScroll: { marginHorizontal: -2 },
+  photosRow: { gap: 8, paddingHorizontal: 2 },
+  photoThumb: { width: 80, height: 80, borderRadius: 10, backgroundColor: Colors.border },
+  paymentSentChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ECFDF5', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: Colors.successGreen },
+  paymentSentChipText: { fontSize: 13, fontWeight: '600', color: Colors.successGreen, flex: 1 },
+  paymentPendingChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: Colors.border },
+  paymentPendingChipText: { fontSize: 13, color: Colors.textSecondary, flex: 1 },
+  openHistoryRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 8, borderTopWidth: 1, borderTopColor: Colors.border },
+  openHistoryText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  // Photo viewer
   viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
   viewerClose: { position: 'absolute', top: 52, right: 20, zIndex: 10, padding: 8 },
   viewerImage: { width: '100%', height: '80%' },
