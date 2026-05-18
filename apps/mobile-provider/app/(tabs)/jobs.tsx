@@ -111,10 +111,10 @@ export default function JobsScreen() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     const { data } = await supabase
-      .from('profiles')
+      .from('app_users')
       .select('full_name')
       .eq('id', user.id)
-      .single();
+      .maybeSingle();
     if (data) setProviderName(data.full_name);
   }
 

@@ -59,6 +59,152 @@ app.get("/v1/providers", async (c) => {
   return c.json({ data, total: data!.length });
 });
 
+app.get("/v1/providers/available", async (c) => {
+  const { data, error } = await db(c.env)
+    .from("provider_profiles")
+    .select(`
+      user_id,
+      status,
+      accepts_emergency_jobs,
+      average_rating,
+      app_users!inner(full_name, city),
+      provider_skills(skills(label))
+    `)
+    .eq("status", "available");
+
+  if (error) return c.json({ error: error.message }, 500);
+
+  const providers = (data ?? []).map((p: any) => ({
+    id: p.user_id,
+    full_name: p.app_users?.full_name ?? "",
+    city: p.app_users?.city ?? "",
+    specialties: ((p.provider_skills ?? []) as any[])
+      .map((ps: any) => ps.skills?.label)
+      .filter(Boolean)
+      .join(", "),
+    average_rating: p.average_rating,
+    accepts_emergency_jobs: p.accepts_emergency_jobs,
+  }));
+
+  return c.json({ providers, total: providers.length });
+});
+
+app.patch("/v1/service-requests/:id/accept", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await c.req.json<{ provider_user_id: string }>();
+
+  if (!jobId || !body.provider_user_id) {
+    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  }
+
+  const adminDb = db(c.env);
+
+  // FK constraint: provider_user_id references provider_profiles(user_id)
+  // Ensure the row exists before accepting (provider may have registered before this table was populated)
+  await adminDb
+    .from("provider_profiles")
+    .upsert({ user_id: body.provider_user_id, description: "" }, { onConflict: "user_id" });
+
+  const { data, error } = await adminDb
+    .from("service_requests")
+    .update({ status: "accepted", provider_user_id: body.provider_user_id })
+    .eq("id", jobId)
+    .eq("status", "requested")
+    .select("id")
+    .maybeSingle();
+
+  if (error) return c.json({ message: error.message }, 400);
+  if (!data) return c.json({ message: "Chamado não disponível ou já aceito." }, 409);
+
+  return c.json({ id: data.id, message: "Chamado aceito com sucesso." });
+});
+
+app.patch("/v1/service-requests/:id/complete", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await c.req.json<{ provider_user_id: string }>();
+
+  if (!jobId || !body.provider_user_id) {
+    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  }
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ status: "completed" })
+    .eq("id", jobId)
+    .eq("provider_user_id", body.provider_user_id);
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  return c.json({ message: "Serviço concluído com sucesso." });
+});
+
+app.patch("/v1/service-requests/:id/cancel", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await c.req.json<{ client_user_id: string }>();
+
+  if (!jobId || !body.client_user_id) {
+    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  }
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ status: "cancelled" })
+    .eq("id", jobId)
+    .eq("client_user_id", body.client_user_id);
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  return c.json({ message: "Pedido cancelado com sucesso." });
+});
+
+app.post("/v1/service-requests", async (c) => {
+  const body = await c.req.json<{
+    client_user_id: string;
+    category: string;
+    description: string;
+    latitude?: number;
+    longitude?: number;
+  }>();
+
+  if (!body.client_user_id || !body.category || !body.description) {
+    return c.json({ message: "Campos obrigatórios ausentes." }, 400);
+  }
+
+  const adminDb = db(c.env);
+
+  const { data: userProfile } = await adminDb
+    .from("app_users")
+    .select("city")
+    .eq("id", body.client_user_id)
+    .maybeSingle();
+
+  const today = new Date().toISOString().split("T")[0];
+
+  const insertData: Record<string, unknown> = {
+    client_user_id: body.client_user_id,
+    category: body.category,
+    description: body.description,
+    status: "requested",
+    city: userProfile?.city ?? "",
+    budget_min: 0,
+    budget_max: 0,
+    scheduled_date: today,
+  };
+
+  if (body.latitude != null) insertData.latitude = body.latitude;
+  if (body.longitude != null) insertData.longitude = body.longitude;
+
+  const { data, error } = await adminDb
+    .from("service_requests")
+    .insert(insertData)
+    .select("id")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  return c.json({ id: data.id, message: "Pedido criado com sucesso." }, 201);
+});
+
 app.get("/v1/requests", async (c) => {
   const { data, error } = await db(c.env)
     .from("service_requests")
@@ -105,7 +251,7 @@ app.post("/v1/register", async (c) => {
   // Remove orphaned app_users rows (from previous failed attempts with different UUID)
   await adminDb.from("app_users").delete().eq("email", payload.email).neq("id", userId);
 
-  const { data: user, error: userError } = await adminDb
+  const { error: userError } = await adminDb
     .from("app_users")
     .upsert({
       id: userId,
@@ -115,17 +261,17 @@ app.post("/v1/register", async (c) => {
       phone: payload.phone ?? "",
       document_number: payload.document ?? "",
       city: payload.city ?? "",
-    }, { onConflict: "id" })
-    .select()
-    .single();
+    }, { onConflict: "id" });
 
   if (userError) return c.json({ message: userError.message }, 400);
 
-  if (["builder", "contractor", "company", "supplier"].includes(user.role)) {
+  const role = payload.role ?? "client";
+
+  if (["builder", "contractor", "company", "supplier"].includes(role)) {
     const { error: profileError } = await adminDb
       .from("provider_profiles")
       .upsert({
-        user_id: user.id,
+        user_id: userId,
         description: "",
         company_name: payload.companyName ?? null,
         accepts_emergency_jobs: payload.acceptsEmergencyJobs ?? false,
@@ -133,12 +279,10 @@ app.post("/v1/register", async (c) => {
 
     if (profileError) return c.json({ message: profileError.message }, 400);
 
-    // Save specialties: upsert into skills, then link via provider_skills
-    const rawSpecialties = payload.specialties ?? "";
-    const specialtyLabels = rawSpecialties
+    const specialtyLabels = (payload.specialties ?? "")
       .split(",")
       .map((s) => s.trim())
-      .filter((s) => s.length > 0);
+      .filter(Boolean);
 
     if (specialtyLabels.length > 0) {
       const skillRows = specialtyLabels.map((label) => ({
@@ -153,11 +297,10 @@ app.post("/v1/register", async (c) => {
 
       if (skillsError) return c.json({ message: skillsError.message }, 400);
 
-      // Remove old skills for this provider before re-linking
-      await adminDb.from("provider_skills").delete().eq("provider_user_id", user.id);
+      await adminDb.from("provider_skills").delete().eq("provider_user_id", userId);
 
       const providerSkillRows = (skills ?? []).map((skill: { id: string }) => ({
-        provider_user_id: user.id,
+        provider_user_id: userId,
         skill_id: skill.id,
       }));
 
@@ -171,7 +314,7 @@ app.post("/v1/register", async (c) => {
     }
   }
 
-  return c.json({ message: "Cadastro realizado com sucesso.", data: user }, 201);
+  return c.json({ message: "Cadastro realizado com sucesso." }, 201);
 });
 
 app.put("/v1/profile", async (c) => {
@@ -190,16 +333,48 @@ app.put("/v1/profile", async (c) => {
 
   const adminDb = db(c.env);
 
-  const { data: user, error: userError } = await adminDb
+  // Fetch role first (separate from update to avoid .single() on update)
+  const { data: existing, error: fetchError } = await adminDb
+    .from("app_users")
+    .select("role")
+    .eq("id", body.userId)
+    .maybeSingle();
+
+  if (fetchError) return c.json({ message: fetchError.message }, 400);
+
+  if (!existing) {
+    // User exists in auth but not in app_users — get metadata from auth and create the row
+    const { data: authUser, error: authErr } = await adminDb.auth.admin.getUserById(body.userId);
+    if (authErr || !authUser?.user) return c.json({ message: "Usuário não encontrado." }, 404);
+
+    const meta = authUser.user.user_metadata ?? {};
+    const email = authUser.user.email ?? "";
+
+    // Remove orphaned rows with same email but different id
+    await adminDb.from("app_users").delete().eq("email", email).neq("id", body.userId);
+
+    const { error: upsertError } = await adminDb.from("app_users").upsert({
+      id: body.userId,
+      role: meta.role ?? "client",
+      full_name: body.fullName ?? meta.full_name ?? "",
+      email,
+      phone: body.phone ?? "",
+      city: body.city ?? "",
+      document_number: "",
+    }, { onConflict: "id" });
+    if (upsertError) return c.json({ message: upsertError.message }, 400);
+
+    return c.json({ message: "Perfil criado com sucesso." }, 200);
+  }
+
+  const { error: userError } = await adminDb
     .from("app_users")
     .update({ full_name: body.fullName, phone: body.phone ?? "", city: body.city ?? "" })
-    .eq("id", body.userId)
-    .select("role")
-    .single();
+    .eq("id", body.userId);
 
   if (userError) return c.json({ message: userError.message }, 400);
 
-  if (["builder", "contractor", "company", "supplier"].includes(user.role)) {
+  if (["builder", "contractor", "company", "supplier"].includes(existing.role)) {
     const profileUpdates: Record<string, unknown> = {};
     if (body.companyName !== undefined) profileUpdates.company_name = body.companyName;
     if (body.acceptsEmergencyJobs !== undefined) profileUpdates.accepts_emergency_jobs = body.acceptsEmergencyJobs;

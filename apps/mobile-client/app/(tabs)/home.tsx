@@ -33,10 +33,11 @@ const CATEGORIES = [
 
 interface ProviderMarker {
   id: string;
-  latitude: number;
-  longitude: number;
+  latitude?: number;
+  longitude?: number;
   full_name: string;
   specialties: string;
+  city?: string;
 }
 
 const DEFAULT_REGION: Region = {
@@ -48,6 +49,10 @@ const DEFAULT_REGION: Region = {
 
 export default function HomeScreen() {
   const mapRef = useRef<MapView>(null);
+  const mapReadyRef = useRef(false);
+  const pendingRegionRef = useRef<Region | null>(null);
+  const locationSubRef = useRef<Location.LocationSubscription | null>(null);
+
   const [region, setRegion] = useState<Region>(DEFAULT_REGION);
   const [locationGranted, setLocationGranted] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState('');
@@ -59,23 +64,47 @@ export default function HomeScreen() {
   useEffect(() => {
     requestLocation();
     fetchProviders();
+    return () => { locationSubRef.current?.remove(); };
   }, []);
+
+  function goToRegion(newRegion: Region) {
+    setRegion(newRegion);
+    if (mapReadyRef.current) {
+      mapRef.current?.animateToRegion(newRegion, 600);
+    } else {
+      pendingRegionRef.current = newRegion;
+    }
+  }
+
+  function handleMapReady() {
+    mapReadyRef.current = true;
+    if (pendingRegionRef.current) {
+      mapRef.current?.animateToRegion(pendingRegionRef.current, 600);
+      pendingRegionRef.current = null;
+    }
+  }
 
   async function requestLocation() {
     const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      return;
-    }
+    if (status !== 'granted') return;
     setLocationGranted(true);
-    const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-    const newRegion: Region = {
-      latitude: loc.coords.latitude,
-      longitude: loc.coords.longitude,
-      latitudeDelta: 0.03,
-      longitudeDelta: 0.03,
-    };
-    setRegion(newRegion);
-    mapRef.current?.animateToRegion(newRegion, 800);
+
+    // watchPositionAsync: first callback gives a real fix immediately
+    locationSubRef.current = await Location.watchPositionAsync(
+      { accuracy: Location.Accuracy.Balanced, timeInterval: 10000, distanceInterval: 30 },
+      (loc) => {
+        const newRegion: Region = {
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          latitudeDelta: 0.03,
+          longitudeDelta: 0.03,
+        };
+        goToRegion(newRegion);
+        // Only animate on first fix; after that let user pan freely
+        locationSubRef.current?.remove();
+        locationSubRef.current = null;
+      }
+    );
   }
 
   async function fetchProviders() {
@@ -161,15 +190,16 @@ export default function HomeScreen() {
         ref={mapRef}
         style={styles.map}
         provider={Platform.OS === 'android' ? PROVIDER_GOOGLE : undefined}
-        initialRegion={region}
+        initialRegion={DEFAULT_REGION}
         showsUserLocation={locationGranted}
         showsMyLocationButton={false}
         showsCompass={false}
+        onMapReady={handleMapReady}
       >
-        {providers.map((p) => (
+        {providers.filter(p => p.latitude != null && p.longitude != null).map((p) => (
           <Marker
             key={p.id}
-            coordinate={{ latitude: p.latitude, longitude: p.longitude }}
+            coordinate={{ latitude: p.latitude!, longitude: p.longitude! }}
             title={p.full_name}
             description={p.specialties}
           >
@@ -181,7 +211,14 @@ export default function HomeScreen() {
       </MapView>
 
       {locationGranted && (
-        <TouchableOpacity style={styles.myLocationButton} onPress={requestLocation}>
+        <TouchableOpacity
+          style={styles.myLocationButton}
+          onPress={async () => {
+            const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }).catch(() => null);
+            if (!loc) return;
+            goToRegion({ latitude: loc.coords.latitude, longitude: loc.coords.longitude, latitudeDelta: 0.03, longitudeDelta: 0.03 });
+          }}
+        >
           <Ionicons name="locate" size={22} color={Colors.primary} />
         </TouchableOpacity>
       )}
@@ -258,11 +295,13 @@ export default function HomeScreen() {
             <Text style={styles.providersLoadingText}>Carregando profissionais...</Text>
           </View>
         )}
-        {!loadingProviders && providers.length > 0 && (
+        {!loadingProviders && (
           <View style={styles.providersCountRow}>
-            <View style={styles.onlineDot} />
+            <View style={[styles.onlineDot, providers.length === 0 && { backgroundColor: Colors.textSecondary }]} />
             <Text style={styles.providersCountText}>
-              {providers.length} profissional{providers.length !== 1 ? 'is' : ''} disponível{providers.length !== 1 ? 'is' : ''} na região
+              {providers.length > 0
+                ? `${providers.length} profissional${providers.length !== 1 ? 'is' : ''} disponível${providers.length !== 1 ? 'is' : ''}`
+                : 'Nenhum profissional disponível no momento'}
             </Text>
           </View>
         )}

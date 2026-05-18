@@ -29,8 +29,8 @@ interface ServiceRequest {
   description: string;
   status: RequestStatus;
   provider_user_id: string | null;
-  client_latitude: number | null;
-  client_longitude: number | null;
+  latitude: number | null;
+  longitude: number | null;
 }
 
 interface ProviderLocation {
@@ -92,11 +92,11 @@ export default function TrackingScreen() {
   useEffect(() => {
     if (providerLocation) {
       pulseMarker();
-      if (request?.client_latitude && request?.client_longitude) {
-        const midLat = (providerLocation.latitude + request.client_latitude) / 2;
-        const midLng = (providerLocation.longitude + request.client_longitude) / 2;
-        const latDelta = Math.abs(providerLocation.latitude - request.client_latitude) * 2 + 0.01;
-        const lngDelta = Math.abs(providerLocation.longitude - request.client_longitude) * 2 + 0.01;
+      if (request?.latitude && request?.longitude) {
+        const midLat = (providerLocation.latitude + request.latitude) / 2;
+        const midLng = (providerLocation.longitude + request.longitude) / 2;
+        const latDelta = Math.abs(providerLocation.latitude - request.latitude) * 2 + 0.01;
+        const lngDelta = Math.abs(providerLocation.longitude - request.longitude) * 2 + 0.01;
         mapRef.current?.animateToRegion(
           { latitude: midLat, longitude: midLng, latitudeDelta: latDelta, longitudeDelta: lngDelta },
           800
@@ -121,7 +121,7 @@ export default function TrackingScreen() {
     setLoading(true);
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, provider_user_id, client_latitude, client_longitude')
+      .select('id, category, description, status, provider_user_id, latitude, longitude')
       .eq('id', id)
       .single();
 
@@ -132,12 +132,20 @@ export default function TrackingScreen() {
   }
 
   async function loadProviderProfile(providerUserId: string) {
-    const { data } = await supabase
-      .from('profiles')
-      .select('full_name, specialties')
-      .eq('id', providerUserId)
-      .single();
-    if (data) setProviderProfile(data as ProviderProfile);
+    const [userRes, skillsRes] = await Promise.all([
+      supabase.from('app_users').select('full_name').eq('id', providerUserId).maybeSingle(),
+      supabase
+        .from('provider_skills')
+        .select('skills(label)')
+        .eq('provider_user_id', providerUserId),
+    ]);
+    const specialties = ((skillsRes.data ?? []) as any[])
+      .map((ps) => ps.skills?.label)
+      .filter(Boolean)
+      .join(', ');
+    if (userRes.data) {
+      setProviderProfile({ full_name: userRes.data.full_name, specialties });
+    }
   }
 
   function subscribeToRequest() {
@@ -209,15 +217,25 @@ export default function TrackingScreen() {
           style: 'destructive',
           onPress: async () => {
             setCancelling(true);
-            const { error } = await supabase
-              .from('service_requests')
-              .update({ status: 'cancelled' })
-              .eq('id', id);
-            setCancelling(false);
-            if (!error) {
-              router.back();
-            } else {
-              Alert.alert('Erro', 'Não foi possível cancelar o pedido.');
+            const { data: { user } } = await supabase.auth.getUser();
+            try {
+              const res = await fetch(
+                `https://construconnect-api.orionsystem.workers.dev/v1/service-requests/${id}/cancel`,
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ client_user_id: user?.id }),
+                }
+              );
+              setCancelling(false);
+              if (res.ok) {
+                router.back();
+              } else {
+                Alert.alert('Erro', 'Não foi possível cancelar o pedido.');
+              }
+            } catch {
+              setCancelling(false);
+              Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
             }
           },
         },
@@ -237,8 +255,8 @@ export default function TrackingScreen() {
   const statusConf = request ? (STATUS_CONFIG[request.status] ?? STATUS_CONFIG.requested) : STATUS_CONFIG.requested;
 
   const clientCoord =
-    request?.client_latitude && request?.client_longitude
-      ? { latitude: request.client_latitude, longitude: request.client_longitude }
+    request?.latitude && request?.longitude
+      ? { latitude: request.latitude, longitude: request.longitude }
       : null;
 
   const providerCoord = providerLocation
@@ -328,7 +346,15 @@ export default function TrackingScreen() {
           <View style={styles.statItem}>
             <Ionicons name="time-outline" size={20} color={Colors.primary} />
             <Text style={styles.statLabel}>ETA</Text>
-            <Text style={styles.statValue}>~18 min</Text>
+            <Text style={styles.statValue}>
+              {providerCoord && clientCoord
+                ? (() => {
+                    const km = calcDistance(providerCoord, clientCoord);
+                    if (km < 0.05) return 'Chegou!';
+                    return `~${Math.max(1, Math.ceil((km / 25) * 60))} min`;
+                  })()
+                : '—'}
+            </Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
@@ -336,7 +362,10 @@ export default function TrackingScreen() {
             <Text style={styles.statLabel}>Distância</Text>
             <Text style={styles.statValue}>
               {providerCoord && clientCoord
-                ? calcDistance(providerCoord, clientCoord)
+                ? (() => {
+                    const km = calcDistance(providerCoord, clientCoord);
+                    return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(1)} km`;
+                  })()
                 : '—'}
             </Text>
           </View>
@@ -381,7 +410,7 @@ export default function TrackingScreen() {
 function calcDistance(
   a: { latitude: number; longitude: number },
   b: { latitude: number; longitude: number }
-): string {
+): number {
   const R = 6371;
   const dLat = ((b.latitude - a.latitude) * Math.PI) / 180;
   const dLon = ((b.longitude - a.longitude) * Math.PI) / 180;
@@ -391,10 +420,7 @@ function calcDistance(
       Math.cos((b.latitude * Math.PI) / 180) *
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
-  const dist = R * c;
-  if (dist < 1) return `${(dist * 1000).toFixed(0)} m`;
-  return `${dist.toFixed(1)} km`;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
 
 const styles = StyleSheet.create({

@@ -22,11 +22,9 @@ interface JobDetail {
   description: string;
   status: string;
   client_user_id: string;
-  client_latitude: number | null;
-  client_longitude: number | null;
-  client_address: string | null;
+  latitude: number | null;
+  longitude: number | null;
   city: string;
-  neighborhood: string | null;
   budget_min: number | null;
   budget_max: number | null;
   scheduled_date: string | null;
@@ -94,8 +92,6 @@ const DEFAULT_REGION: Region = {
   longitudeDelta: 0.05,
 };
 
-let locationUpdateInterval: ReturnType<typeof setInterval> | null = null;
-
 export default function JobDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const mapRef = useRef<MapView>(null);
@@ -110,13 +106,6 @@ export default function JobDetailScreen() {
     if (!id) return;
     loadJob();
     getProviderLocation();
-
-    return () => {
-      if (locationUpdateInterval) {
-        clearInterval(locationUpdateInterval);
-        locationUpdateInterval = null;
-      }
-    };
   }, [id]);
 
   async function getProviderLocation() {
@@ -130,9 +119,7 @@ export default function JobDetailScreen() {
     setLoading(true);
     const { data, error } = await supabase
       .from('service_requests')
-      .select(
-        'id, category, description, status, client_user_id, client_latitude, client_longitude, client_address, city, neighborhood, budget_min, budget_max, scheduled_date'
-      )
+      .select('id, category, description, status, client_user_id, latitude, longitude, city, budget_min, budget_max, scheduled_date')
       .eq('id', id)
       .single();
 
@@ -141,8 +128,8 @@ export default function JobDetailScreen() {
       setJob(jobData);
 
       const clientCoord =
-        jobData.client_latitude && jobData.client_longitude
-          ? { latitude: jobData.client_latitude, longitude: jobData.client_longitude }
+        jobData.latitude && jobData.longitude
+          ? { latitude: jobData.latitude, longitude: jobData.longitude }
           : null;
 
       if (clientCoord) {
@@ -160,38 +147,27 @@ export default function JobDetailScreen() {
   }
 
   useEffect(() => {
-    if (providerCoord && job?.client_latitude && job?.client_longitude) {
-      setDistance(
-        calcDistance(providerCoord, {
-          latitude: job.client_latitude,
-          longitude: job.client_longitude,
-        })
-      );
+    if (providerCoord && job?.latitude && job?.longitude) {
+      setDistance(calcDistance(providerCoord, { latitude: job.latitude, longitude: job.longitude }));
     }
   }, [providerCoord, job]);
 
-  async function startLocationTracking(userId: string, jobId: string) {
-    if (locationUpdateInterval) clearInterval(locationUpdateInterval);
-
-    async function updateLocation() {
-      const { status } = await Location.requestForegroundPermissionsAsync();
-      if (status !== 'granted') return;
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-
-      await supabase.from('provider_locations').upsert(
-        {
-          user_id: userId,
-          latitude: loc.coords.latitude,
-          longitude: loc.coords.longitude,
-          heading: loc.coords.heading ?? 0,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'user_id' }
-      );
-    }
-
-    await updateLocation();
-    locationUpdateInterval = setInterval(updateLocation, 5000);
+  async function startLocationTracking(userId: string, _jobId: string) {
+    const { status } = await Location.requestForegroundPermissionsAsync();
+    if (status !== 'granted') return;
+    const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null);
+    if (!loc) return;
+    await supabase.from('provider_locations').upsert(
+      {
+        user_id: userId,
+        latitude: loc.coords.latitude,
+        longitude: loc.coords.longitude,
+        heading: loc.coords.heading ?? 0,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id' }
+    );
+    // Continuous tracking is handled by active.tsx after navigation
   }
 
   async function handleAccept() {
@@ -210,18 +186,25 @@ export default function JobDetailScreen() {
 
     setAccepting(true);
 
-    const { error } = await supabase
-      .from('service_requests')
-      .update({
-        status: 'accepted',
-        provider_user_id: user.id,
-      })
-      .eq('id', job.id)
-      .eq('status', 'requested');
+    try {
+      const res = await fetch(
+        `https://construconnect-api.orionsystem.workers.dev/v1/service-requests/${job.id}/accept`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider_user_id: user.id }),
+        }
+      );
+      const json = await res.json();
 
-    if (error) {
+      if (!res.ok) {
+        setAccepting(false);
+        Alert.alert('Chamado indisponível', json?.message ?? 'Este chamado não está mais disponível.');
+        return;
+      }
+    } catch {
       setAccepting(false);
-      Alert.alert('Chamado indisponível', 'Este chamado não está mais disponível.');
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
       return;
     }
 
@@ -257,8 +240,8 @@ export default function JobDetailScreen() {
   }
 
   const clientCoord =
-    job.client_latitude && job.client_longitude
-      ? { latitude: job.client_latitude, longitude: job.client_longitude }
+    job.latitude && job.longitude
+      ? { latitude: job.latitude, longitude: job.longitude }
       : null;
 
   const categoryLabel = CATEGORY_LABELS[job.category] ?? job.category;
@@ -333,9 +316,7 @@ export default function JobDetailScreen() {
           <View style={styles.detailCard}>
             <Ionicons name="location-outline" size={18} color={Colors.darkNavy} />
             <Text style={styles.detailLabel}>Localização</Text>
-            <Text style={styles.detailValue}>
-              {job.neighborhood ? `${job.neighborhood}, ` : ''}{job.city || 'Não informado'}
-            </Text>
+            <Text style={styles.detailValue}>{job.city || 'Não informado'}</Text>
           </View>
 
           <View style={styles.detailCard}>
