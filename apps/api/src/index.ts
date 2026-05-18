@@ -355,6 +355,7 @@ app.put("/v1/profile", async (c) => {
     specialties?: string;
     acceptsEmergencyJobs?: boolean;
     status?: string;
+    pixKey?: string;
   }>();
 
   if (!body.userId) return c.json({ message: "userId obrigatório." }, 400);
@@ -395,9 +396,12 @@ app.put("/v1/profile", async (c) => {
     return c.json({ message: "Perfil criado com sucesso." }, 200);
   }
 
+  const userUpdate: Record<string, unknown> = { full_name: body.fullName, phone: body.phone ?? "", city: body.city ?? "" };
+  if (body.pixKey !== undefined) userUpdate.pix_key = body.pixKey;
+
   const { error: userError } = await adminDb
     .from("app_users")
-    .update({ full_name: body.fullName, phone: body.phone ?? "", city: body.city ?? "" })
+    .update(userUpdate)
     .eq("id", body.userId);
 
   if (userError) return c.json({ message: userError.message }, 400);
@@ -559,7 +563,7 @@ app.post("/v1/service-requests/:id/quote", async (c) => {
     .from("provider_profiles")
     .upsert({ user_id: body.provider_user_id, description: "" }, { onConflict: "user_id" });
 
-  const { error, count } = await adminDb
+  const { error, data: updated } = await adminDb
     .from("service_requests")
     .update({
       provider_user_id: body.provider_user_id,
@@ -670,6 +674,65 @@ app.patch("/v1/service-requests/:id/accept-counter", async (c) => {
   }
 
   return c.json({ message: "Contra-proposta aceita. Serviço confirmado." });
+});
+
+// ── Client marks payment sent ─────────────────────────────────────────────
+app.patch("/v1/service-requests/:id/payment-send", async (c) => {
+  const body = await c.req.json<{ client_user_id: string; payment_method?: string }>();
+  const id = c.req.param("id");
+
+  if (!body.client_user_id) return c.json({ message: "client_user_id obrigatório." }, 400);
+
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("provider_user_id, quote_amount")
+    .eq("id", id)
+    .maybeSingle();
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ payment_status: "client_paid", payment_method: body.payment_method ?? "pix" })
+    .eq("id", id)
+    .eq("client_user_id", body.client_user_id)
+    .eq("status", "completed");
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.provider_user_id) {
+    const amountStr = req.quote_amount ? `R$ ${Number(req.quote_amount).toFixed(2).replace(".", ",")}` : "";
+    await sendPush(c.env, req.provider_user_id, "💳 Pagamento enviado!", `O cliente informou que enviou o pagamento${amountStr ? ` de ${amountStr}` : ""}. Confirme o recebimento no app.`);
+  }
+
+  return c.json({ message: "Pagamento registrado." });
+});
+
+// ── Provider confirms payment received ────────────────────────────────────
+app.patch("/v1/service-requests/:id/payment-confirm", async (c) => {
+  const body = await c.req.json<{ provider_user_id: string }>();
+  const id = c.req.param("id");
+
+  if (!body.provider_user_id) return c.json({ message: "provider_user_id obrigatório." }, 400);
+
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id, quote_amount")
+    .eq("id", id)
+    .maybeSingle();
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ payment_status: "confirmed" })
+    .eq("id", id)
+    .eq("provider_user_id", body.provider_user_id)
+    .eq("payment_status", "client_paid");
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  if (req?.client_user_id) {
+    await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", "O prestador confirmou o recebimento do pagamento. Obrigado!");
+  }
+
+  return c.json({ message: "Pagamento confirmado." });
 });
 
 // ── Provider starts job → status: in_progress ─────────────────────────────

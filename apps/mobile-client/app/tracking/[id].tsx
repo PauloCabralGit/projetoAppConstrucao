@@ -41,6 +41,8 @@ interface ServiceRequest {
   quote_notes: string | null;
   quote_status: string | null;
   counter_amount: number | null;
+  payment_status: string | null;
+  payment_method: string | null;
 }
 
 interface ProviderLocation {
@@ -52,6 +54,7 @@ interface ProviderLocation {
 interface ProviderProfile {
   full_name: string;
   specialties: string;
+  pix_key: string | null;
 }
 
 interface RequestPhoto {
@@ -92,6 +95,10 @@ export default function TrackingScreen() {
   const [countering, setCountering] = useState(false);
   const [showCounterModal, setShowCounterModal] = useState(false);
   const [counterInput, setCounterInput] = useState('');
+
+  // Payment state
+  const [paymentMethod, setPaymentMethod] = useState<'pix' | 'cash' | 'card'>('pix');
+  const [sendingPayment, setSendingPayment] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -141,7 +148,7 @@ export default function TrackingScreen() {
     const { data, error } = await supabase
       .from('service_requests')
       .select(
-        'id, category, description, status, provider_user_id, latitude, longitude, quote_amount, quote_notes, quote_status, counter_amount'
+        'id, category, description, status, provider_user_id, latitude, longitude, quote_amount, quote_notes, quote_status, counter_amount, payment_status, payment_method'
       )
       .eq('id', id)
       .single();
@@ -164,7 +171,7 @@ export default function TrackingScreen() {
 
   async function loadProviderProfile(providerUserId: string) {
     const [userRes, skillsRes] = await Promise.all([
-      supabase.from('app_users').select('full_name').eq('id', providerUserId).maybeSingle(),
+      supabase.from('app_users').select('full_name, pix_key').eq('id', providerUserId).maybeSingle(),
       supabase.from('provider_skills').select('skills(label)').eq('provider_user_id', providerUserId),
     ]);
     const specialties = ((skillsRes.data ?? []) as any[])
@@ -172,7 +179,11 @@ export default function TrackingScreen() {
       .filter(Boolean)
       .join(', ');
     if (userRes.data) {
-      setProviderProfile({ full_name: userRes.data.full_name, specialties });
+      setProviderProfile({
+        full_name: userRes.data.full_name,
+        specialties,
+        pix_key: (userRes.data as any).pix_key ?? null,
+      });
     }
   }
 
@@ -189,7 +200,10 @@ export default function TrackingScreen() {
             Alert.alert('Serviço concluído!', 'O profissional marcou o serviço como concluído.');
           }
           if (updated.status === 'in_progress') {
-            loadPhotos(); // refresh to pick up provider_start photo
+            loadPhotos();
+          }
+          if (updated.payment_status === 'confirmed') {
+            Alert.alert('Pagamento confirmado!', 'O prestador confirmou o recebimento do pagamento.');
           }
         }
       )
@@ -226,7 +240,9 @@ export default function TrackingScreen() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_user_id: user?.id }),
       });
-      if (!res.ok) {
+      if (res.ok) {
+        setRequest(prev => prev ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted' } : null);
+      } else {
         Alert.alert('Erro', 'Não foi possível aceitar o orçamento. Tente novamente.');
       }
     } catch {
@@ -250,6 +266,7 @@ export default function TrackingScreen() {
         body: JSON.stringify({ client_user_id: user?.id, counter_amount: amount }),
       });
       if (res.ok) {
+        setRequest(prev => prev ? { ...prev, quote_status: 'negotiating', counter_amount: amount } : null);
         setShowCounterModal(false);
         setCounterInput('');
       } else {
@@ -259,6 +276,27 @@ export default function TrackingScreen() {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
     }
     setCountering(false);
+  }
+
+  async function handleSendPayment() {
+    if (!request) return;
+    setSendingPayment(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const res = await fetch(`${API_BASE}/service-requests/${id}/payment-send`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_user_id: user?.id, payment_method: paymentMethod }),
+      });
+      if (res.ok) {
+        setRequest(prev => prev ? { ...prev, payment_status: 'client_paid', payment_method: paymentMethod } : null);
+      } else {
+        Alert.alert('Erro', 'Não foi possível registrar o pagamento. Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setSendingPayment(false);
   }
 
   async function handleCancel() {
@@ -334,6 +372,11 @@ export default function TrackingScreen() {
     request?.status !== 'accepted' &&
     request?.status !== 'completed';
 
+  const isCompleted = request?.status === 'completed';
+  const paymentSent = request?.payment_status === 'client_paid';
+  const paymentConfirmed = request?.payment_status === 'confirmed';
+  const needsPayment = isCompleted && !paymentSent && !paymentConfirmed;
+
   return (
     <View style={styles.container}>
       <MapView
@@ -399,7 +442,7 @@ export default function TrackingScreen() {
               <Text style={styles.quoteCardTitle}>Orçamento recebido</Text>
             </View>
             <Text style={styles.quoteCardAmount}>
-              R$ {request!.quote_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              R$ {request!.quote_amount != null ? Number(request!.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}
             </Text>
             {!!request?.quote_notes && (
               <Text style={styles.quoteCardNotes}>{request.quote_notes}</Text>
@@ -432,7 +475,7 @@ export default function TrackingScreen() {
             <Ionicons name="swap-horizontal-outline" size={18} color={Colors.warningAmber} />
             <Text style={styles.negotiatingText}>
               Contra-proposta enviada: R${' '}
-              {request!.counter_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              {request!.counter_amount != null ? Number(request!.counter_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}
               {' '}· Aguardando o profissional...
             </Text>
           </View>
@@ -461,48 +504,124 @@ export default function TrackingScreen() {
         </View>
 
         {/* Stats */}
-        <View style={styles.statsRow}>
-          <View style={styles.statItem}>
-            <Ionicons name="time-outline" size={20} color={Colors.primary} />
-            <Text style={styles.statLabel}>ETA</Text>
-            <Text style={styles.statValue}>
-              {providerCoord && clientCoord
-                ? (() => {
-                    const km = calcDistance(providerCoord, clientCoord);
-                    if (km < 0.05) return 'Chegou!';
-                    return `~${Math.max(1, Math.ceil((km / 25) * 60))} min`;
-                  })()
-                : '—'}
-            </Text>
+        {!isCompleted && (
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <Ionicons name="time-outline" size={20} color={Colors.primary} />
+              <Text style={styles.statLabel}>ETA</Text>
+              <Text style={styles.statValue}>
+                {providerCoord && clientCoord
+                  ? (() => {
+                      const km = calcDistance(providerCoord, clientCoord);
+                      if (km < 0.05) return 'Chegou!';
+                      return `~${Math.max(1, Math.ceil((km / 25) * 60))} min`;
+                    })()
+                  : '—'}
+              </Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statItem}>
+              <Ionicons name="navigate-outline" size={20} color={Colors.primary} />
+              <Text style={styles.statLabel}>Distância</Text>
+              <Text style={styles.statValue}>
+                {providerCoord && clientCoord
+                  ? (() => {
+                      const km = calcDistance(providerCoord, clientCoord);
+                      return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(1)} km`;
+                    })()
+                  : '—'}
+              </Text>
+            </View>
+            <View style={styles.statDivider} />
+            <View style={styles.statItem}>
+              <Ionicons name="construct-outline" size={20} color={Colors.primary} />
+              <Text style={styles.statLabel}>Serviço</Text>
+              <Text style={styles.statValue} numberOfLines={1}>
+                {request?.category ?? '—'}
+              </Text>
+            </View>
           </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Ionicons name="navigate-outline" size={20} color={Colors.primary} />
-            <Text style={styles.statLabel}>Distância</Text>
-            <Text style={styles.statValue}>
-              {providerCoord && clientCoord
-                ? (() => {
-                    const km = calcDistance(providerCoord, clientCoord);
-                    return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(1)} km`;
-                  })()
-                : '—'}
-            </Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <Ionicons name="construct-outline" size={20} color={Colors.primary} />
-            <Text style={styles.statLabel}>Serviço</Text>
-            <Text style={styles.statValue} numberOfLines={1}>
-              {request?.category ?? '—'}
-            </Text>
-          </View>
-        </View>
+        )}
 
         {/* Status */}
         <View style={[styles.statusBadge, { backgroundColor: statusConf.bg }]}>
           <View style={[styles.statusDot, { backgroundColor: statusConf.color }]} />
           <Text style={[styles.statusLabel, { color: statusConf.color }]}>{statusConf.label}</Text>
         </View>
+
+        {/* Payment section */}
+        {isCompleted && paymentConfirmed && (
+          <View style={styles.paymentConfirmedCard}>
+            <Ionicons name="checkmark-circle" size={22} color={Colors.successGreen} />
+            <Text style={styles.paymentConfirmedText}>Pagamento confirmado pelo prestador</Text>
+          </View>
+        )}
+
+        {isCompleted && paymentSent && !paymentConfirmed && (
+          <View style={styles.paymentSentCard}>
+            <Ionicons name="hourglass-outline" size={18} color={Colors.warningAmber} />
+            <Text style={styles.paymentSentText}>
+              Pagamento enviado! Aguardando confirmação do prestador...
+            </Text>
+          </View>
+        )}
+
+        {needsPayment && (
+          <View style={styles.paymentCard}>
+            <View style={styles.paymentCardHeader}>
+              <Ionicons name="card-outline" size={18} color={Colors.darkNavy} />
+              <Text style={styles.paymentCardTitle}>Realizar pagamento</Text>
+            </View>
+            {request!.quote_amount != null && (
+              <Text style={styles.paymentCardAmount}>
+                R$ {Number(request!.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              </Text>
+            )}
+            <Text style={styles.paymentMethodLabel}>Forma de pagamento</Text>
+            <View style={styles.paymentMethodRow}>
+              {(['pix', 'cash', 'card'] as const).map((m) => (
+                <TouchableOpacity
+                  key={m}
+                  style={[styles.methodChip, paymentMethod === m && styles.methodChipActive]}
+                  onPress={() => setPaymentMethod(m)}
+                >
+                  <Ionicons
+                    name={m === 'pix' ? 'qr-code-outline' : m === 'cash' ? 'cash-outline' : 'card-outline'}
+                    size={16}
+                    color={paymentMethod === m ? Colors.cardWhite : Colors.textPrimary}
+                  />
+                  <Text style={[styles.methodChipText, paymentMethod === m && styles.methodChipTextActive]}>
+                    {m === 'pix' ? 'Pix' : m === 'cash' ? 'Dinheiro' : 'Cartão'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {paymentMethod === 'pix' && providerProfile?.pix_key ? (
+              <View style={styles.pixKeyBox}>
+                <Text style={styles.pixKeyLabel}>Chave Pix do prestador</Text>
+                <Text style={styles.pixKeyValue}>{providerProfile.pix_key}</Text>
+              </View>
+            ) : paymentMethod === 'pix' && !providerProfile?.pix_key ? (
+              <Text style={styles.pixKeyMissing}>
+                Chave Pix não cadastrada. Entre em contato com o prestador.
+              </Text>
+            ) : null}
+            <TouchableOpacity
+              style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
+              onPress={handleSendPayment}
+              disabled={sendingPayment}
+            >
+              {sendingPayment ? (
+                <ActivityIndicator color={Colors.cardWhite} size="small" />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
+                  <Text style={styles.sendPaymentBtnText}>Confirmar pagamento enviado</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        )}
 
         {/* Evidence photos */}
         {clientPhotos.length > 0 && (
@@ -564,7 +683,7 @@ export default function TrackingScreen() {
             <Text style={styles.modalTitle}>Sua contra-proposta</Text>
             <Text style={styles.modalSubtitle}>
               Orçamento do profissional: R${' '}
-              {request?.quote_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              {request?.quote_amount != null ? Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}
             </Text>
             <View style={styles.modalInputRow}>
               <Text style={styles.modalCurrency}>R$</Text>
@@ -678,7 +797,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 12,
     elevation: 16,
-    maxHeight: '55%',
+    maxHeight: '60%',
   },
   bottomSheetContent: {
     paddingHorizontal: 20,
@@ -781,6 +900,84 @@ const styles = StyleSheet.create({
   },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusLabel: { fontSize: 14, fontWeight: '700' },
+  // Payment styles
+  paymentCard: {
+    backgroundColor: Colors.background,
+    borderRadius: 14,
+    padding: 16,
+    gap: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.darkNavy,
+  },
+  paymentCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  paymentCardTitle: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  paymentCardAmount: { fontSize: 28, fontWeight: '800', color: Colors.textPrimary },
+  paymentMethodLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  paymentMethodRow: { flexDirection: 'row', gap: 8 },
+  methodChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    height: 40,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.cardWhite,
+  },
+  methodChipActive: { backgroundColor: Colors.darkNavy, borderColor: Colors.darkNavy },
+  methodChipText: { fontSize: 13, fontWeight: '600', color: Colors.textPrimary },
+  methodChipTextActive: { color: Colors.cardWhite },
+  pixKeyBox: {
+    backgroundColor: '#EFF3F8',
+    borderRadius: 10,
+    padding: 12,
+    gap: 4,
+  },
+  pixKeyLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  pixKeyValue: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  pixKeyMissing: { fontSize: 13, color: Colors.textSecondary, fontStyle: 'italic' },
+  sendPaymentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: Colors.successGreen,
+    elevation: 3,
+  },
+  sendPaymentBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  paymentSentCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.warningAmber,
+  },
+  paymentSentText: { fontSize: 13, color: Colors.textPrimary, flex: 1, lineHeight: 18 },
+  paymentConfirmedCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#ECFDF5',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.successGreen,
+  },
+  paymentConfirmedText: { fontSize: 14, fontWeight: '600', color: Colors.successGreen, flex: 1 },
+  // Photos
   photosSection: { gap: 8 },
   photosSectionLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
   photosRow: { gap: 8, paddingRight: 4 },

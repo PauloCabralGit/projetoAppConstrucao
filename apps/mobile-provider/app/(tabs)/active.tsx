@@ -8,6 +8,7 @@ import {
   Alert,
   Platform,
   Linking,
+  ScrollView,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -26,6 +27,8 @@ interface ActiveJob {
   client_user_id: string;
   latitude: number | null;
   longitude: number | null;
+  payment_status: string | null;
+  quote_amount: number | null;
 }
 
 interface ClientProfile {
@@ -89,6 +92,7 @@ export default function ActiveScreen() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [completing, setCompleting] = useState(false);
+  const [confirmingPayment, setConfirmingPayment] = useState(false);
 
   useEffect(() => {
     loadActiveJob();
@@ -96,6 +100,22 @@ export default function ActiveScreen() {
       locationSubRef.current?.remove();
     };
   }, []);
+
+  // Realtime subscription for the active job
+  useEffect(() => {
+    if (!activeJob?.id) return;
+    const channel = supabase
+      .channel(`active_job_${activeJob.id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'service_requests', filter: `id=eq.${activeJob.id}` },
+        (payload) => {
+          setActiveJob((prev) => (prev ? { ...prev, ...(payload.new as Partial<ActiveJob>) } : null));
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [activeJob?.id]);
 
   // Animate map whenever providerCoord or activeJob updates
   useEffect(() => {
@@ -127,18 +147,36 @@ export default function ActiveScreen() {
 
     startLocationTracking(user.id);
 
-    const { data } = await supabase
+    const SELECT = 'id, category, description, status, client_user_id, latitude, longitude, payment_status, quote_amount';
+
+    // First look for an active/in-progress job
+    const { data: activeData } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, client_user_id, latitude, longitude')
+      .select(SELECT)
       .eq('provider_user_id', user.id)
       .in('status', ['accepted', 'in_progress'])
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (data) {
-      setActiveJob(data as ActiveJob);
-      loadClientProfile(data.client_user_id);
+    if (activeData) {
+      setActiveJob(activeData as ActiveJob);
+      loadClientProfile(activeData.client_user_id);
+    } else {
+      // Check for most recent completed job with unconfirmed payment
+      const { data: completedData } = await supabase
+        .from('service_requests')
+        .select(SELECT)
+        .eq('provider_user_id', user.id)
+        .eq('status', 'completed')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (completedData && completedData.payment_status !== 'confirmed') {
+        setActiveJob(completedData as ActiveJob);
+        loadClientProfile(completedData.client_user_id);
+      }
     }
     setLoading(false);
   }
@@ -200,7 +238,6 @@ export default function ActiveScreen() {
     } catch {}
   }
 
-  // Uses activeJob from closure — safe because handler is recreated on each render
   async function handleStartJob() {
     if (!activeJob || !userIdRef.current) return;
 
@@ -264,11 +301,8 @@ export default function ActiveScreen() {
               });
               setCompleting(false);
               if (res.ok) {
-                locationSubRef.current?.remove();
-                locationSubRef.current = null;
-                setActiveJob(null);
-                setClientProfile(null);
-                Alert.alert('Serviço concluído!', 'Parabéns! O serviço foi marcado como concluído.');
+                setActiveJob((prev) => (prev ? { ...prev, status: 'completed', payment_status: 'pending' } : null));
+                Alert.alert('Serviço concluído!', 'Parabéns! Aguarde o pagamento do cliente.');
               } else {
                 Alert.alert('Erro', 'Não foi possível concluir o serviço.');
               }
@@ -280,6 +314,30 @@ export default function ActiveScreen() {
         },
       ]
     );
+  }
+
+  async function handleConfirmPayment() {
+    if (!activeJob || !userIdRef.current) return;
+    setConfirmingPayment(true);
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/payment-confirm`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_user_id: userIdRef.current }),
+      });
+      if (res.ok) {
+        locationSubRef.current?.remove();
+        locationSubRef.current = null;
+        setActiveJob(null);
+        setClientProfile(null);
+        Alert.alert('Pagamento confirmado!', 'O pagamento foi recebido. Obrigado!');
+      } else {
+        Alert.alert('Erro', 'Não foi possível confirmar o pagamento.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setConfirmingPayment(false);
   }
 
   function handleOpenMaps() {
@@ -328,6 +386,8 @@ export default function ActiveScreen() {
 
   const isAccepted = activeJob.status === 'accepted';
   const isInProgress = activeJob.status === 'in_progress';
+  const isCompleted = activeJob.status === 'completed';
+  const paymentClientPaid = activeJob.payment_status === 'client_paid';
 
   return (
     <View style={styles.container}>
@@ -366,7 +426,12 @@ export default function ActiveScreen() {
         )}
       </MapView>
 
-      <View style={styles.bottomSheet}>
+      <ScrollView
+        style={styles.bottomSheet}
+        contentContainerStyle={styles.bottomSheetContent}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
         <View style={styles.handle} />
 
         <View style={styles.clientRow}>
@@ -381,38 +446,46 @@ export default function ActiveScreen() {
               {CATEGORY_LABELS[activeJob.category] ?? activeJob.category}
             </Text>
           </View>
-          <View style={[styles.statusChip, isInProgress && styles.statusChipInProgress]}>
-            <Text style={[styles.statusChipText, isInProgress && styles.statusChipTextInProgress]}>
-              {isAccepted ? 'A caminho' : 'Em serviço'}
+          <View style={[styles.statusChip,
+            isInProgress && styles.statusChipInProgress,
+            isCompleted && styles.statusChipCompleted,
+          ]}>
+            <Text style={[styles.statusChipText,
+              isInProgress && styles.statusChipTextInProgress,
+              isCompleted && styles.statusChipTextCompleted,
+            ]}>
+              {isAccepted ? 'A caminho' : isInProgress ? 'Em serviço' : 'Concluído'}
             </Text>
           </View>
         </View>
 
-        <View style={styles.statsRow}>
-          <View style={styles.stat}>
-            <Ionicons name="navigate-outline" size={20} color={Colors.darkNavy} />
-            <Text style={styles.statLabel}>Distância</Text>
-            <Text style={styles.statValue}>
-              {distKm !== null ? formatDistance(distKm) : '—'}
-            </Text>
+        {!isCompleted && (
+          <View style={styles.statsRow}>
+            <View style={styles.stat}>
+              <Ionicons name="navigate-outline" size={20} color={Colors.darkNavy} />
+              <Text style={styles.statLabel}>Distância</Text>
+              <Text style={styles.statValue}>
+                {distKm !== null ? formatDistance(distKm) : '—'}
+              </Text>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.stat}>
+              <Ionicons name="time-outline" size={20} color={Colors.darkNavy} />
+              <Text style={styles.statLabel}>ETA</Text>
+              <Text style={styles.statValue}>
+                {distKm !== null ? formatETA(distKm) : '—'}
+              </Text>
+            </View>
+            <View style={styles.divider} />
+            <View style={styles.stat}>
+              <Ionicons name="construct-outline" size={20} color={Colors.darkNavy} />
+              <Text style={styles.statLabel}>Serviço</Text>
+              <Text style={styles.statValue} numberOfLines={1}>
+                {CATEGORY_LABELS[activeJob.category] ?? activeJob.category}
+              </Text>
+            </View>
           </View>
-          <View style={styles.divider} />
-          <View style={styles.stat}>
-            <Ionicons name="time-outline" size={20} color={Colors.darkNavy} />
-            <Text style={styles.statLabel}>ETA</Text>
-            <Text style={styles.statValue}>
-              {distKm !== null ? formatETA(distKm) : '—'}
-            </Text>
-          </View>
-          <View style={styles.divider} />
-          <View style={styles.stat}>
-            <Ionicons name="construct-outline" size={20} color={Colors.darkNavy} />
-            <Text style={styles.statLabel}>Serviço</Text>
-            <Text style={styles.statValue} numberOfLines={1}>
-              {CATEGORY_LABELS[activeJob.category] ?? activeJob.category}
-            </Text>
-          </View>
-        </View>
+        )}
 
         {isAccepted && (
           <View style={styles.actionHint}>
@@ -462,13 +535,60 @@ export default function ActiveScreen() {
           </TouchableOpacity>
         )}
 
-        {clientCoord && (
+        {/* Payment section for completed jobs */}
+        {isCompleted && !paymentClientPaid && (
+          <View style={styles.paymentWaitingCard}>
+            <Ionicons name="time-outline" size={20} color={Colors.textSecondary} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.paymentWaitingTitle}>Aguardando pagamento</Text>
+              {activeJob.quote_amount != null && (
+                <Text style={styles.paymentWaitingAmount}>
+                  R$ {Number(activeJob.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </Text>
+              )}
+              <Text style={styles.paymentWaitingHint}>Aguarde o cliente enviar o pagamento.</Text>
+            </View>
+          </View>
+        )}
+
+        {isCompleted && paymentClientPaid && (
+          <View style={styles.paymentReceivedCard}>
+            <Ionicons name="cash-outline" size={20} color={Colors.successGreen} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.paymentReceivedTitle}>Pagamento enviado pelo cliente!</Text>
+              {activeJob.quote_amount != null && (
+                <Text style={styles.paymentReceivedAmount}>
+                  R$ {Number(activeJob.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </Text>
+              )}
+            </View>
+          </View>
+        )}
+
+        {isCompleted && paymentClientPaid && (
+          <TouchableOpacity
+            style={[styles.confirmPaymentBtn, confirmingPayment && styles.disabled]}
+            onPress={handleConfirmPayment}
+            disabled={confirmingPayment}
+          >
+            {confirmingPayment ? (
+              <ActivityIndicator color={Colors.cardWhite} />
+            ) : (
+              <>
+                <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
+                <Text style={styles.confirmPaymentBtnText}>Confirmar recebimento</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {!isCompleted && clientCoord && (
           <TouchableOpacity style={styles.mapsBtn} onPress={handleOpenMaps}>
             <Ionicons name="map-outline" size={18} color={Colors.darkNavy} />
             <Text style={styles.mapsBtnText}>Abrir rota no Maps</Text>
           </TouchableOpacity>
         )}
-      </View>
+      </ScrollView>
     </View>
   );
 }
@@ -522,15 +642,18 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.cardWhite,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
-    gap: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.1,
     shadowRadius: 12,
     elevation: 16,
+    maxHeight: '55%',
+  },
+  bottomSheetContent: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    gap: 12,
   },
   handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center' },
   clientRow: { flexDirection: 'row', alignItems: 'center' },
@@ -549,8 +672,10 @@ const styles = StyleSheet.create({
   clientSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   statusChip: { backgroundColor: '#EFF6FF', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
   statusChipInProgress: { backgroundColor: '#FFF4EE' },
+  statusChipCompleted: { backgroundColor: '#ECFDF5' },
   statusChipText: { fontSize: 12, fontWeight: '600', color: '#3B82F6' },
   statusChipTextInProgress: { color: Colors.primary },
+  statusChipTextCompleted: { color: Colors.successGreen },
   statsRow: { flexDirection: 'row', backgroundColor: Colors.background, borderRadius: 12, padding: 12 },
   stat: { flex: 1, alignItems: 'center', gap: 4 },
   divider: { width: 1, backgroundColor: Colors.border, marginVertical: 4 },
@@ -600,4 +725,41 @@ const styles = StyleSheet.create({
     borderColor: Colors.darkNavy,
   },
   mapsBtnText: { fontSize: 14, fontWeight: '700', color: Colors.darkNavy },
+  // Payment styles
+  paymentWaitingCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  paymentWaitingTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary, marginBottom: 2 },
+  paymentWaitingAmount: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary, marginBottom: 4 },
+  paymentWaitingHint: { fontSize: 12, color: Colors.textSecondary },
+  paymentReceivedCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: '#ECFDF5',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.successGreen,
+  },
+  paymentReceivedTitle: { fontSize: 14, fontWeight: '700', color: Colors.successGreen, marginBottom: 2 },
+  paymentReceivedAmount: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary },
+  confirmPaymentBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Colors.successGreen,
+    borderRadius: 12,
+    height: 52,
+    elevation: 4,
+  },
+  confirmPaymentBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
 });

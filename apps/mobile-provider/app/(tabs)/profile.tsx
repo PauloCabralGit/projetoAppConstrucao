@@ -20,6 +20,7 @@ interface ProviderProfile {
   accepts_emergency_jobs: boolean;
   status: 'available' | 'busy' | 'offline';
   specialties: string;
+  pix_key: string;
 }
 
 function getInitials(name: string): string {
@@ -42,6 +43,7 @@ export default function ProviderProfileScreen() {
   const [editSpecialties, setEditSpecialties] = useState('');
   const [editCompany, setEditCompany] = useState('');
   const [editUrgent, setEditUrgent] = useState(false);
+  const [editPixKey, setEditPixKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
@@ -54,7 +56,7 @@ export default function ProviderProfileScreen() {
     setUserId(user.id);
 
     const [userRes, providerRes] = await Promise.all([
-      supabase.from('app_users').select('full_name, email, city, phone').eq('id', user.id).single(),
+      supabase.from('app_users').select('full_name, email, city, phone, pix_key').eq('id', user.id).single(),
       supabase
         .from('provider_profiles')
         .select('company_name, accepts_emergency_jobs, status, provider_skills(skills(label))')
@@ -62,7 +64,7 @@ export default function ProviderProfileScreen() {
         .single(),
     ]);
 
-    const userData = userRes.data;
+    const userData = userRes.data as any;
     const providerData = providerRes.data as any;
     const specialties = (providerData?.provider_skills ?? [])
       .map((ps: any) => ps?.skills?.label)
@@ -78,6 +80,7 @@ export default function ProviderProfileScreen() {
       accepts_emergency_jobs: providerData?.accepts_emergency_jobs ?? false,
       status: providerData?.status ?? 'available',
       specialties,
+      pix_key: userData?.pix_key ?? '',
     });
     setLoading(false);
   }
@@ -89,6 +92,7 @@ export default function ProviderProfileScreen() {
     setEditSpecialties(profile?.specialties ?? '');
     setEditCompany(profile?.company_name ?? '');
     setEditUrgent(profile?.accepts_emergency_jobs ?? false);
+    setEditPixKey(profile?.pix_key ?? '');
     setSaveError('');
     setEditVisible(true);
   }
@@ -114,6 +118,7 @@ export default function ProviderProfileScreen() {
           specialties: editSpecialties.trim(),
           companyName: editCompany.trim(),
           acceptsEmergencyJobs: editUrgent,
+          pixKey: editPixKey.trim(),
         }),
       });
       const json = await res.json();
@@ -127,6 +132,7 @@ export default function ProviderProfileScreen() {
         specialties: editSpecialties.trim(),
         company_name: editCompany.trim(),
         accepts_emergency_jobs: editUrgent,
+        pix_key: editPixKey.trim(),
       } : prev);
       setEditVisible(false);
     } catch {
@@ -243,6 +249,7 @@ export default function ProviderProfileScreen() {
           <InfoRow icon="location-outline" label="Cidade" value={profile?.city || '—'} />
           <InfoRow icon="business-outline" label="Empresa" value={profile?.company_name || '—'} />
           <InfoRow icon="construct-outline" label="Especialidades" value={profile?.specialties || '—'} />
+          <InfoRow icon="qr-code-outline" label="Chave Pix" value={profile?.pix_key || '—'} />
           <InfoRow
             icon="flash-outline"
             label="Aceita urgentes"
@@ -289,6 +296,15 @@ export default function ProviderProfileScreen() {
                 placeholder="Ex: Alvenaria, Elétrica, Pintura"
               />
               <EditField label="Nome da empresa (opcional)" icon="business-outline" value={editCompany} onChangeText={setEditCompany} placeholder="Nome da empresa" />
+
+              <Text style={styles.sectionLabel}>Pagamento</Text>
+              <EditField
+                label="Chave Pix (CPF, e-mail, telefone ou aleatória)"
+                icon="qr-code-outline"
+                value={editPixKey}
+                onChangeText={setEditPixKey}
+                placeholder="Sua chave Pix"
+              />
 
               <View style={styles.switchRow}>
                 <View style={styles.switchLeft}>

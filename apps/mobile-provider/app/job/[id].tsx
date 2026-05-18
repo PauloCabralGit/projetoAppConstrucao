@@ -232,7 +232,9 @@ export default function JobDetailScreen() {
           quote_notes: quoteNotes.trim(),
         }),
       });
-      if (!res.ok) {
+      if (res.ok) {
+        setJob(prev => prev ? { ...prev, quote_status: 'quoted', quote_amount: amount, quote_notes: quoteNotes.trim() } : null);
+      } else {
         Alert.alert('Erro', 'Não foi possível enviar o orçamento. O chamado pode já ter sido respondido.');
       }
     } catch {
@@ -329,7 +331,7 @@ export default function JobDetailScreen() {
             <View style={{ flex: 1 }}>
               <Text style={styles.counterCardLabel}>Contra-proposta do cliente</Text>
               <Text style={styles.counterCardValue}>
-                R$ {job.counter_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                R$ {job.counter_amount != null ? Number(job.counter_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'}
               </Text>
             </View>
           </View>
@@ -360,7 +362,7 @@ export default function JobDetailScreen() {
           <Ionicons name="hourglass-outline" size={28} color={Colors.warningAmber} />
           <Text style={styles.waitingTitle}>Orçamento enviado!</Text>
           <Text style={styles.waitingSubtitle}>
-            R$ {job.quote_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · Aguardando resposta do cliente...
+            R$ {job.quote_amount != null ? Number(job.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 }) : '—'} · Aguardando resposta do cliente...
           </Text>
         </View>
       );
