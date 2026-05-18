@@ -51,35 +51,11 @@ export default function RegisterScreen() {
     setError('');
     setLoading(true);
 
-    const { data, error: authError } = await supabase.auth.signUp({
-      email: email.trim(),
-      password,
-      options: {
-        data: {
-          full_name: name.trim(),
-          role,
-        },
-      },
-    });
-
-    if (authError || !data.user) {
-      setLoading(false);
-      const msg = authError?.message ?? '';
-      if (msg.includes('rate') || msg.includes('wait') || msg.includes('seconds')) {
-        setError('Muitas tentativas. Aguarde alguns minutos e tente novamente.');
-      } else if (msg.includes('already registered') || msg.includes('already been registered')) {
-        setError('Este e-mail já possui conta. Use a opção "Entrar".');
-      } else {
-        setError(msg || 'Erro ao criar conta.');
-      }
-      return;
-    }
-
     try {
       const body: Record<string, unknown> = {
-        userId: data.user.id,
         fullName: name.trim(),
         email: email.trim(),
+        password,
         phone: phone.trim(),
         city: city.trim(),
         document: document.trim(),
@@ -98,8 +74,8 @@ export default function RegisterScreen() {
         body: JSON.stringify(body),
       });
 
+      const json = await response.json();
       if (!response.ok) {
-        const json = await response.json();
         setError(json?.message ?? 'Erro ao registrar perfil.');
         setLoading(false);
         return;
@@ -110,7 +86,17 @@ export default function RegisterScreen() {
       return;
     }
 
+    const { error: signInError } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+
     setLoading(false);
+    if (signInError) {
+      setError('Conta criada! Mas houve um erro ao entrar: ' + signInError.message);
+      return;
+    }
+
     router.replace('/(tabs)/home');
   }
 

@@ -41,10 +41,10 @@ export interface ServiceRequest {
 }
 
 export interface RegistrationPayload {
-  userId: string;
   role: UserRole;
   fullName: string;
   email: string;
+  password: string;
   phone: string;
   city: string;
   document?: string;
