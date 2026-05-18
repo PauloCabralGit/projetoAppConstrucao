@@ -79,6 +79,7 @@ app.get("/v1/providers", async (c) => {
 });
 
 app.get("/v1/providers/available", async (c) => {
+  const now = new Date().toISOString();
   const { data, error } = await db(c.env)
     .from("provider_profiles")
     .select(`
@@ -89,7 +90,8 @@ app.get("/v1/providers/available", async (c) => {
       app_users!inner(full_name, city),
       provider_skills(skills(label))
     `)
-    .eq("status", "available");
+    .eq("status", "available")
+    .or(`blocked_until.is.null,blocked_until.lt.${now}`);
 
   if (error) return c.json({ error: error.message }, 500);
 
@@ -724,6 +726,66 @@ app.patch("/v1/service-requests/:id/payment-confirm", async (c) => {
   }
 
   return c.json({ message: "Pagamento confirmado." });
+});
+
+// ── Client rates provider ──────────────────────────────────────────────────
+app.post("/v1/service-requests/:id/rate", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{ rating: number; client_user_id: string }>();
+
+  if (!body.rating || body.rating < 1 || body.rating > 5) {
+    return c.json({ message: "Avaliação inválida (1 a 5 estrelas)." }, 400);
+  }
+  const rating = Math.round(body.rating);
+
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("provider_user_id, client_rating, status, client_user_id")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!req) return c.json({ message: "Pedido não encontrado." }, 404);
+  if (req.status !== "completed") return c.json({ message: "Serviço não concluído." }, 400);
+  if (req.client_rating != null) return c.json({ message: "Pedido já avaliado." }, 400);
+  if (req.client_user_id !== body.client_user_id) return c.json({ message: "Não autorizado." }, 403);
+
+  await db(c.env)
+    .from("service_requests")
+    .update({ client_rating: rating })
+    .eq("id", id);
+
+  // Recalculate provider average from all rated completed jobs
+  const { data: allRatings } = await db(c.env)
+    .from("service_requests")
+    .select("client_rating")
+    .eq("provider_user_id", req.provider_user_id)
+    .not("client_rating", "is", null);
+
+  const values = (allRatings ?? []).map((r: any) => Number(r.client_rating));
+  const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
+  const roundedAvg = Math.round(avg * 10) / 10;
+
+  const providerUpdate: Record<string, unknown> = { average_rating: roundedAvg };
+
+  if (roundedAvg < 4.6) {
+    const blockedUntil = new Date();
+    blockedUntil.setMonth(blockedUntil.getMonth() + 1);
+    providerUpdate.blocked_until = blockedUntil.toISOString();
+    providerUpdate.status = "offline";
+    await sendPush(
+      c.env,
+      req.provider_user_id!,
+      "⚠️ Conta suspensa",
+      `Sua avaliação média é ${roundedAvg}⭐. Você foi suspenso por 30 dias da plataforma.`
+    );
+  }
+
+  await db(c.env)
+    .from("provider_profiles")
+    .update(providerUpdate)
+    .eq("user_id", req.provider_user_id);
+
+  return c.json({ ok: true, average_rating: roundedAvg, blocked: roundedAvg < 4.6 });
 });
 
 // ── Provider starts job → status: in_progress ─────────────────────────────

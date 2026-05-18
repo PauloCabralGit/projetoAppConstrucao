@@ -7,6 +7,9 @@ import {
   StyleSheet,
   ActivityIndicator,
   RefreshControl,
+  Image,
+  Modal,
+  ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -30,8 +33,10 @@ interface ServiceRequest {
   city: string;
   budget_min: number | null;
   budget_max: number | null;
+  quote_amount: number | null;
   created_at: string;
   payment_status: string | null;
+  client_rating: number | null;
 }
 
 const STATUS_CONFIG: Record<
@@ -71,6 +76,8 @@ function formatBudget(min: number | null, max: number | null): string {
 
 export default function RequestsScreen() {
   const [requests, setRequests] = useState<ServiceRequest[]>([]);
+  const [photosByRequest, setPhotosByRequest] = useState<Record<string, string[]>>({});
+  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -80,12 +87,28 @@ export default function RequestsScreen() {
 
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, city, budget_min, budget_max, created_at, payment_status')
+      .select('id, category, description, status, city, budget_min, budget_max, quote_amount, created_at, payment_status, client_rating')
       .eq('client_user_id', user.id)
       .order('created_at', { ascending: false });
 
     if (!error && data) {
       setRequests(data as ServiceRequest[]);
+
+      const ids = data.map((r: any) => r.id);
+      if (ids.length > 0) {
+        const { data: photos } = await supabase
+          .from('request_photos')
+          .select('request_id, url')
+          .in('request_id', ids);
+        if (photos) {
+          const map: Record<string, string[]> = {};
+          for (const p of photos as { request_id: string; url: string }[]) {
+            if (!map[p.request_id]) map[p.request_id] = [];
+            map[p.request_id].push(p.url);
+          }
+          setPhotosByRequest(map);
+        }
+      }
     }
   }, []);
 
@@ -112,6 +135,7 @@ export default function RequestsScreen() {
     const statusConf = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.draft;
     const paymentDone = item.payment_status === 'confirmed';
     const canTrack = item.status !== 'cancelled' && item.status !== 'draft' && !(item.status === 'completed' && paymentDone);
+    const itemPhotos = photosByRequest[item.id] ?? [];
 
     return (
       <TouchableOpacity
@@ -153,9 +177,42 @@ export default function RequestsScreen() {
         <View style={styles.budgetRow}>
           <Ionicons name="cash-outline" size={14} color={Colors.successGreen} />
           <Text style={styles.budgetText}>
-            {formatBudget(item.budget_min, item.budget_max)}
+            {item.quote_amount != null && Number(item.quote_amount) > 0
+              ? `R$ ${Number(item.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })} (acordado)`
+              : formatBudget(item.budget_min, item.budget_max)}
           </Text>
         </View>
+
+        {item.payment_status === 'confirmed' && (
+          <View style={styles.historyChip}>
+            <Ionicons name="checkmark-circle" size={13} color={Colors.successGreen} />
+            <Text style={[styles.historyChipText, { color: Colors.successGreen }]}>Pagamento confirmado</Text>
+          </View>
+        )}
+        {item.payment_status === 'client_paid' && (
+          <View style={[styles.historyChip, { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }]}>
+            <Ionicons name="hourglass-outline" size={13} color={Colors.warningAmber} />
+            <Text style={[styles.historyChipText, { color: Colors.warningAmber }]}>Aguardando confirmação do pagamento</Text>
+          </View>
+        )}
+        {item.client_rating != null && (
+          <View style={[styles.historyChip, { backgroundColor: '#FFFBEB', borderColor: '#FDE68A' }]}>
+            {[1,2,3,4,5].map(s => (
+              <Ionicons key={s} name={s <= item.client_rating! ? 'star' : 'star-outline'} size={13} color={Colors.warningAmber} />
+            ))}
+            <Text style={[styles.historyChipText, { color: Colors.textSecondary }]}>Sua avaliação</Text>
+          </View>
+        )}
+
+        {itemPhotos.length > 0 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow} style={styles.photosScroll}>
+            {itemPhotos.map((url, i) => (
+              <TouchableOpacity key={i} onPress={() => setPhotoViewer(url)} activeOpacity={0.85}>
+                <Image source={{ uri: url }} style={styles.photoThumb} />
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        )}
 
         {canTrack && (
           <View style={styles.trackingRow}>
@@ -214,6 +271,16 @@ export default function RequestsScreen() {
           ItemSeparatorComponent={() => <View style={styles.separator} />}
         />
       )}
+      <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
+        <View style={styles.viewerOverlay}>
+          <TouchableOpacity style={styles.viewerClose} onPress={() => setPhotoViewer(null)}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+          {photoViewer && (
+            <Image source={{ uri: photoViewer }} style={styles.viewerImage} resizeMode="contain" />
+          )}
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -328,6 +395,23 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.successGreen,
   },
+  historyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: Colors.successGreen,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    marginTop: 6,
+    alignSelf: 'flex-start',
+  },
+  historyChipText: {
+    fontSize: 12,
+    fontWeight: '500',
+  },
   trackingRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -371,4 +455,10 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 20,
   },
+  photosScroll: { marginTop: 10 },
+  photosRow: { gap: 8 },
+  photoThumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: Colors.border },
+  viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
+  viewerClose: { position: 'absolute', top: 52, right: 20, zIndex: 10, padding: 8 },
+  viewerImage: { width: '100%', height: '80%' },
 });

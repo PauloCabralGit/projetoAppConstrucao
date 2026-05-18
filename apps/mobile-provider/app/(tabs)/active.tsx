@@ -9,6 +9,8 @@ import {
   Platform,
   Linking,
   ScrollView,
+  Image,
+  Modal,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -89,6 +91,8 @@ export default function ActiveScreen() {
   const [activeJob, setActiveJob] = useState<ActiveJob | null>(null);
   const [clientProfile, setClientProfile] = useState<ClientProfile | null>(null);
   const [providerCoord, setProviderCoord] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [jobPhotos, setJobPhotos] = useState<string[]>([]);
+  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [completing, setCompleting] = useState(false);
@@ -100,6 +104,18 @@ export default function ActiveScreen() {
       locationSubRef.current?.remove();
     };
   }, []);
+
+  // Load photos when job is completed
+  useEffect(() => {
+    if (!activeJob?.id || activeJob.status !== 'completed') return;
+    supabase
+      .from('request_photos')
+      .select('url')
+      .eq('request_id', activeJob.id)
+      .then(({ data }) => {
+        if (data) setJobPhotos(data.map((p: any) => p.url));
+      });
+  }, [activeJob?.id, activeJob?.status]);
 
   // Realtime subscription for the active job
   useEffect(() => {
@@ -535,6 +551,23 @@ export default function ActiveScreen() {
           </TouchableOpacity>
         )}
 
+        {/* Photos section for completed jobs */}
+        {isCompleted && jobPhotos.length > 0 && (
+          <View style={styles.photosSection}>
+            <Text style={styles.photosSectionLabel}>
+              <Ionicons name="images-outline" size={13} color={Colors.textSecondary} />
+              {'  '}Fotos do serviço
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+              {jobPhotos.map((url, i) => (
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(url)} activeOpacity={0.85}>
+                  <Image source={{ uri: url }} style={styles.photoThumb} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
         {/* Payment section for completed jobs */}
         {isCompleted && !paymentClientPaid && (
           <View style={styles.paymentWaitingCard}>
@@ -589,6 +622,17 @@ export default function ActiveScreen() {
           </TouchableOpacity>
         )}
       </ScrollView>
+
+      <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
+        <View style={styles.viewerOverlay}>
+          <TouchableOpacity style={styles.viewerClose} onPress={() => setPhotoViewer(null)}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+          {photoViewer && (
+            <Image source={{ uri: photoViewer }} style={styles.viewerImage} resizeMode="contain" />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -762,4 +806,11 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   confirmPaymentBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  photosSection: { gap: 6 },
+  photosSectionLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  photosRow: { gap: 8, paddingRight: 4 },
+  photoThumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: Colors.border },
+  viewerOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
+  viewerClose: { position: 'absolute', top: 52, right: 20, zIndex: 10, padding: 8 },
+  viewerImage: { width: '100%', height: '80%' },
 });

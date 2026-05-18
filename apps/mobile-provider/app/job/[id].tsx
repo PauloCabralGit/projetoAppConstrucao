@@ -10,6 +10,7 @@ import {
   Platform,
   Image,
   TextInput,
+  Modal,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -106,6 +107,7 @@ export default function JobDetailScreen() {
   const [providerCoord, setProviderCoord] = useState<{ latitude: number; longitude: number } | null>(null);
   const [distance, setDistance] = useState<string | null>(null);
   const [clientPhotos, setClientPhotos] = useState<ClientPhoto[]>([]);
+  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
 
   // Quote form state
   const [quoteAmount, setQuoteAmount] = useState('');
@@ -485,7 +487,9 @@ export default function JobDetailScreen() {
               contentContainerStyle={styles.photosRow}
             >
               {clientPhotos.map((photo, i) => (
-                <Image key={i} source={{ uri: photo.url }} style={styles.photoThumb} />
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(photo.url)} activeOpacity={0.85}>
+                  <Image source={{ uri: photo.url }} style={styles.photoThumb} />
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -506,6 +510,17 @@ export default function JobDetailScreen() {
 
         {renderActionSection()}
       </ScrollView>
+
+      <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
+        <View style={styles.photoViewerOverlay}>
+          <TouchableOpacity style={styles.photoViewerClose} onPress={() => setPhotoViewer(null)}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+          {photoViewer && (
+            <Image source={{ uri: photoViewer }} style={styles.photoViewerImage} resizeMode="contain" />
+          )}
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -623,6 +638,23 @@ const styles = StyleSheet.create({
     height: 80,
     borderRadius: 10,
     backgroundColor: Colors.border,
+  },
+  photoViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoViewerClose: {
+    position: 'absolute',
+    top: 52,
+    right: 20,
+    zIndex: 10,
+    padding: 8,
+  },
+  photoViewerImage: {
+    width: '100%',
+    height: '80%',
   },
   detailsGrid: { flexDirection: 'row', gap: 12 },
   detailCard: {

@@ -44,6 +44,7 @@ interface ServiceRequest {
   counter_amount: number | null;
   payment_status: string | null;
   payment_method: string | null;
+  client_rating: number | null;
 }
 
 interface ProviderLocation {
@@ -89,6 +90,9 @@ export default function TrackingScreen() {
   const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(null);
   const [photos, setPhotos] = useState<RequestPhoto[]>([]);
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
+  const [ratingModal, setRatingModal] = useState(false);
+  const [selectedRating, setSelectedRating] = useState(0);
+  const [submittingRating, setSubmittingRating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
 
@@ -153,7 +157,7 @@ export default function TrackingScreen() {
     const { data, error } = await supabase
       .from('service_requests')
       .select(
-        'id, category, description, status, provider_user_id, latitude, longitude, quote_amount, quote_notes, quote_status, counter_amount, payment_status, payment_method'
+        'id, category, description, status, provider_user_id, latitude, longitude, quote_amount, quote_notes, quote_status, counter_amount, payment_status, payment_method, client_rating'
       )
       .eq('id', id)
       .single();
@@ -201,8 +205,9 @@ export default function TrackingScreen() {
         (payload) => {
           const updated = payload.new as ServiceRequest;
           setRequest(updated);
-          if (updated.status === 'completed') {
-            Alert.alert('Serviço concluído!', 'O profissional marcou o serviço como concluído.');
+          if (updated.status === 'completed' && updated.client_rating == null) {
+            setSelectedRating(0);
+            setRatingModal(true);
           }
           if (updated.status === 'in_progress') {
             loadPhotos();
@@ -358,6 +363,33 @@ export default function TrackingScreen() {
         },
       ]
     );
+  }
+
+  async function handleSubmitRating() {
+    if (selectedRating === 0) {
+      Alert.alert('Selecione uma nota', 'Toque em uma estrela para avaliar.');
+      return;
+    }
+    setSubmittingRating(true);
+    const { data: { user } } = await supabase.auth.getUser();
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/rate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rating: selectedRating, client_user_id: user?.id }),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setRequest(prev => prev ? { ...prev, client_rating: selectedRating } : null);
+        setRatingModal(false);
+        Alert.alert('Avaliação enviada!', `Você avaliou com ${selectedRating} estrela${selectedRating !== 1 ? 's' : ''}. Obrigado!`);
+      } else {
+        Alert.alert('Erro', json?.message ?? 'Não foi possível enviar a avaliação.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setSubmittingRating(false);
   }
 
   if (loading) {
@@ -584,6 +616,24 @@ export default function TrackingScreen() {
           </View>
         )}
 
+        {/* Rating section */}
+        {isCompleted && request?.client_rating == null && (
+          <TouchableOpacity style={styles.ratingBannerCard} onPress={() => { setSelectedRating(0); setRatingModal(true); }}>
+            <Ionicons name="star-outline" size={22} color={Colors.warningAmber} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.ratingBannerTitle}>Avalie o profissional</Text>
+              <Text style={styles.ratingBannerDesc}>Toque para dar sua nota de 1 a 5 estrelas</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
+          </TouchableOpacity>
+        )}
+        {isCompleted && request?.client_rating != null && (
+          <View style={styles.ratingDoneCard}>
+            <Ionicons name="star" size={18} color={Colors.warningAmber} />
+            <Text style={styles.ratingDoneText}>Você avaliou com {request.client_rating} estrela{request.client_rating !== 1 ? 's' : ''}</Text>
+          </View>
+        )}
+
         {isCompleted && paymentSent && !paymentConfirmed && (
           <View style={styles.paymentSentCard}>
             <Ionicons name="hourglass-outline" size={18} color={Colors.warningAmber} />
@@ -791,6 +841,51 @@ export default function TrackingScreen() {
                 )}
               </TouchableOpacity>
             </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Rating modal */}
+      <Modal visible={ratingModal} transparent animationType="slide" onRequestClose={() => setRatingModal(false)}>
+        <View style={styles.ratingOverlay}>
+          <View style={styles.ratingSheet}>
+            <View style={styles.ratingSheetHandle} />
+            <Text style={styles.ratingTitle}>Como foi o serviço?</Text>
+            <Text style={styles.ratingSubtitle}>
+              {providerProfile?.full_name ? `Avalie ${providerProfile.full_name}` : 'Dê sua nota para o profissional'}
+            </Text>
+
+            <View style={styles.starsRow}>
+              {[1, 2, 3, 4, 5].map((star) => (
+                <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} hitSlop={8}>
+                  <Ionicons
+                    name={star <= selectedRating ? 'star' : 'star-outline'}
+                    size={44}
+                    color={Colors.warningAmber}
+                  />
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {selectedRating > 0 && (
+              <Text style={styles.ratingHint}>
+                {selectedRating === 5 ? 'Excelente!' : selectedRating === 4 ? 'Muito bom!' : selectedRating === 3 ? 'Regular' : selectedRating === 2 ? 'Ruim' : 'Péssimo'}
+              </Text>
+            )}
+
+            <TouchableOpacity
+              style={[styles.ratingSubmitBtn, (submittingRating || selectedRating === 0) && { opacity: 0.5 }]}
+              onPress={handleSubmitRating}
+              disabled={submittingRating || selectedRating === 0}
+            >
+              {submittingRating
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.ratingSubmitText}>Enviar avaliação</Text>}
+            </TouchableOpacity>
+
+            <TouchableOpacity onPress={() => setRatingModal(false)} style={{ marginTop: 8 }}>
+              <Text style={styles.ratingSkipText}>Avaliar depois</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -1122,6 +1217,55 @@ const styles = StyleSheet.create({
     borderColor: Colors.successGreen,
   },
   paymentConfirmedText: { fontSize: 14, fontWeight: '600', color: Colors.successGreen, flex: 1 },
+  // Rating
+  ratingBannerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  ratingBannerTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  ratingBannerDesc: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  ratingDoneCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  ratingDoneText: { fontSize: 14, fontWeight: '600', color: Colors.textPrimary },
+  ratingOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
+  ratingSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: 40,
+    alignItems: 'center',
+  },
+  ratingSheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, marginBottom: 20 },
+  ratingTitle: { fontSize: 22, fontWeight: '800', color: Colors.textPrimary, marginBottom: 6, textAlign: 'center' },
+  ratingSubtitle: { fontSize: 14, color: Colors.textSecondary, marginBottom: 24, textAlign: 'center' },
+  starsRow: { flexDirection: 'row', gap: 8, marginBottom: 16 },
+  ratingHint: { fontSize: 16, fontWeight: '600', color: Colors.warningAmber, marginBottom: 24 },
+  ratingSubmitBtn: {
+    backgroundColor: Colors.darkNavy,
+    borderRadius: 12,
+    height: 52,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
+  ratingSubmitText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  ratingSkipText: { fontSize: 14, color: Colors.textSecondary, padding: 8 },
   // Photos
   photosSection: { gap: 8 },
   photosSectionLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
