@@ -100,14 +100,14 @@ export default function RequestsScreen() {
   }
 
   function handleRequestPress(req: ServiceRequest) {
-    if (req.status === 'accepted' || req.status === 'in_progress') {
+    if (req.status !== 'completed' && req.status !== 'cancelled' && req.status !== 'draft') {
       router.push(`/tracking/${req.id}`);
     }
   }
 
   function renderItem({ item }: { item: ServiceRequest }) {
     const statusConf = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.draft;
-    const canTrack = item.status === 'accepted' || item.status === 'in_progress';
+    const canTrack = item.status !== 'completed' && item.status !== 'cancelled' && item.status !== 'draft';
 
     return (
       <TouchableOpacity
@@ -156,7 +156,9 @@ export default function RequestsScreen() {
         {canTrack && (
           <View style={styles.trackingRow}>
             <Ionicons name="navigate" size={14} color={Colors.primary} />
-            <Text style={styles.trackingText}>Acompanhar em tempo real</Text>
+            <Text style={styles.trackingText}>
+              {item.status === 'requested' ? 'Ver pedido / negociar orçamento' : 'Acompanhar em tempo real'}
+            </Text>
           </View>
         )}
       </TouchableOpacity>

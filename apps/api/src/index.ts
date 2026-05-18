@@ -454,16 +454,18 @@ app.post("/v1/auth/webauthn/verify-registration", async (c) => {
 app.post("/v1/photos/upload", async (c) => {
   const body = await c.req.json<{
     request_id: string;
-    uploader_user_id: string;
     photo_type: "client_request" | "provider_start" | "provider_end";
-    base64: string;
+    file_data: string;
+    file_name?: string;
+    mime_type?: string;
   }>();
 
-  if (!body.request_id || !body.uploader_user_id || !body.base64 || !body.photo_type) {
+  const fileData = body.file_data;
+  if (!body.request_id || !fileData || !body.photo_type) {
     return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
   }
 
-  const binaryStr = atob(body.base64);
+  const binaryStr = atob(fileData);
   const bytes = new Uint8Array(binaryStr.length);
   for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
 
@@ -491,7 +493,6 @@ app.post("/v1/photos/upload", async (c) => {
 
   const { error } = await db(c.env).from("request_photos").insert({
     request_id: body.request_id,
-    uploader_user_id: body.uploader_user_id,
     photo_type: body.photo_type,
     url: publicUrl,
   });
@@ -530,7 +531,7 @@ app.post("/v1/service-requests/:id/quote", async (c) => {
     .from("provider_profiles")
     .upsert({ user_id: body.provider_user_id, description: "" }, { onConflict: "user_id" });
 
-  const { error } = await adminDb
+  const { error, count } = await adminDb
     .from("service_requests")
     .update({
       provider_user_id: body.provider_user_id,
@@ -539,9 +540,14 @@ app.post("/v1/service-requests/:id/quote", async (c) => {
       quote_status: "quoted",
     })
     .eq("id", c.req.param("id"))
-    .eq("status", "requested");
+    .eq("status", "requested")
+    .is("quote_status", null)
+    .select("id", { count: "exact", head: true });
 
   if (error) return c.json({ message: error.message }, 400);
+  if ((count ?? 0) === 0) {
+    return c.json({ message: "Este chamado já possui um orçamento ou não está disponível." }, 409);
+  }
   return c.json({ message: "Orçamento enviado com sucesso." });
 });
 
