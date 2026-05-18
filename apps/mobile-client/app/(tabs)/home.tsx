@@ -115,6 +115,11 @@ export default function HomeScreen() {
       {
         text: 'Câmera',
         onPress: async () => {
+          const { status } = await ImagePicker.requestCameraPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert('Permissão negada', 'Permita o acesso à câmera nas configurações do dispositivo.');
+            return;
+          }
           const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
           if (!result.canceled && result.assets[0].base64) {
             setPhotos((prev) => [...prev, { uri: result.assets[0].uri, base64: result.assets[0].base64! }]);
@@ -124,6 +129,11 @@ export default function HomeScreen() {
       {
         text: 'Galeria',
         onPress: async () => {
+          const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+          if (status !== 'granted') {
+            Alert.alert('Permissão negada', 'Permita o acesso à galeria nas configurações do dispositivo.');
+            return;
+          }
           const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ImagePicker.MediaTypeOptions.Images,
             quality: 0.7,
@@ -141,7 +151,7 @@ export default function HomeScreen() {
   async function uploadPhotos(requestId: string) {
     for (const photo of photos) {
       try {
-        await fetch(`${API_BASE}/photos/upload`, {
+        const res = await fetch(`${API_BASE}/photos/upload`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -152,7 +162,13 @@ export default function HomeScreen() {
             mime_type: 'image/jpeg',
           }),
         });
-      } catch {}
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          console.warn('[uploadPhotos] erro:', err);
+        }
+      } catch (e) {
+        console.warn('[uploadPhotos] falha de rede:', e);
+      }
     }
   }
 

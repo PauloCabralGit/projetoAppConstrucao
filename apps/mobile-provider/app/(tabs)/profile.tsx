@@ -71,6 +71,8 @@ export default function ProviderProfileScreen() {
       .filter(Boolean)
       .join(', ');
 
+    const resolvedStatus = providerData?.status ?? 'available';
+
     setProfile({
       full_name: userData?.full_name ?? user.user_metadata?.full_name ?? 'Prestador',
       email: userData?.email ?? user.email ?? '',
@@ -78,10 +80,28 @@ export default function ProviderProfileScreen() {
       phone: userData?.phone ?? '',
       company_name: providerData?.company_name ?? '',
       accepts_emergency_jobs: providerData?.accepts_emergency_jobs ?? false,
-      status: providerData?.status ?? 'available',
+      status: 'available',
       specialties,
       pix_key: userData?.pix_key ?? '',
     });
+
+    // Auto set online when app opens
+    if (resolvedStatus !== 'available') {
+      try {
+        await fetch(`${API_BASE}/profile`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: user.id,
+            fullName: userData?.full_name ?? user.user_metadata?.full_name ?? '',
+            phone: userData?.phone ?? '',
+            city: userData?.city ?? '',
+            status: 'available',
+          }),
+        });
+      } catch {}
+    }
+
     setLoading(false);
   }
 
@@ -144,7 +164,7 @@ export default function ProviderProfileScreen() {
   async function handleToggleAvailability(value: boolean) {
     if (!userId) return;
     setTogglingAvailability(true);
-    const newStatus = value ? 'available' : 'busy';
+    const newStatus = value ? 'available' : 'offline';
 
     try {
       const res = await fetch(`${API_BASE}/profile`, {
@@ -224,11 +244,11 @@ export default function ProviderProfileScreen() {
 
         <View style={styles.availabilityCard}>
           <View style={styles.availabilityLeft}>
-            <View style={[styles.availabilityDot, { backgroundColor: isAvailable ? Colors.successGreen : Colors.textSecondary }]} />
+            <View style={[styles.availabilityDot, { backgroundColor: isAvailable ? Colors.successGreen : Colors.dangerRed }]} />
             <View>
-              <Text style={styles.availabilityTitle}>{isAvailable ? 'Disponível' : 'Ocupado'}</Text>
+              <Text style={styles.availabilityTitle}>{isAvailable ? 'Online — Disponível' : 'Offline'}</Text>
               <Text style={styles.availabilityDesc}>
-                {isAvailable ? 'Recebendo chamados' : 'Não recebendo chamados'}
+                {isAvailable ? 'Recebendo chamados normalmente' : 'Toque para voltar a receber chamados'}
               </Text>
             </View>
           </View>
@@ -237,7 +257,7 @@ export default function ProviderProfileScreen() {
             : <Switch
                 value={isAvailable}
                 onValueChange={handleToggleAvailability}
-                trackColor={{ false: Colors.border, true: Colors.successGreen }}
+                trackColor={{ false: Colors.dangerRed, true: Colors.successGreen }}
                 thumbColor={Colors.cardWhite}
               />}
         </View>

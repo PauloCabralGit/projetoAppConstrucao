@@ -17,6 +17,7 @@ interface CompletedJob {
   category: string;
   budget_max: number | null;
   budget_min: number | null;
+  quote_amount: number | null;
   created_at: string;
   city: string;
 }
@@ -43,8 +44,9 @@ function formatDate(dateStr: string): string {
 }
 
 function getJobValue(job: CompletedJob): number {
-  if (job.budget_max !== null) return job.budget_max;
-  if (job.budget_min !== null) return job.budget_min;
+  if (job.quote_amount != null && Number(job.quote_amount) > 0) return Number(job.quote_amount);
+  if (job.budget_max !== null && job.budget_max > 0) return job.budget_max;
+  if (job.budget_min !== null && job.budget_min > 0) return job.budget_min;
   return 0;
 }
 
@@ -68,7 +70,7 @@ export default function EarningsScreen() {
 
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, budget_min, budget_max, created_at, city')
+      .select('id, category, budget_min, budget_max, quote_amount, created_at, city')
       .eq('provider_user_id', user.id)
       .eq('status', 'completed')
       .order('created_at', { ascending: false })

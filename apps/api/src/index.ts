@@ -504,22 +504,12 @@ app.post("/v1/photos/upload", async (c) => {
 
   const filePath = `${body.request_id}/${body.photo_type}/${Date.now()}.jpg`;
 
-  const uploadRes = await fetch(
-    `${c.env.SUPABASE_URL}/storage/v1/object/request-photos/${filePath}`,
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${c.env.SUPABASE_SERVICE_KEY}`,
-        "Content-Type": "image/jpeg",
-        "x-upsert": "true",
-      },
-      body: bytes,
-    }
-  );
+  const { error: storageError } = await db(c.env).storage
+    .from("request-photos")
+    .upload(filePath, bytes, { contentType: "image/jpeg", upsert: true });
 
-  if (!uploadRes.ok) {
-    const err = await uploadRes.text();
-    return c.json({ message: `Erro no upload: ${err}` }, 500);
+  if (storageError) {
+    return c.json({ message: `Erro no upload: ${storageError.message}` }, 500);
   }
 
   const publicUrl = `${c.env.SUPABASE_URL}/storage/v1/object/public/request-photos/${filePath}`;

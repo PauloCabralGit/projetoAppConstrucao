@@ -88,6 +88,7 @@ export default function TrackingScreen() {
   const [providerLocation, setProviderLocation] = useState<ProviderLocation | null>(null);
   const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(null);
   const [photos, setPhotos] = useState<RequestPhoto[]>([]);
+  const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
 
@@ -697,7 +698,9 @@ export default function TrackingScreen() {
             <Text style={styles.photosSectionLabel}>Fotos do pedido</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
               {clientPhotos.map((p, i) => (
-                <Image key={i} source={{ uri: p.url }} style={styles.photoThumb} />
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                  <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -708,7 +711,9 @@ export default function TrackingScreen() {
             <Text style={styles.photosSectionLabel}>Fotos do início do serviço</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
               {providerStartPhotos.map((p, i) => (
-                <Image key={i} source={{ uri: p.url }} style={styles.photoThumb} />
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                  <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -719,7 +724,9 @@ export default function TrackingScreen() {
             <Text style={styles.photosSectionLabel}>Fotos da conclusão</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
               {providerEndPhotos.map((p, i) => (
-                <Image key={i} source={{ uri: p.url }} style={styles.photoThumb} />
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                  <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                </TouchableOpacity>
               ))}
             </ScrollView>
           </View>
@@ -785,6 +792,22 @@ export default function TrackingScreen() {
               </TouchableOpacity>
             </View>
           </View>
+        </View>
+      </Modal>
+
+      {/* Photo viewer */}
+      <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
+        <View style={styles.photoViewerOverlay}>
+          <TouchableOpacity style={styles.photoViewerClose} onPress={() => setPhotoViewer(null)}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+          {photoViewer && (
+            <Image
+              source={{ uri: photoViewer }}
+              style={styles.photoViewerImage}
+              resizeMode="contain"
+            />
+          )}
         </View>
       </Modal>
     </View>
@@ -1108,6 +1131,23 @@ const styles = StyleSheet.create({
     height: 80,
     borderRadius: 10,
     backgroundColor: Colors.border,
+  },
+  photoViewerOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoViewerClose: {
+    position: 'absolute',
+    top: 52,
+    right: 20,
+    zIndex: 10,
+    padding: 8,
+  },
+  photoViewerImage: {
+    width: '100%',
+    height: '80%',
   },
   cancelButton: {
     flexDirection: 'row',
