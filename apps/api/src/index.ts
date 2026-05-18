@@ -450,4 +450,171 @@ app.post("/v1/auth/webauthn/verify-registration", async (c) => {
   return c.json({ verified: true, message: "Credencial WebAuthn registrada." });
 });
 
+// ── Photo upload (base64 → Supabase Storage) ──────────────────────────────
+app.post("/v1/photos/upload", async (c) => {
+  const body = await c.req.json<{
+    request_id: string;
+    uploader_user_id: string;
+    photo_type: "client_request" | "provider_start" | "provider_end";
+    base64: string;
+  }>();
+
+  if (!body.request_id || !body.uploader_user_id || !body.base64 || !body.photo_type) {
+    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  }
+
+  const binaryStr = atob(body.base64);
+  const bytes = new Uint8Array(binaryStr.length);
+  for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+  const filePath = `${body.request_id}/${body.photo_type}/${Date.now()}.jpg`;
+
+  const uploadRes = await fetch(
+    `${c.env.SUPABASE_URL}/storage/v1/object/request-photos/${filePath}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${c.env.SUPABASE_SERVICE_KEY}`,
+        "Content-Type": "image/jpeg",
+        "x-upsert": "true",
+      },
+      body: bytes,
+    }
+  );
+
+  if (!uploadRes.ok) {
+    const err = await uploadRes.text();
+    return c.json({ message: `Erro no upload: ${err}` }, 500);
+  }
+
+  const publicUrl = `${c.env.SUPABASE_URL}/storage/v1/object/public/request-photos/${filePath}`;
+
+  const { error } = await db(c.env).from("request_photos").insert({
+    request_id: body.request_id,
+    uploader_user_id: body.uploader_user_id,
+    photo_type: body.photo_type,
+    url: publicUrl,
+  });
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  return c.json({ url: publicUrl });
+});
+
+// ── Get photos for a request ───────────────────────────────────────────────
+app.get("/v1/service-requests/:id/photos", async (c) => {
+  const { data, error } = await db(c.env)
+    .from("request_photos")
+    .select("id, photo_type, url, created_at")
+    .eq("request_id", c.req.param("id"))
+    .order("created_at");
+
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ photos: data ?? [] });
+});
+
+// ── Provider submits quote ─────────────────────────────────────────────────
+app.post("/v1/service-requests/:id/quote", async (c) => {
+  const body = await c.req.json<{
+    provider_user_id: string;
+    quote_amount: number;
+    quote_notes?: string;
+  }>();
+
+  if (!body.provider_user_id || body.quote_amount == null) {
+    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  }
+
+  const adminDb = db(c.env);
+  await adminDb
+    .from("provider_profiles")
+    .upsert({ user_id: body.provider_user_id, description: "" }, { onConflict: "user_id" });
+
+  const { error } = await adminDb
+    .from("service_requests")
+    .update({
+      provider_user_id: body.provider_user_id,
+      quote_amount: body.quote_amount,
+      quote_notes: body.quote_notes ?? null,
+      quote_status: "quoted",
+    })
+    .eq("id", c.req.param("id"))
+    .eq("status", "requested");
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Orçamento enviado com sucesso." });
+});
+
+// ── Client accepts quote → status: accepted ────────────────────────────────
+app.patch("/v1/service-requests/:id/accept-quote", async (c) => {
+  const body = await c.req.json<{ client_user_id: string }>();
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ status: "accepted", quote_status: "accepted" })
+    .eq("id", c.req.param("id"))
+    .eq("client_user_id", body.client_user_id)
+    .eq("quote_status", "quoted");
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Orçamento aceito." });
+});
+
+// ── Client counter-proposes ────────────────────────────────────────────────
+app.patch("/v1/service-requests/:id/counter", async (c) => {
+  const body = await c.req.json<{ client_user_id: string; counter_amount: number }>();
+
+  if (body.counter_amount == null) return c.json({ message: "Valor obrigatório." }, 400);
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ counter_amount: body.counter_amount, quote_status: "negotiating" })
+    .eq("id", c.req.param("id"))
+    .eq("client_user_id", body.client_user_id);
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Contra-proposta enviada." });
+});
+
+// ── Provider accepts counter → status: accepted ────────────────────────────
+app.patch("/v1/service-requests/:id/accept-counter", async (c) => {
+  const body = await c.req.json<{ provider_user_id: string }>();
+
+  const adminDb = db(c.env);
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("counter_amount")
+    .eq("id", c.req.param("id"))
+    .maybeSingle();
+
+  const { error } = await adminDb
+    .from("service_requests")
+    .update({
+      status: "accepted",
+      quote_status: "accepted",
+      quote_amount: req?.counter_amount ?? null,
+    })
+    .eq("id", c.req.param("id"))
+    .eq("provider_user_id", body.provider_user_id)
+    .eq("quote_status", "negotiating");
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Contra-proposta aceita. Serviço confirmado." });
+});
+
+// ── Provider starts job → status: in_progress ─────────────────────────────
+app.patch("/v1/service-requests/:id/start", async (c) => {
+  const body = await c.req.json<{ provider_user_id: string }>();
+
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ status: "in_progress" })
+    .eq("id", c.req.param("id"))
+    .eq("provider_user_id", body.provider_user_id)
+    .eq("status", "accepted");
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Serviço iniciado." });
+});
+
 export default app;

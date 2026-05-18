@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -69,11 +70,13 @@ export default function ActiveScreen() {
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const userIdRef = useRef<string | null>(null);
   const mapReadyRef = useRef(false);
+  const activeJobRef = useRef<ActiveJob | null>(null);
 
   const [activeJob, setActiveJob] = useState<ActiveJob | null>(null);
   const [clientProfile, setClientProfile] = useState<ClientProfile | null>(null);
   const [providerCoord, setProviderCoord] = useState<{ latitude: number; longitude: number } | null>(null);
   const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
   const [completing, setCompleting] = useState(false);
 
   useEffect(() => {
@@ -83,19 +86,29 @@ export default function ActiveScreen() {
     };
   }, []);
 
+  // Keep ref in sync with state for use inside async callbacks
+  useEffect(() => {
+    activeJobRef.current = activeJob;
+  }, [activeJob]);
+
   // Animate map whenever providerCoord updates
   useEffect(() => {
     if (!providerCoord || !mapReadyRef.current) return;
-    const clientCoord = activeJob?.latitude && activeJob?.longitude
-      ? { latitude: activeJob.latitude, longitude: activeJob.longitude }
-      : null;
+    const job = activeJobRef.current;
+    const clientCoord =
+      job?.latitude && job?.longitude
+        ? { latitude: job.latitude, longitude: job.longitude }
+        : null;
 
     if (clientCoord) {
       const midLat = (providerCoord.latitude + clientCoord.latitude) / 2;
       const midLng = (providerCoord.longitude + clientCoord.longitude) / 2;
       const latDelta = Math.max(0.02, Math.abs(providerCoord.latitude - clientCoord.latitude) * 2.5);
       const lngDelta = Math.max(0.02, Math.abs(providerCoord.longitude - clientCoord.longitude) * 2.5);
-      mapRef.current?.animateToRegion({ latitude: midLat, longitude: midLng, latitudeDelta: latDelta, longitudeDelta: lngDelta }, 600);
+      mapRef.current?.animateToRegion(
+        { latitude: midLat, longitude: midLng, latitudeDelta: latDelta, longitudeDelta: lngDelta },
+        600
+      );
     } else {
       mapRef.current?.animateToRegion({ ...providerCoord, latitudeDelta: 0.02, longitudeDelta: 0.02 }, 600);
     }
@@ -107,7 +120,6 @@ export default function ActiveScreen() {
     if (!user) { setLoading(false); return; }
     userIdRef.current = user.id;
 
-    // Start GPS tracking immediately — don't wait for the job query
     startLocationTracking(user.id);
 
     const { data } = await supabase
@@ -131,29 +143,19 @@ export default function ActiveScreen() {
     if (status !== 'granted') {
       Alert.alert(
         'Permissão de localização',
-        'Precisamos da sua localização para o rastreamento em tempo real. Ative nas configurações do dispositivo.',
+        'Ative a localização nas configurações do dispositivo para rastreamento em tempo real.',
         [{ text: 'OK' }]
       );
       return;
     }
 
-    // Remove any existing subscription
     locationSubRef.current?.remove();
 
-    // watchPositionAsync gives continuous real-time updates (like Uber/99)
     locationSubRef.current = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.High,
-        timeInterval: 3000,    // no máximo a cada 3 segundos
-        distanceInterval: 5,   // ou a cada 5 metros percorridos
-      },
+      { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 5 },
       async (loc) => {
-        const coords = {
-          latitude: loc.coords.latitude,
-          longitude: loc.coords.longitude,
-        };
+        const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
         setProviderCoord(coords);
-
         await supabase.from('provider_locations').upsert(
           {
             user_id: userId,
@@ -177,47 +179,109 @@ export default function ActiveScreen() {
     if (data) setClientProfile(data as ClientProfile);
   }
 
+  async function uploadJobPhoto(type: 'provider_start' | 'provider_end', base64: string) {
+    try {
+      await fetch(`${API_BASE}/photos/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: activeJobRef.current!.id,
+          photo_type: type,
+          file_data: base64,
+          file_name: `${type}_${Date.now()}.jpg`,
+          mime_type: 'image/jpeg',
+        }),
+      });
+    } catch {}
+  }
+
+  async function handleStartJob() {
+    if (!activeJobRef.current || !userIdRef.current) return;
+
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
+    if (result.canceled) return;
+
+    setStarting(true);
+    if (result.assets[0].base64) {
+      await uploadJobPhoto('provider_start', result.assets[0].base64);
+    }
+
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${activeJobRef.current.id}/start`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_user_id: userIdRef.current }),
+      });
+      if (res.ok) {
+        setActiveJob((prev) => (prev ? { ...prev, status: 'in_progress' } : null));
+        Alert.alert('Serviço iniciado!', 'O cliente foi notificado. Bom trabalho!');
+      } else {
+        Alert.alert('Erro', 'Não foi possível iniciar o serviço.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setStarting(false);
+  }
+
   async function handleCompleteJob() {
-    if (!activeJob || !userIdRef.current) return;
-    Alert.alert('Concluir serviço', 'Confirme que o serviço foi concluído.', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Confirmar',
-        onPress: async () => {
-          setCompleting(true);
-          try {
-            const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ provider_user_id: userIdRef.current }),
-            });
-            setCompleting(false);
-            if (res.ok) {
-              locationSubRef.current?.remove();
-              locationSubRef.current = null;
-              setActiveJob(null);
-              setClientProfile(null);
-              Alert.alert('Serviço concluído!', 'Parabéns! O serviço foi marcado como concluído.');
-            } else {
-              Alert.alert('Erro', 'Não foi possível concluir o serviço.');
+    if (!activeJobRef.current || !userIdRef.current) return;
+
+    Alert.alert(
+      'Concluir serviço',
+      'Tire uma foto como evidência da conclusão do serviço.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Tirar foto',
+          onPress: async () => {
+            const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
+            if (result.canceled) return;
+
+            setCompleting(true);
+            if (result.assets[0].base64) {
+              await uploadJobPhoto('provider_end', result.assets[0].base64);
             }
-          } catch {
-            setCompleting(false);
-            Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
-          }
+
+            try {
+              const res = await fetch(
+                `${API_BASE}/service-requests/${activeJobRef.current!.id}/complete`,
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ provider_user_id: userIdRef.current }),
+                }
+              );
+              setCompleting(false);
+              if (res.ok) {
+                locationSubRef.current?.remove();
+                locationSubRef.current = null;
+                setActiveJob(null);
+                setClientProfile(null);
+                Alert.alert('Serviço concluído!', 'Parabéns! O serviço foi marcado como concluído.');
+              } else {
+                Alert.alert('Erro', 'Não foi possível concluir o serviço.');
+              }
+            } catch {
+              setCompleting(false);
+              Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+            }
+          },
         },
-      },
-    ]);
+      ]
+    );
   }
 
   function handleOpenMaps() {
-    if (!activeJob?.latitude || !activeJob?.longitude) return;
-    const lat = activeJob.latitude;
-    const lng = activeJob.longitude;
+    const job = activeJobRef.current;
+    if (!job?.latitude || !job?.longitude) return;
+    const lat = job.latitude;
+    const lng = job.longitude;
     const label = encodeURIComponent(clientProfile?.full_name ?? 'Cliente');
-    const url = Platform.OS === 'ios'
-      ? `maps:0,0?q=${label}@${lat},${lng}`
-      : `geo:${lat},${lng}?q=${lat},${lng}(${label})`;
+    const url =
+      Platform.OS === 'ios'
+        ? `maps:0,0?q=${label}@${lat},${lng}`
+        : `geo:${lat},${lng}?q=${lat},${lng}(${label})`;
     Linking.openURL(url).catch(() => {
       Linking.openURL(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
     });
@@ -252,6 +316,9 @@ export default function ActiveScreen() {
       </View>
     );
   }
+
+  const isAccepted = activeJob.status === 'accepted';
+  const isInProgress = activeJob.status === 'in_progress';
 
   return (
     <View style={styles.container}>
@@ -305,9 +372,9 @@ export default function ActiveScreen() {
               {CATEGORY_LABELS[activeJob.category] ?? activeJob.category}
             </Text>
           </View>
-          <View style={styles.statusChip}>
-            <Text style={styles.statusChipText}>
-              {activeJob.status === 'accepted' ? 'A caminho' : 'Em serviço'}
+          <View style={[styles.statusChip, isInProgress && styles.statusChipInProgress]}>
+            <Text style={[styles.statusChipText, isInProgress && styles.statusChipTextInProgress]}>
+              {isAccepted ? 'A caminho' : 'Em serviço'}
             </Text>
           </View>
         </View>
@@ -338,20 +405,39 @@ export default function ActiveScreen() {
           </View>
         </View>
 
-        <TouchableOpacity
-          style={[styles.completeBtn, completing && styles.disabled]}
-          onPress={handleCompleteJob}
-          disabled={completing}
-        >
-          {completing ? (
-            <ActivityIndicator color={Colors.cardWhite} />
-          ) : (
-            <>
-              <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-              <Text style={styles.completeBtnText}>Marcar como concluído</Text>
-            </>
-          )}
-        </TouchableOpacity>
+        {isAccepted && (
+          <TouchableOpacity
+            style={[styles.startBtn, starting && styles.disabled]}
+            onPress={handleStartJob}
+            disabled={starting}
+          >
+            {starting ? (
+              <ActivityIndicator color={Colors.cardWhite} />
+            ) : (
+              <>
+                <Ionicons name="camera-outline" size={18} color={Colors.cardWhite} />
+                <Text style={styles.startBtnText}>Cheguei! Iniciar serviço</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
+
+        {isInProgress && (
+          <TouchableOpacity
+            style={[styles.completeBtn, completing && styles.disabled]}
+            onPress={handleCompleteJob}
+            disabled={completing}
+          >
+            {completing ? (
+              <ActivityIndicator color={Colors.cardWhite} />
+            ) : (
+              <>
+                <Ionicons name="camera-outline" size={18} color={Colors.cardWhite} />
+                <Text style={styles.completeBtnText}>Concluir serviço</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        )}
 
         {clientCoord && (
           <TouchableOpacity style={styles.mapsBtn} onPress={handleOpenMaps}>
@@ -366,32 +452,119 @@ export default function ActiveScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12, backgroundColor: Colors.background, paddingHorizontal: 32 },
+  center: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: Colors.background,
+    paddingHorizontal: 32,
+  },
   loadingText: { fontSize: 14, color: Colors.textSecondary },
-  emptyIcon: { width: 80, height: 80, borderRadius: 40, backgroundColor: Colors.border, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  emptyIcon: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
   emptyTitle: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary, textAlign: 'center' },
   emptySubtitle: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
   map: { flex: 1 },
-  providerMarker: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: Colors.cardWhite, elevation: 4 },
-  clientMarker: { width: 36, height: 36, borderRadius: 18, backgroundColor: Colors.dangerRed, justifyContent: 'center', alignItems: 'center', borderWidth: 2, borderColor: Colors.cardWhite, elevation: 4 },
-  bottomSheet: { backgroundColor: Colors.cardWhite, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 12, paddingBottom: Platform.OS === 'ios' ? 36 : 20, gap: 12, shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.1, shadowRadius: 12, elevation: 16 },
+  providerMarker: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#3B82F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.cardWhite,
+    elevation: 4,
+  },
+  clientMarker: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.dangerRed,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: Colors.cardWhite,
+    elevation: 4,
+  },
+  bottomSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 16,
+  },
   handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, alignSelf: 'center' },
   clientRow: { flexDirection: 'row', alignItems: 'center' },
-  avatar: { width: 46, height: 46, borderRadius: 23, backgroundColor: Colors.darkNavy, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  avatar: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: Colors.darkNavy,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
   avatarText: { fontSize: 18, fontWeight: '700', color: Colors.cardWhite },
   clientInfo: { flex: 1 },
   clientName: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
   clientSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   statusChip: { backgroundColor: '#EFF6FF', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  statusChipInProgress: { backgroundColor: '#FFF4EE' },
   statusChipText: { fontSize: 12, fontWeight: '600', color: '#3B82F6' },
+  statusChipTextInProgress: { color: Colors.primary },
   statsRow: { flexDirection: 'row', backgroundColor: Colors.background, borderRadius: 12, padding: 12 },
   stat: { flex: 1, alignItems: 'center', gap: 4 },
   divider: { width: 1, backgroundColor: Colors.border, marginVertical: 4 },
   statLabel: { fontSize: 11, color: Colors.textSecondary, fontWeight: '500' },
   statValue: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary },
-  completeBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.successGreen, borderRadius: 12, height: 52 },
+  startBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Colors.primary,
+    borderRadius: 12,
+    height: 52,
+    elevation: 4,
+  },
+  startBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  completeBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Colors.successGreen,
+    borderRadius: 12,
+    height: 52,
+  },
   completeBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
   disabled: { opacity: 0.7 },
-  mapsBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: Colors.background, borderRadius: 12, height: 46, borderWidth: 1.5, borderColor: Colors.darkNavy },
+  mapsBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    height: 46,
+    borderWidth: 1.5,
+    borderColor: Colors.darkNavy,
+  },
   mapsBtnText: { fontSize: 14, fontWeight: '700', color: Colors.darkNavy },
 });

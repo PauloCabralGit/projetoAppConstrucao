@@ -8,12 +8,18 @@ import {
   Alert,
   Animated,
   Platform,
+  Modal,
+  TextInput,
+  Image,
+  ScrollView,
 } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+
+const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
 type RequestStatus =
   | 'draft'
@@ -31,6 +37,10 @@ interface ServiceRequest {
   provider_user_id: string | null;
   latitude: number | null;
   longitude: number | null;
+  quote_amount: number | null;
+  quote_notes: string | null;
+  quote_status: string | null;
+  counter_amount: number | null;
 }
 
 interface ProviderLocation {
@@ -42,6 +52,11 @@ interface ProviderLocation {
 interface ProviderProfile {
   full_name: string;
   specialties: string;
+}
+
+interface RequestPhoto {
+  url: string;
+  photo_type: string;
 }
 
 const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string; bg: string }> = {
@@ -68,25 +83,29 @@ export default function TrackingScreen() {
   const [request, setRequest] = useState<ServiceRequest | null>(null);
   const [providerLocation, setProviderLocation] = useState<ProviderLocation | null>(null);
   const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(null);
+  const [photos, setPhotos] = useState<RequestPhoto[]>([]);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
+
+  // Quote negotiation state
+  const [acceptingQuote, setAcceptingQuote] = useState(false);
+  const [countering, setCountering] = useState(false);
+  const [showCounterModal, setShowCounterModal] = useState(false);
+  const [counterInput, setCounterInput] = useState('');
 
   useEffect(() => {
     if (!id) return;
     loadRequest();
+    loadPhotos();
     const cleanupRequest = subscribeToRequest();
-    return () => {
-      cleanupRequest();
-    };
+    return () => { cleanupRequest(); };
   }, [id]);
 
   useEffect(() => {
     if (!request?.provider_user_id) return;
     loadProviderProfile(request.provider_user_id);
     const cleanupLocation = subscribeToProviderLocation(request.provider_user_id);
-    return () => {
-      cleanupLocation();
-    };
+    return () => { cleanupLocation(); };
   }, [request?.provider_user_id]);
 
   useEffect(() => {
@@ -121,7 +140,9 @@ export default function TrackingScreen() {
     setLoading(true);
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, provider_user_id, latitude, longitude')
+      .select(
+        'id, category, description, status, provider_user_id, latitude, longitude, quote_amount, quote_notes, quote_status, counter_amount'
+      )
       .eq('id', id)
       .single();
 
@@ -131,13 +152,20 @@ export default function TrackingScreen() {
     setLoading(false);
   }
 
+  async function loadPhotos() {
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/photos`);
+      if (res.ok) {
+        const data = await res.json();
+        setPhotos(data.photos ?? []);
+      }
+    } catch {}
+  }
+
   async function loadProviderProfile(providerUserId: string) {
     const [userRes, skillsRes] = await Promise.all([
       supabase.from('app_users').select('full_name').eq('id', providerUserId).maybeSingle(),
-      supabase
-        .from('provider_skills')
-        .select('skills(label)')
-        .eq('provider_user_id', providerUserId),
+      supabase.from('provider_skills').select('skills(label)').eq('provider_user_id', providerUserId),
     ]);
     const specialties = ((skillsRes.data ?? []) as any[])
       .map((ps) => ps.skills?.label)
@@ -153,25 +181,20 @@ export default function TrackingScreen() {
       .channel(`service_request_${id}`)
       .on(
         'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'service_requests',
-          filter: `id=eq.${id}`,
-        },
+        { event: 'UPDATE', schema: 'public', table: 'service_requests', filter: `id=eq.${id}` },
         (payload) => {
           const updated = payload.new as ServiceRequest;
           setRequest(updated);
           if (updated.status === 'completed') {
             Alert.alert('Serviço concluído!', 'O profissional marcou o serviço como concluído.');
           }
+          if (updated.status === 'in_progress') {
+            loadPhotos(); // refresh to pick up provider_start photo
+          }
         }
       )
       .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return () => { supabase.removeChannel(channel); };
   }
 
   function subscribeToProviderLocation(providerUserId: string) {
@@ -180,30 +203,62 @@ export default function TrackingScreen() {
       .select('latitude, longitude, heading')
       .eq('user_id', providerUserId)
       .single()
-      .then(({ data }) => {
-        if (data) setProviderLocation(data as ProviderLocation);
-      });
+      .then(({ data }) => { if (data) setProviderLocation(data as ProviderLocation); });
 
     const channel = supabase
       .channel(`provider_location_${providerUserId}`)
       .on(
         'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'provider_locations',
-          filter: `user_id=eq.${providerUserId}`,
-        },
-        (payload) => {
-          const loc = payload.new as ProviderLocation;
-          setProviderLocation(loc);
-        }
+        { event: '*', schema: 'public', table: 'provider_locations', filter: `user_id=eq.${providerUserId}` },
+        (payload) => { setProviderLocation(payload.new as ProviderLocation); }
       )
       .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
+  async function handleAcceptQuote() {
+    if (!request) return;
+    setAcceptingQuote(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const res = await fetch(`${API_BASE}/service-requests/${id}/accept-quote`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_user_id: user?.id }),
+      });
+      if (!res.ok) {
+        Alert.alert('Erro', 'Não foi possível aceitar o orçamento. Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setAcceptingQuote(false);
+  }
+
+  async function handleCounter() {
+    const amount = parseFloat(counterInput.replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('Valor inválido', 'Digite um valor válido para a contra-proposta.');
+      return;
+    }
+    setCountering(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const res = await fetch(`${API_BASE}/service-requests/${id}/counter`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_user_id: user?.id, counter_amount: amount }),
+      });
+      if (res.ok) {
+        setShowCounterModal(false);
+        setCounterInput('');
+      } else {
+        Alert.alert('Erro', 'Não foi possível enviar a contra-proposta.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setCountering(false);
   }
 
   async function handleCancel() {
@@ -219,14 +274,11 @@ export default function TrackingScreen() {
             setCancelling(true);
             const { data: { user } } = await supabase.auth.getUser();
             try {
-              const res = await fetch(
-                `https://construconnect-api.orionsystem.workers.dev/v1/service-requests/${id}/cancel`,
-                {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ client_user_id: user?.id }),
-                }
-              );
+              const res = await fetch(`${API_BASE}/service-requests/${id}/cancel`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_user_id: user?.id }),
+              });
               setCancelling(false);
               if (res.ok) {
                 router.back();
@@ -252,7 +304,9 @@ export default function TrackingScreen() {
     );
   }
 
-  const statusConf = request ? (STATUS_CONFIG[request.status] ?? STATUS_CONFIG.requested) : STATUS_CONFIG.requested;
+  const statusConf = request
+    ? (STATUS_CONFIG[request.status] ?? STATUS_CONFIG.requested)
+    : STATUS_CONFIG.requested;
 
   const clientCoord =
     request?.latitude && request?.longitude
@@ -263,12 +317,22 @@ export default function TrackingScreen() {
     ? { latitude: providerLocation.latitude, longitude: providerLocation.longitude }
     : null;
 
-  const mapRegion = providerCoord ?? clientCoord ?? DEFAULT_REGION;
+  const markerScale = markerAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.3] });
 
-  const markerScale = markerAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [1, 1.3],
-  });
+  const clientPhotos = photos.filter((p) => p.photo_type === 'client_request');
+  const providerStartPhotos = photos.filter((p) => p.photo_type === 'provider_start');
+  const providerEndPhotos = photos.filter((p) => p.photo_type === 'provider_end');
+
+  const showQuoteCard =
+    request?.quote_status === 'quoted' &&
+    request?.status !== 'accepted' &&
+    request?.status !== 'completed' &&
+    request?.status !== 'cancelled';
+
+  const showNegotiatingCard =
+    request?.quote_status === 'negotiating' &&
+    request?.status !== 'accepted' &&
+    request?.status !== 'completed';
 
   return (
     <View style={styles.container}>
@@ -294,15 +358,17 @@ export default function TrackingScreen() {
             </View>
           </Marker>
         )}
-
         {providerCoord && (
-          <Marker coordinate={providerCoord} title={providerProfile?.full_name ?? 'Profissional'} anchor={{ x: 0.5, y: 0.5 }}>
+          <Marker
+            coordinate={providerCoord}
+            title={providerProfile?.full_name ?? 'Profissional'}
+            anchor={{ x: 0.5, y: 0.5 }}
+          >
             <Animated.View style={[styles.providerMarker, { transform: [{ scale: markerScale }] }]}>
               <Ionicons name="construct" size={16} color={Colors.cardWhite} />
             </Animated.View>
           </Marker>
         )}
-
         {clientCoord && providerCoord && (
           <Polyline
             coordinates={[providerCoord, clientCoord]}
@@ -317,20 +383,72 @@ export default function TrackingScreen() {
         <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
       </TouchableOpacity>
 
-      <View style={styles.bottomSheet}>
+      <ScrollView
+        style={styles.bottomSheetScroll}
+        contentContainerStyle={styles.bottomSheetContent}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
         <View style={styles.bottomSheetHandle} />
 
+        {/* Quote card — provider sent a quote, client can accept or counter */}
+        {showQuoteCard && (
+          <View style={styles.quoteCard}>
+            <View style={styles.quoteCardHeader}>
+              <Ionicons name="pricetag-outline" size={18} color={Colors.successGreen} />
+              <Text style={styles.quoteCardTitle}>Orçamento recebido</Text>
+            </View>
+            <Text style={styles.quoteCardAmount}>
+              R$ {request!.quote_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </Text>
+            {!!request?.quote_notes && (
+              <Text style={styles.quoteCardNotes}>{request.quote_notes}</Text>
+            )}
+            <View style={styles.quoteCardButtons}>
+              <TouchableOpacity
+                style={styles.counterBtn}
+                onPress={() => setShowCounterModal(true)}
+              >
+                <Text style={styles.counterBtnText}>Contra-proposta</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.acceptQuoteBtn, acceptingQuote && styles.btnDisabled]}
+                onPress={handleAcceptQuote}
+                disabled={acceptingQuote}
+              >
+                {acceptingQuote ? (
+                  <ActivityIndicator color={Colors.cardWhite} size="small" />
+                ) : (
+                  <Text style={styles.acceptQuoteBtnText}>Aceitar</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+
+        {/* Negotiating — client sent counter, waiting for provider */}
+        {showNegotiatingCard && (
+          <View style={styles.negotiatingCard}>
+            <Ionicons name="swap-horizontal-outline" size={18} color={Colors.warningAmber} />
+            <Text style={styles.negotiatingText}>
+              Contra-proposta enviada: R${' '}
+              {request!.counter_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              {' '}· Aguardando o profissional...
+            </Text>
+          </View>
+        )}
+
+        {/* Provider row */}
         <View style={styles.providerRow}>
           <View style={styles.providerAvatar}>
             <Text style={styles.providerAvatarText}>
-              {providerProfile
-                ? providerProfile.full_name.charAt(0).toUpperCase()
-                : '?'}
+              {providerProfile ? providerProfile.full_name.charAt(0).toUpperCase() : '?'}
             </Text>
           </View>
           <View style={styles.providerInfo}>
             <Text style={styles.providerName}>
-              {providerProfile?.full_name ?? (request?.provider_user_id ? 'Profissional' : 'Aguardando...')}
+              {providerProfile?.full_name ??
+                (request?.provider_user_id ? 'Profissional' : 'Aguardando...')}
             </Text>
             <Text style={styles.providerSpecialty}>
               {providerProfile?.specialties ?? request?.category ?? ''}
@@ -342,6 +460,7 @@ export default function TrackingScreen() {
           </View>
         </View>
 
+        {/* Stats */}
         <View style={styles.statsRow}>
           <View style={styles.statItem}>
             <Ionicons name="time-outline" size={20} color={Colors.primary} />
@@ -379,13 +498,47 @@ export default function TrackingScreen() {
           </View>
         </View>
 
+        {/* Status */}
         <View style={[styles.statusBadge, { backgroundColor: statusConf.bg }]}>
           <View style={[styles.statusDot, { backgroundColor: statusConf.color }]} />
-          <Text style={[styles.statusLabel, { color: statusConf.color }]}>
-            {statusConf.label}
-          </Text>
+          <Text style={[styles.statusLabel, { color: statusConf.color }]}>{statusConf.label}</Text>
         </View>
 
+        {/* Evidence photos */}
+        {clientPhotos.length > 0 && (
+          <View style={styles.photosSection}>
+            <Text style={styles.photosSectionLabel}>Fotos do pedido</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+              {clientPhotos.map((p, i) => (
+                <Image key={i} source={{ uri: p.url }} style={styles.photoThumb} />
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {providerStartPhotos.length > 0 && (
+          <View style={styles.photosSection}>
+            <Text style={styles.photosSectionLabel}>Fotos do início do serviço</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+              {providerStartPhotos.map((p, i) => (
+                <Image key={i} source={{ uri: p.url }} style={styles.photoThumb} />
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {providerEndPhotos.length > 0 && (
+          <View style={styles.photosSection}>
+            <Text style={styles.photosSectionLabel}>Fotos da conclusão</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+              {providerEndPhotos.map((p, i) => (
+                <Image key={i} source={{ uri: p.url }} style={styles.photoThumb} />
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {/* Cancel button */}
         {request?.status !== 'completed' && request?.status !== 'cancelled' && (
           <TouchableOpacity
             style={[styles.cancelButton, cancelling && styles.cancelButtonDisabled]}
@@ -402,7 +555,51 @@ export default function TrackingScreen() {
             )}
           </TouchableOpacity>
         )}
-      </View>
+      </ScrollView>
+
+      {/* Counter proposal modal */}
+      <Modal visible={showCounterModal} transparent animationType="slide">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Sua contra-proposta</Text>
+            <Text style={styles.modalSubtitle}>
+              Orçamento do profissional: R${' '}
+              {request?.quote_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </Text>
+            <View style={styles.modalInputRow}>
+              <Text style={styles.modalCurrency}>R$</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="0,00"
+                placeholderTextColor={Colors.textSecondary}
+                value={counterInput}
+                onChangeText={setCounterInput}
+                keyboardType="numeric"
+                autoFocus
+              />
+            </View>
+            <View style={styles.modalButtons}>
+              <TouchableOpacity
+                style={styles.modalCancelBtn}
+                onPress={() => { setShowCounterModal(false); setCounterInput(''); }}
+              >
+                <Text style={styles.modalCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalConfirmBtn, (countering || !counterInput) && styles.btnDisabled]}
+                onPress={handleCounter}
+                disabled={countering || !counterInput}
+              >
+                {countering ? (
+                  <ActivityIndicator color={Colors.cardWhite} size="small" />
+                ) : (
+                  <Text style={styles.modalConfirmText}>Enviar</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -424,10 +621,7 @@ function calcDistance(
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
-  },
+  container: { flex: 1, backgroundColor: Colors.background },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -435,13 +629,8 @@ const styles = StyleSheet.create({
     gap: 12,
     backgroundColor: Colors.background,
   },
-  loadingText: {
-    fontSize: 14,
-    color: Colors.textSecondary,
-  },
-  map: {
-    flex: 1,
-  },
+  loadingText: { fontSize: 14, color: Colors.textSecondary },
+  map: { flex: 1 },
   clientMarker: {
     width: 36,
     height: 36,
@@ -451,10 +640,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2,
     borderColor: Colors.cardWhite,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
     elevation: 4,
   },
   providerMarker: {
@@ -466,10 +651,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2.5,
     borderColor: Colors.cardWhite,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.4,
-    shadowRadius: 6,
     elevation: 6,
   },
   backButton: {
@@ -488,18 +669,22 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 4,
   },
-  bottomSheet: {
+  bottomSheetScroll: {
     backgroundColor: Colors.cardWhite,
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: -4 },
     shadowOpacity: 0.1,
     shadowRadius: 12,
     elevation: 16,
+    maxHeight: '55%',
+  },
+  bottomSheetContent: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 20,
+    gap: 14,
   },
   bottomSheetHandle: {
     width: 40,
@@ -507,13 +692,53 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: Colors.border,
     alignSelf: 'center',
-    marginBottom: 16,
+    marginBottom: 4,
   },
-  providerRow: {
+  quoteCard: {
+    backgroundColor: '#ECFDF5',
+    borderRadius: 16,
+    padding: 16,
+    gap: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.successGreen,
+  },
+  quoteCardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  quoteCardTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  quoteCardAmount: { fontSize: 28, fontWeight: '800', color: Colors.textPrimary },
+  quoteCardNotes: { fontSize: 13, color: Colors.textSecondary, lineHeight: 18 },
+  quoteCardButtons: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  counterBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.textSecondary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.cardWhite,
+  },
+  counterBtnText: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  acceptQuoteBtn: {
+    flex: 1,
+    height: 44,
+    borderRadius: 10,
+    backgroundColor: Colors.successGreen,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acceptQuoteBtnText: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
+  negotiatingCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
+    gap: 10,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.warningAmber,
   },
+  negotiatingText: { fontSize: 13, color: Colors.textPrimary, flex: 1, lineHeight: 18 },
+  providerRow: { flexDirection: 'row', alignItems: 'center' },
   providerAvatar: {
     width: 48,
     height: 48,
@@ -523,24 +748,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginRight: 12,
   },
-  providerAvatarText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: Colors.cardWhite,
-  },
-  providerInfo: {
-    flex: 1,
-  },
-  providerName: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  providerSpecialty: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
+  providerAvatarText: { fontSize: 18, fontWeight: '700', color: Colors.cardWhite },
+  providerInfo: { flex: 1 },
+  providerName: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  providerSpecialty: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
   ratingBadge: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -550,54 +761,34 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
   },
-  ratingText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
+  ratingText: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
   statsRow: {
     flexDirection: 'row',
     backgroundColor: Colors.background,
     borderRadius: 12,
     padding: 12,
-    marginBottom: 14,
   },
-  statItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 4,
-  },
-  statDivider: {
-    width: 1,
-    backgroundColor: Colors.border,
-    marginVertical: 4,
-  },
-  statLabel: {
-    fontSize: 11,
-    color: Colors.textSecondary,
-    fontWeight: '500',
-  },
-  statValue: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
+  statItem: { flex: 1, alignItems: 'center', gap: 4 },
+  statDivider: { width: 1, backgroundColor: Colors.border, marginVertical: 4 },
+  statLabel: { fontSize: 11, color: Colors.textSecondary, fontWeight: '500' },
+  statValue: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
   statusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
     borderRadius: 10,
     padding: 12,
-    marginBottom: 14,
   },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  statusLabel: {
-    fontSize: 14,
-    fontWeight: '700',
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusLabel: { fontSize: 14, fontWeight: '700' },
+  photosSection: { gap: 8 },
+  photosSectionLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  photosRow: { gap: 8, paddingRight: 4 },
+  photoThumb: {
+    width: 80,
+    height: 80,
+    borderRadius: 10,
+    backgroundColor: Colors.border,
   },
   cancelButton: {
     flexDirection: 'row',
@@ -610,12 +801,54 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     height: 48,
   },
-  cancelButtonDisabled: {
-    opacity: 0.7,
+  cancelButtonDisabled: { opacity: 0.7 },
+  cancelButtonText: { fontSize: 15, fontWeight: '700', color: Colors.dangerRed },
+  btnDisabled: { opacity: 0.5 },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
   },
-  cancelButtonText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.dangerRed,
+  modalCard: {
+    backgroundColor: Colors.cardWhite,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    gap: 16,
   },
+  modalTitle: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary },
+  modalSubtitle: { fontSize: 13, color: Colors.textSecondary },
+  modalInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    height: 56,
+    backgroundColor: '#FFF4EE',
+  },
+  modalCurrency: { fontSize: 20, fontWeight: '700', color: Colors.primary, marginRight: 4 },
+  modalInput: { flex: 1, fontSize: 22, fontWeight: '700', color: Colors.textPrimary },
+  modalButtons: { flexDirection: 'row', gap: 12 },
+  modalCancelBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalCancelText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
+  modalConfirmBtn: {
+    flex: 2,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalConfirmText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
 });

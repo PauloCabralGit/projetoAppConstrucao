@@ -8,6 +8,8 @@ import {
   Alert,
   ScrollView,
   Platform,
+  Image,
+  TextInput,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -15,6 +17,8 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+
+const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
 interface JobDetail {
   id: string;
@@ -28,6 +32,15 @@ interface JobDetail {
   budget_min: number | null;
   budget_max: number | null;
   scheduled_date: string | null;
+  quote_amount: number | null;
+  quote_notes: string | null;
+  quote_status: string | null;
+  counter_amount: number | null;
+}
+
+interface ClientPhoto {
+  url: string;
+  photo_type: string;
 }
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -47,14 +60,6 @@ const CATEGORY_ICONS: Record<string, string> = {
   piso: 'grid-outline',
   acabamento: 'hammer-outline',
 };
-
-function formatBudget(min: number | null, max: number | null): string {
-  const fmt = (v: number) => `R$ ${v.toLocaleString('pt-BR')}`;
-  if (min !== null && max !== null) return `${fmt(min)} – ${fmt(max)}`;
-  if (min !== null) return `A partir de ${fmt(min)}`;
-  if (max !== null) return `Até ${fmt(max)}`;
-  return 'A combinar';
-}
 
 function formatScheduledDate(dateStr: string | null): string {
   if (!dateStr) return 'A definir';
@@ -79,8 +84,7 @@ function calcDistance(
       Math.cos((b.latitude * Math.PI) / 180) *
       Math.sin(dLon / 2) *
       Math.sin(dLon / 2);
-  const c = 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
-  const dist = R * c;
+  const dist = R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
   if (dist < 1) return `${(dist * 1000).toFixed(0)} m de você`;
   return `${dist.toFixed(1)} km de você`;
 }
@@ -95,18 +99,51 @@ const DEFAULT_REGION: Region = {
 export default function JobDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const mapRef = useRef<MapView>(null);
+  const userIdRef = useRef<string | null>(null);
 
   const [job, setJob] = useState<JobDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [accepting, setAccepting] = useState(false);
   const [providerCoord, setProviderCoord] = useState<{ latitude: number; longitude: number } | null>(null);
   const [distance, setDistance] = useState<string | null>(null);
+  const [clientPhotos, setClientPhotos] = useState<ClientPhoto[]>([]);
+
+  // Quote form state
+  const [quoteAmount, setQuoteAmount] = useState('');
+  const [quoteNotes, setQuoteNotes] = useState('');
+  const [submittingQuote, setSubmittingQuote] = useState(false);
+  const [acceptingCounter, setAcceptingCounter] = useState(false);
 
   useEffect(() => {
     if (!id) return;
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      userIdRef.current = user?.id ?? null;
+    });
     loadJob();
     getProviderLocation();
+    loadClientPhotos();
+    const cleanup = subscribeToJob();
+    return cleanup;
   }, [id]);
+
+  useEffect(() => {
+    if (providerCoord && job?.latitude && job?.longitude) {
+      setDistance(calcDistance(providerCoord, { latitude: job.latitude, longitude: job.longitude }));
+    }
+  }, [providerCoord, job]);
+
+  function subscribeToJob() {
+    const channel = supabase
+      .channel(`provider_job_${id}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'service_requests', filter: `id=eq.${id}` },
+        (payload) => {
+          setJob((prev) => (prev ? { ...prev, ...(payload.new as Partial<JobDetail>) } : null));
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }
 
   async function getProviderLocation() {
     const { status } = await Location.requestForegroundPermissionsAsync();
@@ -119,25 +156,24 @@ export default function JobDetailScreen() {
     setLoading(true);
     const { data, error } = await supabase
       .from('service_requests')
-      .select('id, category, description, status, client_user_id, latitude, longitude, city, budget_min, budget_max, scheduled_date')
+      .select(
+        'id, category, description, status, client_user_id, latitude, longitude, city, budget_min, budget_max, scheduled_date, quote_amount, quote_notes, quote_status, counter_amount'
+      )
       .eq('id', id)
       .single();
 
     if (!error && data) {
       const jobData = data as JobDetail;
       setJob(jobData);
-
       const clientCoord =
         jobData.latitude && jobData.longitude
           ? { latitude: jobData.latitude, longitude: jobData.longitude }
           : null;
-
       if (clientCoord) {
         mapRef.current?.animateToRegion(
           { ...clientCoord, latitudeDelta: 0.03, longitudeDelta: 0.03 },
           800
         );
-
         if (providerCoord) {
           setDistance(calcDistance(providerCoord, clientCoord));
         }
@@ -146,13 +182,19 @@ export default function JobDetailScreen() {
     setLoading(false);
   }
 
-  useEffect(() => {
-    if (providerCoord && job?.latitude && job?.longitude) {
-      setDistance(calcDistance(providerCoord, { latitude: job.latitude, longitude: job.longitude }));
-    }
-  }, [providerCoord, job]);
+  async function loadClientPhotos() {
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/photos`);
+      if (res.ok) {
+        const data = await res.json();
+        setClientPhotos(
+          (data.photos ?? []).filter((p: ClientPhoto) => p.photo_type === 'client_request')
+        );
+      }
+    } catch {}
+  }
 
-  async function startLocationTracking(userId: string, _jobId: string) {
+  async function startLocationTracking(userId: string) {
     const { status } = await Location.requestForegroundPermissionsAsync();
     if (status !== 'granted') return;
     const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High }).catch(() => null);
@@ -167,55 +209,63 @@ export default function JobDetailScreen() {
       },
       { onConflict: 'user_id' }
     );
-    // Continuous tracking is handled by active.tsx after navigation
   }
 
-  async function handleAccept() {
-    if (!job) return;
-
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) {
-      Alert.alert('Erro', 'Você precisa estar logado para aceitar chamados.');
+  async function handleSubmitQuote() {
+    const amount = parseFloat(quoteAmount.replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('Valor inválido', 'Digite um valor válido para o orçamento.');
       return;
     }
-
-    if (job.status !== 'requested') {
-      Alert.alert('Chamado indisponível', 'Este chamado já foi aceito por outro profissional.');
+    if (!userIdRef.current) {
+      Alert.alert('Erro', 'Você precisa estar logado.');
       return;
     }
-
-    setAccepting(true);
-
+    setSubmittingQuote(true);
     try {
-      const res = await fetch(
-        `https://construconnect-api.orionsystem.workers.dev/v1/service-requests/${job.id}/accept`,
-        {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider_user_id: user.id }),
-        }
-      );
-      const json = await res.json();
-
+      const res = await fetch(`${API_BASE}/service-requests/${job!.id}/quote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider_user_id: userIdRef.current,
+          quote_amount: amount,
+          quote_notes: quoteNotes.trim(),
+        }),
+      });
       if (!res.ok) {
-        setAccepting(false);
-        Alert.alert('Chamado indisponível', json?.message ?? 'Este chamado não está mais disponível.');
-        return;
+        Alert.alert('Erro', 'Não foi possível enviar o orçamento. O chamado pode já ter sido respondido.');
       }
     } catch {
-      setAccepting(false);
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
-      return;
     }
-
-    await startLocationTracking(user.id, job.id);
-
-    setAccepting(false);
-    router.replace('/(tabs)/active');
+    setSubmittingQuote(false);
   }
 
-  function handleDecline() {
-    router.back();
+  async function handleAcceptCounter() {
+    if (!userIdRef.current) return;
+    setAcceptingCounter(true);
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${job!.id}/accept-counter`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_user_id: userIdRef.current }),
+      });
+      if (res.ok) {
+        await startLocationTracking(userIdRef.current!);
+        router.replace('/(tabs)/active');
+      } else {
+        Alert.alert('Erro', 'Não foi possível aceitar a contra-proposta.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setAcceptingCounter(false);
+  }
+
+  async function handleStartTravel() {
+    if (!userIdRef.current) return;
+    await startLocationTracking(userIdRef.current);
+    router.replace('/(tabs)/active');
   }
 
   if (loading) {
@@ -246,7 +296,123 @@ export default function JobDetailScreen() {
 
   const categoryLabel = CATEGORY_LABELS[job.category] ?? job.category;
   const categoryIcon = CATEGORY_ICONS[job.category] ?? 'construct-outline';
-  const isUnavailable = job.status !== 'requested';
+
+  function renderActionSection() {
+    if (!job) return null;
+
+    // Quote accepted — start travel
+    if (job.status === 'accepted' && job.quote_status === 'accepted') {
+      return (
+        <TouchableOpacity style={styles.startTravelBtn} onPress={handleStartTravel}>
+          <Ionicons name="car-outline" size={18} color={Colors.cardWhite} />
+          <Text style={styles.startTravelBtnText}>INICIAR DESLOCAMENTO</Text>
+        </TouchableOpacity>
+      );
+    }
+
+    // Job taken by another provider
+    if (job.status !== 'requested') {
+      return (
+        <View style={styles.unavailableBanner}>
+          <Ionicons name="alert-circle-outline" size={16} color={Colors.dangerRed} />
+          <Text style={styles.unavailableBannerText}>Este chamado não está mais disponível.</Text>
+        </View>
+      );
+    }
+
+    // Counter received from client
+    if (job.quote_status === 'negotiating') {
+      return (
+        <View style={styles.quoteSection}>
+          <View style={styles.counterCard}>
+            <Ionicons name="swap-horizontal-outline" size={20} color={Colors.warningAmber} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.counterCardLabel}>Contra-proposta do cliente</Text>
+              <Text style={styles.counterCardValue}>
+                R$ {job.counter_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.buttonsRow}>
+            <TouchableOpacity style={styles.declineButton} onPress={() => router.back()}>
+              <Text style={styles.declineButtonText}>RECUSAR</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.acceptButton, acceptingCounter && styles.buttonDisabled]}
+              onPress={handleAcceptCounter}
+              disabled={acceptingCounter}
+            >
+              {acceptingCounter ? (
+                <ActivityIndicator color={Colors.cardWhite} />
+              ) : (
+                <Text style={styles.acceptButtonText}>ACEITAR</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    }
+
+    // Quote sent, waiting for client response
+    if (job.quote_status === 'quoted') {
+      return (
+        <View style={styles.waitingCard}>
+          <Ionicons name="hourglass-outline" size={28} color={Colors.warningAmber} />
+          <Text style={styles.waitingTitle}>Orçamento enviado!</Text>
+          <Text style={styles.waitingSubtitle}>
+            R$ {job.quote_amount?.toLocaleString('pt-BR', { minimumFractionDigits: 2 })} · Aguardando resposta do cliente...
+          </Text>
+        </View>
+      );
+    }
+
+    // Default: show quote form
+    return (
+      <View style={styles.quoteSection}>
+        <Text style={styles.quoteSectionTitle}>Enviar orçamento</Text>
+        <View style={styles.quoteAmountRow}>
+          <Text style={styles.currencySymbol}>R$</Text>
+          <TextInput
+            style={styles.quoteAmountInput}
+            placeholder="0,00"
+            placeholderTextColor={Colors.textSecondary}
+            value={quoteAmount}
+            onChangeText={setQuoteAmount}
+            keyboardType="numeric"
+          />
+        </View>
+        <TextInput
+          style={styles.quoteNotesInput}
+          placeholder="Observações: prazo, materiais inclusos, etc..."
+          placeholderTextColor={Colors.textSecondary}
+          value={quoteNotes}
+          onChangeText={setQuoteNotes}
+          multiline
+          numberOfLines={2}
+          textAlignVertical="top"
+        />
+        <View style={styles.buttonsRow}>
+          <TouchableOpacity style={styles.declineButton} onPress={() => router.back()}>
+            <Text style={styles.declineButtonText}>RECUSAR</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[
+              styles.acceptButton,
+              (submittingQuote || !quoteAmount) && styles.buttonDisabled,
+            ]}
+            onPress={handleSubmitQuote}
+            disabled={submittingQuote || !quoteAmount}
+          >
+            {submittingQuote ? (
+              <ActivityIndicator color={Colors.cardWhite} />
+            ) : (
+              <Text style={styles.acceptButtonText}>ENVIAR</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -288,17 +454,9 @@ export default function JobDetailScreen() {
         contentContainerStyle={styles.bottomContent}
         showsVerticalScrollIndicator={false}
         bounces={false}
+        keyboardShouldPersistTaps="handled"
       >
         <View style={styles.bottomSheetHandle} />
-
-        {isUnavailable && (
-          <View style={styles.unavailableBanner}>
-            <Ionicons name="alert-circle-outline" size={16} color={Colors.dangerRed} />
-            <Text style={styles.unavailableBannerText}>
-              Este chamado não está mais disponível.
-            </Text>
-          </View>
-        )}
 
         <View style={styles.categoryRow}>
           <View style={styles.categoryIconCircle}>
@@ -306,55 +464,45 @@ export default function JobDetailScreen() {
           </View>
           <View style={styles.categoryInfo}>
             <Text style={styles.categoryLabel}>{categoryLabel}</Text>
-            <Text style={styles.categorySubLabel}>Tipo de serviço</Text>
+            <Text style={styles.categorySubLabel}>{job.city || 'Local não informado'}</Text>
           </View>
         </View>
 
         <Text style={styles.descriptionText}>{job.description || 'Sem descrição adicional.'}</Text>
 
-        <View style={styles.detailsGrid}>
-          <View style={styles.detailCard}>
-            <Ionicons name="location-outline" size={18} color={Colors.darkNavy} />
-            <Text style={styles.detailLabel}>Localização</Text>
-            <Text style={styles.detailValue}>{job.city || 'Não informado'}</Text>
+        {/* Client photos */}
+        {clientPhotos.length > 0 && (
+          <View style={styles.photosSection}>
+            <Text style={styles.photosSectionTitle}>
+              <Ionicons name="images-outline" size={14} color={Colors.textSecondary} />
+              {'  '}Fotos enviadas pelo cliente
+            </Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.photosRow}
+            >
+              {clientPhotos.map((photo, i) => (
+                <Image key={i} source={{ uri: photo.url }} style={styles.photoThumb} />
+              ))}
+            </ScrollView>
           </View>
+        )}
 
+        <View style={styles.detailsGrid}>
           <View style={styles.detailCard}>
             <Ionicons name="calendar-outline" size={18} color={Colors.darkNavy} />
             <Text style={styles.detailLabel}>Data</Text>
             <Text style={styles.detailValue}>{formatScheduledDate(job.scheduled_date)}</Text>
           </View>
+          <View style={styles.detailCard}>
+            <Ionicons name="location-outline" size={18} color={Colors.darkNavy} />
+            <Text style={styles.detailLabel}>Cidade</Text>
+            <Text style={styles.detailValue}>{job.city || 'Não informado'}</Text>
+          </View>
         </View>
 
-        <View style={styles.budgetCard}>
-          <Text style={styles.budgetLabel}>Orçamento estimado</Text>
-          <Text style={styles.budgetValue}>{formatBudget(job.budget_min, job.budget_max)}</Text>
-        </View>
-
-        <View style={styles.buttonsRow}>
-          <TouchableOpacity
-            style={[styles.declineButton, (accepting || isUnavailable) && styles.buttonDisabled]}
-            onPress={handleDecline}
-            disabled={accepting}
-          >
-            <Text style={styles.declineButtonText}>RECUSAR</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.acceptButton,
-              (accepting || isUnavailable) && styles.buttonDisabled,
-            ]}
-            onPress={handleAccept}
-            disabled={accepting || isUnavailable}
-          >
-            {accepting ? (
-              <ActivityIndicator color={Colors.cardWhite} />
-            ) : (
-              <Text style={styles.acceptButtonText}>ACEITAR</Text>
-            )}
-          </TouchableOpacity>
-        </View>
+        {renderActionSection()}
       </ScrollView>
     </View>
   );
@@ -376,18 +524,9 @@ const styles = StyleSheet.create({
     fontSize: 15,
     color: Colors.textSecondary,
   },
-  backLink: {
-    marginTop: 8,
-  },
-  backLinkText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: Colors.primary,
-  },
-  map: {
-    height: '45%',
-    width: '100%',
-  },
+  backLink: { marginTop: 8 },
+  backLinkText: { fontSize: 15, fontWeight: '700', color: Colors.primary },
+  map: { height: '40%', width: '100%' },
   clientMapMarker: {
     width: 44,
     height: 44,
@@ -397,10 +536,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 2.5,
     borderColor: Colors.cardWhite,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
     elevation: 6,
   },
   backButton: {
@@ -430,17 +565,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     paddingHorizontal: 12,
     paddingVertical: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 6,
     elevation: 4,
   },
-  distancePillText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.primary,
-  },
+  distancePillText: { fontSize: 13, fontWeight: '700', color: Colors.primary },
   bottomScrollContainer: {
     flex: 1,
     backgroundColor: Colors.cardWhite,
@@ -452,7 +579,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 12,
     paddingBottom: Platform.OS === 'ios' ? 40 : 24,
-    gap: 16,
+    gap: 14,
   },
   bottomSheetHandle: {
     width: 40,
@@ -460,29 +587,9 @@ const styles = StyleSheet.create({
     borderRadius: 2,
     backgroundColor: Colors.border,
     alignSelf: 'center',
-    marginBottom: 8,
+    marginBottom: 4,
   },
-  unavailableBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#FEF2F2',
-    borderRadius: 10,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: Colors.dangerRed,
-  },
-  unavailableBannerText: {
-    fontSize: 14,
-    color: Colors.dangerRed,
-    fontWeight: '600',
-    flex: 1,
-  },
-  categoryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-  },
+  categoryRow: { flexDirection: 'row', alignItems: 'center', gap: 14 },
   categoryIconCircle: {
     width: 52,
     height: 52,
@@ -493,19 +600,9 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: Colors.primary,
   },
-  categoryInfo: {
-    flex: 1,
-  },
-  categoryLabel: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: Colors.textPrimary,
-  },
-  categorySubLabel: {
-    fontSize: 13,
-    color: Colors.textSecondary,
-    marginTop: 2,
-  },
+  categoryInfo: { flex: 1 },
+  categoryLabel: { fontSize: 20, fontWeight: '700', color: Colors.textPrimary },
+  categorySubLabel: { fontSize: 13, color: Colors.textSecondary, marginTop: 2 },
   descriptionText: {
     fontSize: 15,
     color: Colors.textPrimary,
@@ -516,10 +613,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  detailsGrid: {
-    flexDirection: 'row',
-    gap: 12,
+  photosSection: { gap: 8 },
+  photosSectionTitle: { fontSize: 13, color: Colors.textSecondary, fontWeight: '600' },
+  photosRow: { gap: 8, paddingRight: 4 },
+  photoThumb: {
+    width: 80,
+    height: 80,
+    borderRadius: 10,
+    backgroundColor: Colors.border,
   },
+  detailsGrid: { flexDirection: 'row', gap: 12 },
   detailCard: {
     flex: 1,
     backgroundColor: Colors.background,
@@ -536,37 +639,38 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  detailValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: Colors.textPrimary,
-    lineHeight: 18,
-  },
-  budgetCard: {
-    backgroundColor: '#ECFDF5',
-    borderRadius: 14,
-    padding: 18,
+  detailValue: { fontSize: 14, fontWeight: '600', color: Colors.textPrimary, lineHeight: 18 },
+  quoteSection: { gap: 10 },
+  quoteSectionTitle: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  quoteAmountRow: {
+    flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1.5,
-    borderColor: Colors.successGreen,
+    borderColor: Colors.primary,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    backgroundColor: '#FFF4EE',
+    height: 52,
   },
-  budgetLabel: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: Colors.successGreen,
-    textTransform: 'uppercase',
-    letterSpacing: 0.8,
-    marginBottom: 6,
-  },
-  budgetValue: {
-    fontSize: 28,
-    fontWeight: '800',
+  currencySymbol: { fontSize: 18, fontWeight: '700', color: Colors.primary, marginRight: 4 },
+  quoteAmountInput: {
+    flex: 1,
+    fontSize: 20,
+    fontWeight: '700',
     color: Colors.textPrimary,
+    height: 52,
   },
-  buttonsRow: {
-    flexDirection: 'row',
-    gap: 12,
+  quoteNotesInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.background,
+    minHeight: 60,
   },
+  buttonsRow: { flexDirection: 'row', gap: 12 },
   declineButton: {
     flex: 1,
     height: 56,
@@ -577,12 +681,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: '#FEF2F2',
   },
-  declineButtonText: {
-    fontSize: 15,
-    fontWeight: '800',
-    color: Colors.dangerRed,
-    letterSpacing: 1,
-  },
+  declineButtonText: { fontSize: 15, fontWeight: '800', color: Colors.dangerRed, letterSpacing: 1 },
   acceptButton: {
     flex: 2,
     height: 56,
@@ -590,19 +689,53 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.successGreen,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: Colors.successGreen,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
-    elevation: 8,
+    elevation: 4,
   },
-  acceptButtonText: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: Colors.cardWhite,
-    letterSpacing: 1.5,
+  acceptButtonText: { fontSize: 17, fontWeight: '800', color: Colors.cardWhite, letterSpacing: 1.5 },
+  buttonDisabled: { opacity: 0.5 },
+  waitingCard: {
+    backgroundColor: '#FFFBEB',
+    borderRadius: 14,
+    padding: 20,
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.warningAmber,
   },
-  buttonDisabled: {
-    opacity: 0.6,
+  waitingTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  waitingSubtitle: { fontSize: 13, color: Colors.textSecondary, textAlign: 'center' },
+  counterCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.warningAmber,
   },
+  counterCardLabel: { fontSize: 12, color: Colors.textSecondary, fontWeight: '600' },
+  counterCardValue: { fontSize: 20, fontWeight: '800', color: Colors.textPrimary },
+  unavailableBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FEF2F2',
+    borderRadius: 10,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: Colors.dangerRed,
+  },
+  unavailableBannerText: { fontSize: 14, color: Colors.dangerRed, fontWeight: '600', flex: 1 },
+  startTravelBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    height: 56,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    elevation: 6,
+  },
+  startTravelBtnText: { fontSize: 16, fontWeight: '800', color: Colors.cardWhite, letterSpacing: 1 },
 });

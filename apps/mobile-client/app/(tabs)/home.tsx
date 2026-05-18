@@ -10,9 +10,11 @@ import {
   Alert,
   Dimensions,
   Platform,
+  Image,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
+import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
@@ -60,6 +62,7 @@ export default function HomeScreen() {
   const [providers, setProviders] = useState<ProviderMarker[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [loadingProviders, setLoadingProviders] = useState(true);
+  const [photos, setPhotos] = useState<{ uri: string; base64: string }[]>([]);
 
   useEffect(() => {
     requestLocation();
@@ -105,6 +108,52 @@ export default function HomeScreen() {
         locationSubRef.current = null;
       }
     );
+  }
+
+  async function pickPhoto() {
+    Alert.alert('Adicionar foto', 'Como deseja adicionar?', [
+      {
+        text: 'Câmera',
+        onPress: async () => {
+          const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
+          if (!result.canceled && result.assets[0].base64) {
+            setPhotos((prev) => [...prev, { uri: result.assets[0].uri, base64: result.assets[0].base64! }]);
+          }
+        },
+      },
+      {
+        text: 'Galeria',
+        onPress: async () => {
+          const result = await ImagePicker.launchImageLibraryAsync({
+            mediaTypes: ImagePicker.MediaTypeOptions.Images,
+            quality: 0.7,
+            base64: true,
+          });
+          if (!result.canceled && result.assets[0].base64) {
+            setPhotos((prev) => [...prev, { uri: result.assets[0].uri, base64: result.assets[0].base64! }]);
+          }
+        },
+      },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
+  }
+
+  async function uploadPhotos(requestId: string) {
+    for (const photo of photos) {
+      try {
+        await fetch(`${API_BASE}/photos/upload`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            request_id: requestId,
+            photo_type: 'client_request',
+            file_data: photo.base64,
+            file_name: `client_${Date.now()}.jpg`,
+            mime_type: 'image/jpeg',
+          }),
+        });
+      } catch {}
+    }
   }
 
   async function fetchProviders() {
@@ -169,9 +218,14 @@ export default function HomeScreen() {
       const data = await response.json();
       const requestId = data?.id ?? data?.service_request?.id;
 
+      if (requestId && photos.length > 0) {
+        await uploadPhotos(requestId);
+      }
+
       setSubmitting(false);
       setSelectedCategory('');
       setDescription('');
+      setPhotos([]);
 
       if (requestId) {
         router.push(`/tracking/${requestId}`);
@@ -272,6 +326,33 @@ export default function HomeScreen() {
             textAlignVertical="top"
           />
           <Text style={styles.charCount}>{description.length}/500</Text>
+        </View>
+
+        <View style={styles.photosSection}>
+          <Text style={styles.photosSectionLabel}>Fotos do serviço (opcional)</Text>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.photosRow}
+          >
+            {photos.map((p, i) => (
+              <View key={i} style={styles.photoThumbWrap}>
+                <Image source={{ uri: p.uri }} style={styles.photoThumb} />
+                <TouchableOpacity
+                  style={styles.removePhotoBtn}
+                  onPress={() => setPhotos((prev) => prev.filter((_, idx) => idx !== i))}
+                >
+                  <Ionicons name="close-circle" size={20} color={Colors.dangerRed} />
+                </TouchableOpacity>
+              </View>
+            ))}
+            {photos.length < 5 && (
+              <TouchableOpacity style={styles.addPhotoBtn} onPress={pickPhoto}>
+                <Ionicons name="camera-outline" size={22} color={Colors.primary} />
+                <Text style={styles.addPhotoBtnText}>Foto</Text>
+              </TouchableOpacity>
+            )}
+          </ScrollView>
         </View>
 
         <TouchableOpacity
@@ -483,5 +564,52 @@ const styles = StyleSheet.create({
   providersCountText: {
     fontSize: 12,
     color: Colors.textSecondary,
+  },
+  photosSection: {
+    marginBottom: 4,
+  },
+  photosSectionLabel: {
+    fontSize: 12,
+    color: Colors.textSecondary,
+    fontWeight: '500',
+    marginBottom: 8,
+  },
+  photosRow: {
+    gap: 8,
+    alignItems: 'center',
+  },
+  photoThumbWrap: {
+    width: 64,
+    height: 64,
+    position: 'relative',
+  },
+  photoThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: 8,
+  },
+  removePhotoBtn: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 10,
+  },
+  addPhotoBtn: {
+    width: 64,
+    height: 64,
+    borderRadius: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderStyle: 'dashed',
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFF4EE',
+    gap: 2,
+  },
+  addPhotoBtnText: {
+    fontSize: 10,
+    color: Colors.primary,
+    fontWeight: '600',
   },
 });
