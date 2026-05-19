@@ -8,6 +8,7 @@ type Bindings = {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
   MERCADOPAGO_ACCESS_TOKEN: string;
+  ADMIN_KEY: string;
 };
 
 const app = new Hono<{ Bindings: Bindings }>();
@@ -15,7 +16,7 @@ const app = new Hono<{ Bindings: Bindings }>();
 app.use(cors({
   origin: ["https://projetoappconstrucao.pages.dev", "http://localhost:5173"],
   allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  allowHeaders: ["Content-Type", "Authorization"]
+  allowHeaders: ["Content-Type", "Authorization", "x-admin-key"]
 }));
 
 const db = (env: Bindings) =>
@@ -961,6 +962,158 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
   } catch {
     return c.json({ ok: true });
   }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ADMIN ENDPOINTS
+// ═══════════════════════════════════════════════════════════════════════════
+
+function isAdmin(c: any): boolean {
+  const key = c.req.header("x-admin-key");
+  return !!c.env.ADMIN_KEY && key === c.env.ADMIN_KEY;
+}
+
+// ── Overview stats ────────────────────────────────────────────────────────
+app.get("/v1/admin/overview", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const d = db(c.env);
+  const now = new Date().toISOString();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
+  const [
+    { count: totalUsers },
+    { count: totalProviders },
+    { count: activeRequests },
+    { count: completedJobs },
+    { count: blockedProviders },
+    { count: newUsers },
+    { data: revenueRows },
+    { data: pendingRows },
+  ] = await Promise.all([
+    d.from("app_users").select("*", { count: "exact", head: true }),
+    d.from("provider_profiles").select("*", { count: "exact", head: true }),
+    d.from("service_requests").select("*", { count: "exact", head: true }).in("status", ["requested", "accepted", "in_progress"]),
+    d.from("service_requests").select("*", { count: "exact", head: true }).eq("status", "completed"),
+    d.from("provider_profiles").select("*", { count: "exact", head: true }).gt("blocked_until", now),
+    d.from("app_users").select("*", { count: "exact", head: true }).gte("created_at", sevenDaysAgo),
+    d.from("service_requests").select("quote_amount").eq("payment_status", "confirmed"),
+    d.from("service_requests").select("quote_amount").eq("payment_status", "client_paid"),
+  ]);
+
+  const totalRevenue = (revenueRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
+  const pendingRevenue = (pendingRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
+
+  return c.json({
+    totalUsers: totalUsers ?? 0,
+    totalProviders: totalProviders ?? 0,
+    activeRequests: activeRequests ?? 0,
+    completedJobs: completedJobs ?? 0,
+    totalRevenue,
+    pendingRevenue,
+    blockedProviders: blockedProviders ?? 0,
+    newUsers: newUsers ?? 0,
+  });
+});
+
+// ── All requests ──────────────────────────────────────────────────────────
+app.get("/v1/admin/requests", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const status = c.req.query("status");
+  let q = db(c.env)
+    .from("service_requests")
+    .select("id, category, description, status, city, quote_amount, payment_status, payment_method, client_rating, created_at, client_user_id, provider_user_id")
+    .order("created_at", { ascending: false })
+    .limit(300);
+  if (status) q = q.eq("status", status);
+  const { data } = await q;
+  return c.json({ data: data ?? [] });
+});
+
+// ── All providers ─────────────────────────────────────────────────────────
+app.get("/v1/admin/providers", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data } = await db(c.env)
+    .from("provider_profiles")
+    .select(`user_id, status, average_rating, completed_jobs, blocked_until,
+      app_users!user_id(full_name, email, city, phone, created_at)`)
+    .order("average_rating", { ascending: false })
+    .limit(300);
+  return c.json({ data: data ?? [] });
+});
+
+// ── All users ─────────────────────────────────────────────────────────────
+app.get("/v1/admin/users", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data } = await db(c.env)
+    .from("app_users")
+    .select("id, full_name, email, phone, city, role, created_at")
+    .order("created_at", { ascending: false })
+    .limit(300);
+  return c.json({ data: data ?? [] });
+});
+
+// ── Payments ──────────────────────────────────────────────────────────────
+app.get("/v1/admin/payments", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data } = await db(c.env)
+    .from("service_requests")
+    .select("id, category, city, quote_amount, payment_status, payment_method, created_at, client_user_id, provider_user_id")
+    .in("payment_status", ["client_paid", "confirmed"])
+    .order("created_at", { ascending: false })
+    .limit(300);
+  return c.json({ data: data ?? [] });
+});
+
+// ── Complaints (low ratings + cancelled) ──────────────────────────────────
+app.get("/v1/admin/complaints", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const [{ data: lowRated }, { data: cancelled }] = await Promise.all([
+    db(c.env)
+      .from("service_requests")
+      .select("id, category, city, description, client_rating, status, created_at, client_user_id, provider_user_id")
+      .lte("client_rating", 2)
+      .not("client_rating", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(150),
+    db(c.env)
+      .from("service_requests")
+      .select("id, category, city, description, client_rating, status, created_at, client_user_id, provider_user_id")
+      .eq("status", "cancelled")
+      .order("created_at", { ascending: false })
+      .limit(150),
+  ]);
+  return c.json({ lowRated: lowRated ?? [], cancelled: cancelled ?? [] });
+});
+
+// ── Verify provider ───────────────────────────────────────────────────────
+app.patch("/v1/admin/providers/:id/verify", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  await db(c.env).from("provider_profiles").update({ verified: true }).eq("user_id", c.req.param("id"));
+  return c.json({ message: "Prestador verificado." });
+});
+
+// ── Block provider ────────────────────────────────────────────────────────
+app.patch("/v1/admin/providers/:id/block", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { days = 30 } = await c.req.json<{ days?: number }>().catch(() => ({ days: 30 }));
+  const blockedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+  await db(c.env)
+    .from("provider_profiles")
+    .update({ blocked_until: blockedUntil, status: "offline" })
+    .eq("user_id", c.req.param("id"));
+  await sendPush(c.env, c.req.param("id"), "⛔ Conta suspensa", `Sua conta foi suspensa por ${days} dias pelo administrador.`);
+  return c.json({ message: `Prestador bloqueado por ${days} dias.` });
+});
+
+// ── Unblock provider ──────────────────────────────────────────────────────
+app.patch("/v1/admin/providers/:id/unblock", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  await db(c.env)
+    .from("provider_profiles")
+    .update({ blocked_until: null, status: "available" })
+    .eq("user_id", c.req.param("id"));
+  await sendPush(c.env, c.req.param("id"), "✅ Conta reativada", "Sua conta foi reativada pelo administrador.");
+  return c.json({ message: "Prestador desbloqueado." });
 });
 
 export default app;

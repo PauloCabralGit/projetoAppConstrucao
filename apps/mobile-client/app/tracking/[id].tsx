@@ -73,6 +73,15 @@ const STATUS_CONFIG: Record<RequestStatus, { label: string; color: string; bg: s
   cancelled: { label: 'Cancelado', color: Colors.dangerRed, bg: '#FEF2F2' },
 };
 
+const CATEGORY_LABELS: Record<string, string> = {
+  alvenaria: 'Alvenaria',
+  hidraulica: 'Hidráulica',
+  eletrica: 'Elétrica',
+  pintura: 'Pintura',
+  piso: 'Piso',
+  acabamento: 'Acabamento',
+};
+
 const DEFAULT_REGION: Region = {
   latitude: -23.5505,
   longitude: -46.6333,
@@ -435,6 +444,260 @@ export default function TrackingScreen() {
   const paymentSent = request?.payment_status === 'client_paid';
   const paymentConfirmed = request?.payment_status === 'confirmed';
   const needsPayment = isCompleted && !paymentSent && !paymentConfirmed;
+
+  // ── Completed state: full-screen card, no map ─────────────────────────────
+  if (isCompleted && request) {
+    const paymentLabel = paymentConfirmed
+      ? `Pago via ${request.payment_method === 'cash' ? 'Dinheiro' : request.payment_method === 'card' ? 'Cartão' : 'Pix'}`
+      : paymentSent
+      ? 'Pagamento enviado — aguardando confirmação'
+      : 'Aguardando pagamento';
+    const paymentColor = paymentConfirmed ? Colors.successGreen : paymentSent ? Colors.warningAmber : Colors.textSecondary;
+    const paymentIcon = paymentConfirmed ? 'checkmark-circle' : paymentSent ? 'hourglass-outline' : 'cash-outline';
+
+    return (
+      <View style={styles.container}>
+        <View style={[styles.completedTopBar, { paddingTop: Platform.OS === 'ios' ? 56 : 36 }]}>
+          <TouchableOpacity style={styles.completedBackBtn} onPress={() => router.back()}>
+            <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
+          </TouchableOpacity>
+          <View style={styles.completedTopTitle}>
+            <Ionicons name="checkmark-circle" size={20} color={Colors.successGreen} />
+            <Text style={styles.completedTopTitleText}>Serviço concluído</Text>
+          </View>
+          <View style={{ width: 44 }} />
+        </View>
+
+        <ScrollView contentContainerStyle={styles.completedScrollContent} showsVerticalScrollIndicator={false}>
+          {/* Provider + category card */}
+          <View style={styles.completedCard}>
+            <View style={styles.completedCardTop}>
+              <View style={styles.completedCategoryBadge}>
+                <Text style={styles.completedCategoryText}>{CATEGORY_LABELS[request.category] ?? request.category}</Text>
+              </View>
+              <View style={styles.completedDoneBadge}>
+                <Ionicons name="checkmark-done-outline" size={12} color={Colors.successGreen} />
+                <Text style={styles.completedDoneText}>Concluído</Text>
+              </View>
+            </View>
+
+            <View style={styles.completedProviderRow}>
+              <View style={styles.completedAvatar}>
+                <Text style={styles.completedAvatarText}>
+                  {providerProfile?.full_name?.charAt(0).toUpperCase() ?? '?'}
+                </Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.completedProviderName}>{providerProfile?.full_name ?? 'Profissional'}</Text>
+                {!!providerProfile?.specialties && (
+                  <Text style={styles.completedProviderSpec}>{providerProfile.specialties}</Text>
+                )}
+              </View>
+            </View>
+
+            {request.quote_amount != null && Number(request.quote_amount) > 0 && (
+              <View style={styles.completedAmountRow}>
+                <Ionicons name="cash-outline" size={20} color={Colors.successGreen} />
+                <Text style={styles.completedAmountText}>
+                  R$ {Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </Text>
+              </View>
+            )}
+
+            <View style={[styles.completedPaymentChip, { borderColor: paymentColor }]}>
+              <Ionicons name={paymentIcon as 'checkmark-circle'} size={14} color={paymentColor} />
+              <Text style={[styles.completedPaymentText, { color: paymentColor }]}>{paymentLabel}</Text>
+            </View>
+
+            {request.client_rating != null ? (
+              <View style={styles.completedRatingRow}>
+                {[1, 2, 3, 4, 5].map(s => (
+                  <Ionicons key={s} name={s <= request.client_rating! ? 'star' : 'star-outline'} size={16} color={Colors.warningAmber} />
+                ))}
+                <Text style={styles.completedRatingLabel}>Sua avaliação: {request.client_rating} estrela{request.client_rating !== 1 ? 's' : ''}</Text>
+              </View>
+            ) : (
+              <TouchableOpacity style={styles.completedRatePrompt} onPress={() => { setSelectedRating(0); setRatingModal(true); }}>
+                <Ionicons name="star-outline" size={16} color={Colors.warningAmber} />
+                <Text style={styles.completedRatePromptText}>Avaliar profissional</Text>
+                <Ionicons name="chevron-forward" size={14} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          {/* Payment form (if not yet paid) */}
+          {needsPayment && (
+            <View style={styles.paymentCard}>
+              <View style={styles.paymentCardHeader}>
+                <Ionicons name="card-outline" size={18} color={Colors.darkNavy} />
+                <Text style={styles.paymentCardTitle}>Realizar pagamento</Text>
+              </View>
+              {request.quote_amount != null && (
+                <Text style={styles.paymentCardAmount}>
+                  R$ {Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </Text>
+              )}
+              <Text style={styles.paymentMethodLabel}>Forma de pagamento</Text>
+              <View style={styles.paymentMethodRow}>
+                {(['pix', 'cash', 'card'] as const).map((m) => (
+                  <TouchableOpacity
+                    key={m}
+                    style={[styles.methodChip, paymentMethod === m && styles.methodChipActive]}
+                    onPress={() => setPaymentMethod(m)}
+                  >
+                    <Ionicons
+                      name={m === 'pix' ? 'qr-code-outline' : m === 'cash' ? 'cash-outline' : 'card-outline'}
+                      size={16}
+                      color={paymentMethod === m ? Colors.cardWhite : Colors.textPrimary}
+                    />
+                    <Text style={[styles.methodChipText, paymentMethod === m && styles.methodChipTextActive]}>
+                      {m === 'pix' ? 'Pix' : m === 'cash' ? 'Dinheiro' : 'Cartão'}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {paymentMethod === 'pix' && !pixCopiaECola && (
+                <TouchableOpacity
+                  style={[styles.generatePixBtn, generatingPix && styles.btnDisabled]}
+                  onPress={handleGeneratePix}
+                  disabled={generatingPix}
+                >
+                  {generatingPix ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
+                    <>
+                      <Ionicons name="qr-code-outline" size={18} color={Colors.cardWhite} />
+                      <Text style={styles.generatePixBtnText}>Gerar QR Code Pix</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+              )}
+              {paymentMethod === 'pix' && pixCopiaECola && (
+                <View style={styles.pixQrSection}>
+                  {!!pixQrCode && (
+                    <Image source={{ uri: `data:image/png;base64,${pixQrCode}` }} style={styles.pixQrImage} resizeMode="contain" />
+                  )}
+                  <Text style={styles.pixCopiaLabel}>Pix Copia e Cola</Text>
+                  <Text style={styles.pixCopiaText} numberOfLines={2}>{pixCopiaECola}</Text>
+                  <TouchableOpacity style={styles.sharePixBtn} onPress={() => Share.share({ message: pixCopiaECola })}>
+                    <Ionicons name="copy-outline" size={16} color={Colors.darkNavy} />
+                    <Text style={styles.sharePixBtnText}>Copiar código</Text>
+                  </TouchableOpacity>
+                  <View style={styles.pixAwaitingRow}>
+                    <ActivityIndicator size="small" color={Colors.warningAmber} />
+                    <Text style={styles.pixAwaitingText}>Aguardando confirmação do banco...</Text>
+                  </View>
+                </View>
+              )}
+              {paymentMethod !== 'pix' && (
+                <>
+                  {paymentMethod === 'cash' && providerProfile?.pix_key && (
+                    <View style={styles.pixKeyBox}>
+                      <Text style={styles.pixKeyLabel}>Chave Pix do prestador</Text>
+                      <Text style={styles.pixKeyValue}>{providerProfile.pix_key}</Text>
+                    </View>
+                  )}
+                  <TouchableOpacity
+                    style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
+                    onPress={handleSendPayment}
+                    disabled={sendingPayment}
+                  >
+                    {sendingPayment ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
+                      <>
+                        <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
+                        <Text style={styles.sendPaymentBtnText}>Confirmar pagamento enviado</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </>
+              )}
+            </View>
+          )}
+
+          {/* Photos by type */}
+          {clientPhotos.length > 0 && (
+            <View style={styles.photosSection}>
+              <Text style={styles.photosSectionLabel}>Fotos do pedido</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+                {clientPhotos.map((p, i) => (
+                  <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                    <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+          {providerStartPhotos.length > 0 && (
+            <View style={styles.photosSection}>
+              <Text style={styles.photosSectionLabel}>Fotos do início do serviço</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+                {providerStartPhotos.map((p, i) => (
+                  <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                    <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+          {providerEndPhotos.length > 0 && (
+            <View style={styles.photosSection}>
+              <Text style={styles.photosSectionLabel}>Fotos da conclusão</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+                {providerEndPhotos.map((p, i) => (
+                  <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                    <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+        </ScrollView>
+
+        {/* Rating modal */}
+        <Modal visible={ratingModal} transparent animationType="slide" onRequestClose={() => setRatingModal(false)}>
+          <View style={styles.ratingOverlay}>
+            <View style={styles.ratingSheet}>
+              <View style={styles.ratingSheetHandle} />
+              <Text style={styles.ratingTitle}>Como foi o serviço?</Text>
+              <Text style={styles.ratingSubtitle}>
+                {providerProfile?.full_name ? `Avalie ${providerProfile.full_name}` : 'Dê sua nota para o profissional'}
+              </Text>
+              <View style={styles.starsRow}>
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} hitSlop={8}>
+                    <Ionicons name={star <= selectedRating ? 'star' : 'star-outline'} size={44} color={Colors.warningAmber} />
+                  </TouchableOpacity>
+                ))}
+              </View>
+              {selectedRating > 0 && (
+                <Text style={styles.ratingHint}>
+                  {selectedRating === 5 ? 'Excelente!' : selectedRating === 4 ? 'Muito bom!' : selectedRating === 3 ? 'Regular' : selectedRating === 2 ? 'Ruim' : 'Péssimo'}
+                </Text>
+              )}
+              <TouchableOpacity
+                style={[styles.ratingSubmitBtn, (submittingRating || selectedRating === 0) && { opacity: 0.5 }]}
+                onPress={handleSubmitRating}
+                disabled={submittingRating || selectedRating === 0}
+              >
+                {submittingRating ? <ActivityIndicator color="#fff" /> : <Text style={styles.ratingSubmitText}>Enviar avaliação</Text>}
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setRatingModal(false)} style={{ marginTop: 8 }}>
+                <Text style={styles.ratingSkipText}>Avaliar depois</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Photo viewer */}
+        <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
+          <View style={styles.photoViewerOverlay}>
+            <TouchableOpacity style={styles.photoViewerClose} onPress={() => setPhotoViewer(null)}>
+              <Ionicons name="close" size={28} color="#fff" />
+            </TouchableOpacity>
+            {photoViewer && <Image source={{ uri: photoViewer }} style={styles.photoViewerImage} resizeMode="contain" />}
+          </View>
+        </Modal>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -1307,6 +1570,87 @@ const styles = StyleSheet.create({
   cancelButtonDisabled: { opacity: 0.7 },
   cancelButtonText: { fontSize: 15, fontWeight: '700', color: Colors.dangerRed },
   btnDisabled: { opacity: 0.5 },
+  // Completed full-screen view
+  completedTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    backgroundColor: Colors.cardWhite,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  completedBackBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  completedTopTitle: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  completedTopTitleText: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  completedScrollContent: {
+    padding: 16,
+    gap: 14,
+    paddingBottom: Platform.OS === 'ios' ? 48 : 28,
+  },
+  completedCard: {
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 16,
+    padding: 16,
+    gap: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  completedCardTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  completedCategoryBadge: { backgroundColor: '#FFF4EE', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4 },
+  completedCategoryText: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  completedDoneBadge: { flexDirection: 'row', alignItems: 'center', gap: 4, backgroundColor: '#ECFDF5', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4 },
+  completedDoneText: { fontSize: 12, fontWeight: '600', color: Colors.successGreen },
+  completedProviderRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  completedAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  completedAvatarText: { fontSize: 18, fontWeight: '700', color: Colors.cardWhite },
+  completedProviderName: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  completedProviderSpec: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  completedAmountRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  completedAmountText: { fontSize: 24, fontWeight: '800', color: Colors.successGreen },
+  completedPaymentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.cardWhite,
+  },
+  completedPaymentText: { fontSize: 13, fontWeight: '600' },
+  completedRatingRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  completedRatingLabel: { fontSize: 13, color: Colors.textSecondary, marginLeft: 4 },
+  completedRatePrompt: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFFBEB',
+    borderRadius: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+  },
+  completedRatePromptText: { flex: 1, fontSize: 14, fontWeight: '600', color: Colors.textPrimary },
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -12,7 +12,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -127,10 +127,12 @@ export default function RequestsScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    setLoading(true);
-    fetchRequests().finally(() => setLoading(false));
-  }, [fetchRequests]);
+  useFocusEffect(
+    useCallback(() => {
+      setLoading(true);
+      fetchRequests().finally(() => setLoading(false));
+    }, [fetchRequests])
+  );
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -139,9 +141,7 @@ export default function RequestsScreen() {
   }
 
   function handleRequestPress(req: ServiceRequest) {
-    const paymentDone = req.payment_status === 'confirmed';
     if (req.status !== 'cancelled' && req.status !== 'draft') {
-      if (req.status === 'completed' && paymentDone) return;
       router.push(`/tracking/${req.id}`);
     }
   }
@@ -149,7 +149,7 @@ export default function RequestsScreen() {
   function renderItem({ item }: { item: ServiceRequest }) {
     const statusConf = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.draft;
     const paymentDone = item.payment_status === 'confirmed';
-    const canTrack = item.status !== 'cancelled' && item.status !== 'draft' && !(item.status === 'completed' && paymentDone);
+    const canTrack = item.status !== 'cancelled' && item.status !== 'draft';
     const itemPhotos = photosByRequest[item.id] ?? [];
 
     return (
@@ -248,7 +248,9 @@ export default function RequestsScreen() {
               {item.status === 'requested'
                 ? 'Ver pedido / negociar orçamento'
                 : item.status === 'completed'
-                ? item.payment_status === 'client_paid'
+                ? item.payment_status === 'confirmed'
+                  ? 'Ver resumo completo'
+                  : item.payment_status === 'client_paid'
                   ? 'Pagamento enviado — aguardando confirmação'
                   : 'Realizar pagamento'
                 : 'Acompanhar em tempo real'}
