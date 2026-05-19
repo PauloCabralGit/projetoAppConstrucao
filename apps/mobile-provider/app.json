@@ -15,11 +15,13 @@
     },
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.orionsystem.construconnect.provider",
       "config": {
         "googleMapsApiKey": "GOOGLE_MAPS_KEY_HERE"
       }
     },
     "android": {
+      "package": "com.orionsystem.construconnect.provider",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1E2A38"

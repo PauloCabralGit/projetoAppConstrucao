@@ -14,8 +14,11 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useTheme } from '@/contexts/ThemeContext';
 
 type RequestStatus =
   | 'draft'
@@ -89,12 +92,43 @@ function formatBudget(min: number | null, max: number | null): string {
   return `Até R$ ${max!.toLocaleString('pt-BR')}`;
 }
 
+const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+function isThisMonth(dateStr: string): boolean {
+  const d = new Date(dateStr);
+  const now = new Date();
+  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+}
+
+function buildSpendingChart(reqs: ServiceRequest[]) {
+  const now = new Date();
+  const months: { label: string; total: number; key: string }[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      label: MONTH_NAMES[d.getMonth()],
+      key: `${d.getFullYear()}-${d.getMonth()}`,
+      total: 0,
+    });
+  }
+  for (const r of reqs) {
+    if (r.status !== 'completed' || !r.quote_amount) continue;
+    const d = new Date(r.created_at);
+    const key = `${d.getFullYear()}-${d.getMonth()}`;
+    const m = months.find((mo) => mo.key === key);
+    if (m) m.total += Number(r.quote_amount);
+  }
+  return months;
+}
+
 export default function RequestsScreen() {
+  const { colors } = useTheme();
   const [requests, setRequests] = useState<ServiceRequest[]>([]);
   const [photosByRequest, setPhotosByRequest] = useState<Record<string, { url: string; type: string }[]>>({});
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [generatingPDF, setGeneratingPDF] = useState(false);
 
   const fetchRequests = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -140,6 +174,43 @@ export default function RequestsScreen() {
     setRefreshing(false);
   }
 
+  async function handleGeneratePDF() {
+    const thisMonth = requests.filter((r) => r.status === 'completed' && isThisMonth(r.created_at));
+    if (thisMonth.length === 0) {
+      const { Alert } = require('react-native');
+      Alert.alert('Sem dados', 'Nenhum serviço concluído este mês para gerar o relatório.');
+      return;
+    }
+    setGeneratingPDF(true);
+    try {
+      const now = new Date();
+      const mesAno = `${MONTH_NAMES[now.getMonth()]} ${now.getFullYear()}`;
+      const totalMes = thisMonth.reduce((s, r) => s + Number(r.quote_amount ?? 0), 0);
+      const rows = thisMonth.map((r) => `
+        <tr>
+          <td>${CATEGORY_LABELS[r.category] ?? r.category}</td>
+          <td>${r.description?.slice(0, 60) ?? '—'}</td>
+          <td>${formatDate(r.created_at)}</td>
+          <td>R$ ${Number(r.quote_amount ?? 0).toFixed(2).replace('.', ',')}</td>
+        </tr>`).join('');
+      const html = `<html><head><meta charset="utf-8">
+        <style>body{font-family:sans-serif;padding:24px;color:#101828}h1{color:#FF6B35;font-size:20px}h2{color:#6B7280;font-size:14px;margin-top:0}table{width:100%;border-collapse:collapse;margin-top:16px}th{background:#F7F8FA;padding:8px 12px;text-align:left;font-size:12px;color:#6B7280;border-bottom:2px solid #E5E7EB}td{padding:10px 12px;font-size:13px;border-bottom:1px solid #E5E7EB}.total{margin-top:16px;font-size:15px;font-weight:bold;color:#101828}</style>
+      </head><body>
+        <h1>Relatório de Gastos — ${mesAno}</h1>
+        <h2>ConstruConnect | Gerado em ${new Date().toLocaleDateString('pt-BR')}</h2>
+        <table><thead><tr><th>Categoria</th><th>Descrição</th><th>Data</th><th>Valor</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+        <p class="total">Total gasto no mês: R$ ${totalMes.toFixed(2).replace('.', ',')}</p>
+      </body></html>`;
+      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Relatório ${mesAno}` });
+      }
+    } catch {}
+    setGeneratingPDF(false);
+  }
+
   function handleRequestPress(req: ServiceRequest) {
     if (req.status !== 'cancelled' && req.status !== 'draft') {
       router.push(`/tracking/${req.id}`);
@@ -148,13 +219,12 @@ export default function RequestsScreen() {
 
   function renderItem({ item }: { item: ServiceRequest }) {
     const statusConf = STATUS_CONFIG[item.status] ?? STATUS_CONFIG.draft;
-    const paymentDone = item.payment_status === 'confirmed';
     const canTrack = item.status !== 'cancelled' && item.status !== 'draft';
     const itemPhotos = photosByRequest[item.id] ?? [];
 
     return (
       <TouchableOpacity
-        style={styles.card}
+        style={[styles.card, { backgroundColor: colors.cardWhite }]}
         onPress={() => handleRequestPress(item)}
         activeOpacity={canTrack ? 0.7 : 1}
       >
@@ -173,19 +243,19 @@ export default function RequestsScreen() {
         </View>
 
         {item.description ? (
-          <Text style={styles.description} numberOfLines={2}>
+          <Text style={[styles.description, { color: colors.textPrimary }]} numberOfLines={2}>
             {item.description}
           </Text>
         ) : null}
 
         <View style={styles.cardFooter}>
           <View style={styles.infoRow}>
-            <Ionicons name="location-outline" size={14} color={Colors.textSecondary} />
-            <Text style={styles.infoText}>{item.city || 'Cidade não informada'}</Text>
+            <Ionicons name="location-outline" size={14} color={colors.textSecondary} />
+            <Text style={[styles.infoText, { color: colors.textSecondary }]}>{item.city || 'Cidade não informada'}</Text>
           </View>
           <View style={styles.infoRow}>
-            <Ionicons name="calendar-outline" size={14} color={Colors.textSecondary} />
-            <Text style={styles.infoText}>{formatDate(item.created_at)}</Text>
+            <Ionicons name="calendar-outline" size={14} color={colors.textSecondary} />
+            <Text style={[styles.infoText, { color: colors.textSecondary }]}>{formatDate(item.created_at)}</Text>
           </View>
         </View>
 
@@ -242,7 +312,7 @@ export default function RequestsScreen() {
         )}
 
         {canTrack && (
-          <View style={styles.trackingRow}>
+          <View style={[styles.trackingRow, { borderTopColor: colors.border }]}>
             <Ionicons name="navigate" size={14} color={Colors.primary} />
             <Text style={styles.trackingText}>
               {item.status === 'requested'
@@ -261,17 +331,72 @@ export default function RequestsScreen() {
     );
   }
 
+  const chartData = buildSpendingChart(requests);
+  const maxVal = Math.max(...chartData.map((m) => m.total), 1);
+  const thisMonthTotal = chartData[chartData.length - 1]?.total ?? 0;
+  const completedCount = requests.filter((r) => r.status === 'completed').length;
+
+  const SpendingHeader = (
+    <View style={[styles.chartCard, { backgroundColor: colors.cardWhite, borderColor: colors.border }]}>
+      <View style={styles.chartTop}>
+        <View>
+          <Text style={[styles.chartTitle, { color: colors.textSecondary }]}>Gastos este mês</Text>
+          <Text style={[styles.chartValue, { color: colors.textPrimary }]}>
+            R$ {thisMonthTotal.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+          </Text>
+        </View>
+        <TouchableOpacity
+          style={[styles.pdfBtn, generatingPDF && { opacity: 0.6 }]}
+          onPress={handleGeneratePDF}
+          disabled={generatingPDF}
+        >
+          {generatingPDF
+            ? <ActivityIndicator size="small" color="#fff" />
+            : <><Ionicons name="document-text-outline" size={16} color="#fff" /><Text style={styles.pdfBtnText}>PDF</Text></>}
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.chartBars}>
+        {chartData.map((m, i) => {
+          const pct = maxVal > 0 ? m.total / maxVal : 0;
+          const isLast = i === chartData.length - 1;
+          return (
+            <View key={m.key} style={styles.barCol}>
+              <View style={styles.barTrack}>
+                <View
+                  style={[
+                    styles.bar,
+                    { height: `${Math.max(pct * 100, 2)}%` as any, backgroundColor: isLast ? Colors.primary : colors.border },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.barLabel, { color: isLast ? Colors.primary : colors.textSecondary, fontWeight: isLast ? '700' : '400' }]}>
+                {m.label}
+              </Text>
+            </View>
+          );
+        })}
+      </View>
+
+      <View style={[styles.chartFooter, { borderTopColor: colors.border }]}>
+        <Text style={[styles.chartFooterText, { color: colors.textSecondary }]}>
+          {completedCount} serviço{completedCount !== 1 ? 's' : ''} concluído{completedCount !== 1 ? 's' : ''} no total
+        </Text>
+      </View>
+    </View>
+  );
+
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top']}>
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Meus Pedidos</Text>
-        <Text style={styles.headerSubtitle}>Histórico de solicitações</Text>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['top']}>
+      <View style={[styles.header, { backgroundColor: colors.cardWhite, borderBottomColor: colors.border }]}>
+        <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Meus Pedidos</Text>
+        <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>Histórico de solicitações</Text>
       </View>
 
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>Carregando pedidos...</Text>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Carregando pedidos...</Text>
         </View>
       ) : (
         <FlatList
@@ -286,13 +411,14 @@ export default function RequestsScreen() {
               tintColor={Colors.primary}
             />
           }
+          ListHeaderComponent={SpendingHeader}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons name="receipt-outline" size={40} color={Colors.textSecondary} />
+              <View style={[styles.emptyIconCircle, { backgroundColor: colors.border }]}>
+                <Ionicons name="receipt-outline" size={40} color={colors.textSecondary} />
               </View>
-              <Text style={styles.emptyTitle}>Nenhum pedido ainda</Text>
-              <Text style={styles.emptySubtitle}>
+              <Text style={[styles.emptyTitle, { color: colors.textPrimary }]}>Nenhum pedido ainda</Text>
+              <Text style={[styles.emptySubtitle, { color: colors.textSecondary }]}>
                 Vá para a tela inicial e solicite um serviço para ver seu histórico aqui.
               </Text>
             </View>
@@ -315,10 +441,26 @@ export default function RequestsScreen() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: Colors.background,
+  safeArea: { flex: 1 },
+  chartCard: {
+    margin: 16, marginBottom: 8, borderRadius: 16, padding: 16, borderWidth: 1,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
   },
+  chartTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
+  chartTitle: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.6, marginBottom: 4 },
+  chartValue: { fontSize: 22, fontWeight: '800' },
+  pdfBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: Colors.primary, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8,
+  },
+  pdfBtnText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  chartBars: { flexDirection: 'row', gap: 8, height: 80, alignItems: 'flex-end' },
+  barCol: { flex: 1, alignItems: 'center', gap: 4 },
+  barTrack: { flex: 1, width: '100%', justifyContent: 'flex-end' },
+  bar: { width: '100%', borderRadius: 4, minHeight: 4 },
+  barLabel: { fontSize: 10 },
+  chartFooter: { marginTop: 12, paddingTop: 10, borderTopWidth: 1 },
+  chartFooterText: { fontSize: 12 },
   header: {
     paddingHorizontal: 20,
     paddingTop: 16,

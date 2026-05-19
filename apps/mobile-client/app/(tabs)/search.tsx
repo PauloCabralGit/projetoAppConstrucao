@@ -17,6 +17,7 @@ import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as SecureStore from 'expo-secure-store';
 import { Colors } from '@/constants/colors';
+import { useTheme } from '@/contexts/ThemeContext';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 const FAVORITES_KEY = 'client_favorite_providers';
@@ -97,6 +98,7 @@ async function saveFavorites(ids: string[]) {
 }
 
 export default function SearchScreen() {
+  const { colors } = useTheme();
   const [providers, setProviders] = useState<Provider[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -201,7 +203,7 @@ export default function SearchScreen() {
     const availColor = AVAILABILITY_COLOR[item.availability] ?? Colors.textSecondary;
 
     return (
-      <View style={styles.card}>
+      <View style={[styles.card, { backgroundColor: colors.cardWhite }]}>
         <View style={styles.cardHeader}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -210,7 +212,7 @@ export default function SearchScreen() {
           </View>
           <View style={styles.cardInfo}>
             <View style={styles.cardNameRow}>
-              <Text style={styles.cardName} numberOfLines={1}>{item.name}</Text>
+              <Text style={[styles.cardName, { color: colors.textPrimary }]} numberOfLines={1}>{item.name}</Text>
               <TouchableOpacity onPress={() => toggleFavorite(item.id)} hitSlop={8}>
                 <Ionicons
                   name={isFav ? 'heart' : 'heart-outline'}
@@ -242,7 +244,7 @@ export default function SearchScreen() {
           <Text style={styles.bioText} numberOfLines={2}>{item.bio}</Text>
         ) : null}
 
-        <View style={styles.statsRow}>
+        <View style={[styles.statsRow, { backgroundColor: colors.background }]}>
           <View style={styles.statItem}>
             <Ionicons name="star" size={14} color={Colors.warningAmber} />
             <Text style={styles.statText}>{item.rating.toFixed(1)}</Text>
@@ -336,18 +338,18 @@ export default function SearchScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={['top']}>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Profissionais</Text>
         <Text style={styles.headerSubtitle}>Encontre o profissional ideal para seu serviço</Text>
       </View>
 
-      <View style={styles.searchBar}>
-        <Ionicons name="search-outline" size={18} color={Colors.textSecondary} />
+      <View style={[styles.searchBar, { backgroundColor: colors.cardWhite, borderColor: colors.border }]}>
+        <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
         <TextInput
-          style={styles.searchInput}
+          style={[styles.searchInput, { color: colors.textPrimary }]}
           placeholder="Buscar por nome, cidade ou especialidade..."
-          placeholderTextColor={Colors.textSecondary}
+          placeholderTextColor={colors.textSecondary}
           value={search}
           onChangeText={setSearch}
         />
@@ -386,7 +388,7 @@ export default function SearchScreen() {
       </View>
 
       {showAdvanced && (
-        <View style={styles.advancedPanel}>
+        <View style={[styles.advancedPanel, { backgroundColor: colors.cardWhite, borderColor: colors.border }]}>
           <Text style={styles.advancedLabel}>Nota mínima</Text>
           <View style={styles.advancedRow}>
             {[0, 3, 4, 5].map((r) => (
@@ -439,7 +441,7 @@ export default function SearchScreen() {
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
-          <Text style={styles.loadingText}>Carregando profissionais...</Text>
+          <Text style={[styles.loadingText, { color: colors.textSecondary }]}>Carregando profissionais...</Text>
         </View>
       ) : (
         <FlatList

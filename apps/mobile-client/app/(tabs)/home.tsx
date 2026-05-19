@@ -20,6 +20,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useTheme } from '@/contexts/ThemeContext';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -51,6 +52,7 @@ const DEFAULT_REGION: Region = {
 };
 
 export default function HomeScreen() {
+  const { colors } = useTheme();
   const { providerId, providerName, preCategory } = useLocalSearchParams<{ providerId?: string; providerName?: string; preCategory?: string }>();
   const mapRef = useRef<MapView>(null);
   const mapReadyRef = useRef(false);
@@ -340,10 +342,10 @@ export default function HomeScreen() {
         </TouchableOpacity>
       )}
 
-      <View style={styles.bottomCard}>
-        <View style={styles.bottomCardHandle} />
-        <Text style={styles.cardTitle}>Solicitar serviço</Text>
-        <Text style={styles.cardSubtitle}>Selecione a categoria</Text>
+      <View style={[styles.bottomCard, { backgroundColor: colors.cardWhite }]}>
+        <View style={[styles.bottomCardHandle, { backgroundColor: colors.border }]} />
+        <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Solicitar serviço</Text>
+        <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>Selecione a categoria</Text>
 
         <ScrollView
           horizontal
@@ -392,11 +394,11 @@ export default function HomeScreen() {
           </View>
         ) : null}
 
-        <View style={styles.descriptionWrapper}>
+        <View style={[styles.descriptionWrapper, { backgroundColor: colors.background, borderColor: colors.border }]}>
           <TextInput
-            style={styles.descriptionInput}
+            style={[styles.descriptionInput, { color: colors.textPrimary }]}
             placeholder="Descreva o serviço que você precisa..."
-            placeholderTextColor={Colors.textSecondary}
+            placeholderTextColor={colors.textSecondary}
             value={description}
             onChangeText={setDescription}
             multiline
@@ -404,7 +406,7 @@ export default function HomeScreen() {
             maxLength={500}
             textAlignVertical="top"
           />
-          <Text style={styles.charCount}>{description.length}/500</Text>
+          <Text style={[styles.charCount, { color: colors.textSecondary }]}>{description.length}/500</Text>
         </View>
 
         <View style={styles.photosSection}>
