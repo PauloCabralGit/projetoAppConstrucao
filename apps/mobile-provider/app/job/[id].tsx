@@ -11,6 +11,7 @@ import {
   Image,
   TextInput,
   Modal,
+  Share,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -118,6 +119,12 @@ export default function JobDetailScreen() {
   const [quoteNotes, setQuoteNotes] = useState('');
   const [submittingQuote, setSubmittingQuote] = useState(false);
   const [acceptingCounter, setAcceptingCounter] = useState(false);
+
+  // Reject modal state
+  const [rejectModalOpen, setRejectModalOpen] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
+  const [rejectOther, setRejectOther] = useState('');
+  const [rejecting, setRejecting] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -274,6 +281,50 @@ export default function JobDetailScreen() {
     router.replace('/(tabs)/active');
   }
 
+  async function handleConfirmReject() {
+    const finalReason = rejectReason === 'Outro' ? rejectOther.trim() : rejectReason;
+    if (!finalReason) {
+      Alert.alert('Selecione um motivo', 'Por favor, selecione ou descreva o motivo da recusa.');
+      return;
+    }
+    setRejecting(true);
+    try {
+      await fetch(`${API_BASE}/service-requests/${id}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_user_id: userIdRef.current, reason: finalReason }),
+      }).catch(() => {});
+    } finally {
+      setRejecting(false);
+      setRejectModalOpen(false);
+      router.back();
+    }
+  }
+
+  async function handleShareReceipt() {
+    if (!job) return;
+    const categoryLabel = CATEGORY_LABELS[job.category] ?? job.category;
+    const value = job.quote_amount != null ? `R$ ${Number(job.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'A combinar';
+    const paymentMethod =
+      job.payment_method === 'cash' ? 'Dinheiro'
+      : job.payment_method === 'card' ? 'Cartão'
+      : 'Pix';
+    const rating = job.client_rating ? `⭐ ${job.client_rating}/5` : 'Não avaliado';
+    const text = [
+      '🔨 RECIBO — ConstruConnect',
+      '─────────────────────────',
+      `Serviço: ${categoryLabel}`,
+      `Cidade: ${job.city || 'Não informado'}`,
+      `Valor: ${value}`,
+      `Pagamento: ${job.payment_status === 'confirmed' ? `Confirmado via ${paymentMethod}` : 'Pendente'}`,
+      `Avaliação: ${rating}`,
+      `Data: ${new Date(job.created_at).toLocaleDateString('pt-BR')}`,
+      '─────────────────────────',
+      'ConstruConnect — Seu parceiro de obras',
+    ].join('\n');
+    await Share.share({ message: text, title: 'Recibo do serviço' }).catch(() => {});
+  }
+
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -309,10 +360,16 @@ export default function JobDetailScreen() {
     // Quote accepted — start travel
     if (job.status === 'accepted' && job.quote_status === 'accepted') {
       return (
-        <TouchableOpacity style={styles.startTravelBtn} onPress={handleStartTravel}>
-          <Ionicons name="car-outline" size={18} color={Colors.cardWhite} />
-          <Text style={styles.startTravelBtnText}>INICIAR DESLOCAMENTO</Text>
-        </TouchableOpacity>
+        <View style={{ gap: 10 }}>
+          <TouchableOpacity style={styles.startTravelBtn} onPress={handleStartTravel}>
+            <Ionicons name="car-outline" size={18} color={Colors.cardWhite} />
+            <Text style={styles.startTravelBtnText}>INICIAR DESLOCAMENTO</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.chatBtn} onPress={() => router.push(`/chat/${id}` as any)}>
+            <Ionicons name="chatbubble-outline" size={16} color={Colors.primary} />
+            <Text style={styles.chatBtnText}>Chat com cliente</Text>
+          </TouchableOpacity>
+        </View>
       );
     }
 
@@ -359,6 +416,14 @@ export default function JobDetailScreen() {
               <Text style={styles.ratingLabel}>{job.client_rating}.0 — avaliação do cliente</Text>
             </View>
           )}
+          <TouchableOpacity style={styles.chatBtn} onPress={() => router.push(`/chat/${id}` as any)}>
+            <Ionicons name="chatbubble-outline" size={16} color={Colors.primary} />
+            <Text style={styles.chatBtnText}>Chat com cliente</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.shareReceiptBtn} onPress={handleShareReceipt}>
+            <Ionicons name="share-social-outline" size={16} color={Colors.primary} />
+            <Text style={styles.shareReceiptBtnText}>Compartilhar recibo</Text>
+          </TouchableOpacity>
         </View>
       );
     }
@@ -397,7 +462,7 @@ export default function JobDetailScreen() {
             </View>
           </View>
           <View style={styles.buttonsRow}>
-            <TouchableOpacity style={styles.declineButton} onPress={() => router.back()}>
+            <TouchableOpacity style={styles.declineButton} onPress={() => setRejectModalOpen(true)}>
               <Text style={styles.declineButtonText}>RECUSAR</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -583,6 +648,72 @@ export default function JobDetailScreen() {
 
         {renderActionSection()}
       </ScrollView>
+
+      {/* Reject modal */}
+      <Modal
+        visible={rejectModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setRejectModalOpen(false)}
+      >
+        <View style={styles.rejectOverlay}>
+          <View style={styles.rejectSheet}>
+            <View style={styles.rejectHandle} />
+            <Text style={styles.rejectTitle}>Recusar chamado</Text>
+            <Text style={styles.rejectSubtitle}>Selecione o motivo da recusa:</Text>
+
+            {[
+              'Muito longe de mim',
+              'Fora da minha especialidade',
+              'Indisponível no momento',
+              'Preço incompatível',
+              'Outro motivo',
+            ].map((reason) => (
+              <TouchableOpacity
+                key={reason}
+                style={[styles.rejectOption, rejectReason === reason && styles.rejectOptionActive]}
+                onPress={() => { setRejectReason(reason); if (reason !== 'Outro motivo') setRejectOther(''); }}
+              >
+                <View style={[styles.rejectRadio, rejectReason === reason && styles.rejectRadioActive]}>
+                  {rejectReason === reason && <View style={styles.rejectRadioDot} />}
+                </View>
+                <Text style={[styles.rejectOptionText, rejectReason === reason && styles.rejectOptionTextActive]}>
+                  {reason}
+                </Text>
+              </TouchableOpacity>
+            ))}
+
+            {rejectReason === 'Outro motivo' && (
+              <TextInput
+                style={styles.rejectOtherInput}
+                placeholder="Descreva o motivo..."
+                placeholderTextColor={Colors.textSecondary}
+                value={rejectOther}
+                onChangeText={setRejectOther}
+                multiline
+                numberOfLines={2}
+                textAlignVertical="top"
+              />
+            )}
+
+            <View style={styles.rejectActions}>
+              <TouchableOpacity style={styles.rejectCancelBtn} onPress={() => setRejectModalOpen(false)}>
+                <Text style={styles.rejectCancelBtnText}>Voltar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.rejectConfirmBtn, (!rejectReason || rejecting) && styles.buttonDisabled]}
+                onPress={handleConfirmReject}
+                disabled={!rejectReason || rejecting}
+              >
+                {rejecting
+                  ? <ActivityIndicator color={Colors.cardWhite} size="small" />
+                  : <Text style={styles.rejectConfirmBtnText}>Confirmar recusa</Text>
+                }
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
         <View style={styles.photoViewerOverlay}>
@@ -881,4 +1012,117 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   startTravelBtnText: { fontSize: 16, fontWeight: '800', color: Colors.cardWhite, letterSpacing: 1 },
+  chatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: 12,
+    height: 44,
+    backgroundColor: '#FFF4EE',
+  },
+  chatBtnText: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  shareReceiptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    backgroundColor: '#FFF4EE',
+  },
+  shareReceiptBtnText: { fontSize: 14, fontWeight: '700', color: Colors.primary },
+  // ── Reject modal ───────────────────────────────────────────────────────────
+  rejectOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  rejectSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: Platform.OS === 'ios' ? 40 : 24,
+    gap: 10,
+  },
+  rejectHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    alignSelf: 'center',
+    marginBottom: 4,
+  },
+  rejectTitle: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary },
+  rejectSubtitle: { fontSize: 13, color: Colors.textSecondary, marginBottom: 4 },
+  rejectOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  rejectOptionActive: {
+    borderColor: Colors.dangerRed,
+    backgroundColor: '#FEF2F2',
+  },
+  rejectRadio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  rejectRadioActive: { borderColor: Colors.dangerRed },
+  rejectRadioDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: Colors.dangerRed,
+  },
+  rejectOptionText: { fontSize: 14, color: Colors.textPrimary, fontWeight: '500', flex: 1 },
+  rejectOptionTextActive: { color: Colors.dangerRed, fontWeight: '700' },
+  rejectOtherInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.background,
+    minHeight: 64,
+  },
+  rejectActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
+  rejectCancelBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: Colors.background,
+  },
+  rejectCancelBtnText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
+  rejectConfirmBtn: {
+    flex: 2,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: Colors.dangerRed,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 3,
+  },
+  rejectConfirmBtnText: { fontSize: 15, fontWeight: '800', color: Colors.cardWhite, letterSpacing: 0.5 },
 });

@@ -118,12 +118,29 @@ export default function TrackingScreen() {
   const [pixQrCode, setPixQrCode] = useState<string | null>(null);
   const [pixCopiaECola, setPixCopiaECola] = useState<string | null>(null);
 
+  // Complaint state
+  const [complaintModal, setComplaintModal] = useState(false);
+  const [complaintReason, setComplaintReason] = useState('');
+  const [complaintDesc, setComplaintDesc] = useState('');
+  const [submittingComplaint, setSubmittingComplaint] = useState(false);
+
+  // Bids state
+  const [bids, setBids] = useState<any[]>([]);
+  const [acceptingBidId, setAcceptingBidId] = useState<string | null>(null);
+
   useEffect(() => {
     if (!id) return;
     loadRequest();
     loadPhotos();
+    loadBids();
     const cleanupRequest = subscribeToRequest();
-    return () => { cleanupRequest(); };
+    const bidsChannel = supabase
+      .channel(`bids-${id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bids', filter: `request_id=eq.${id}` }, () => {
+        loadBids();
+      })
+      .subscribe();
+    return () => { cleanupRequest(); supabase.removeChannel(bidsChannel); };
   }, [id]);
 
   useEffect(() => {
@@ -374,6 +391,63 @@ export default function TrackingScreen() {
     );
   }
 
+  async function loadBids() {
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/bids`);
+      if (res.ok) {
+        const data = await res.json();
+        setBids(data.bids ?? []);
+      }
+    } catch {}
+  }
+
+  async function handleAcceptBid(bidId: string) {
+    setAcceptingBidId(bidId);
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH' });
+      if (res.ok) {
+        await loadRequest();
+        await loadBids();
+      } else {
+        Alert.alert('Erro', 'Não foi possível aceitar o orçamento.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet.');
+    }
+    setAcceptingBidId(null);
+  }
+
+  async function handleSubmitComplaint() {
+    if (!complaintReason) { Alert.alert('Selecione o motivo da reclamação.'); return; }
+    if (!complaintDesc.trim()) { Alert.alert('Descreva o ocorrido.'); return; }
+    setSubmittingComplaint(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      const res = await fetch(`${API_BASE}/complaints`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          request_id: id,
+          client_user_id: user?.id,
+          provider_user_id: request?.provider_user_id ?? undefined,
+          reason: complaintReason,
+          description: complaintDesc.trim(),
+        }),
+      });
+      if (res.ok) {
+        setComplaintModal(false);
+        setComplaintReason('');
+        setComplaintDesc('');
+        Alert.alert('Reclamação enviada', 'Nossa equipe irá analisar sua reclamação em breve.');
+      } else {
+        Alert.alert('Erro', 'Não foi possível registrar a reclamação. Tente novamente.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+    setSubmittingComplaint(false);
+  }
+
   async function handleSubmitRating() {
     if (selectedRating === 0) {
       Alert.alert('Selecione uma nota', 'Toque em uma estrela para avaliar.');
@@ -523,6 +597,50 @@ export default function TrackingScreen() {
                 <Ionicons name="chevron-forward" size={14} color={Colors.textSecondary} />
               </TouchableOpacity>
             )}
+
+            <TouchableOpacity
+              style={styles.chatBtn}
+              onPress={() => router.push(`/chat/${id}` as any)}
+            >
+              <Ionicons name="chatbubble-outline" size={16} color={Colors.primary} />
+              <Text style={styles.chatBtnText}>Chat com profissional</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.shareReceiptBtn}
+              onPress={() => {
+                const cat = CATEGORY_LABELS[request.category] ?? request.category;
+                const val = request.quote_amount != null
+                  ? `R$ ${Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+                  : 'A combinar';
+                const paidVia = request.payment_method === 'cash' ? 'Dinheiro' : request.payment_method === 'card' ? 'Cartão' : 'Pix';
+                Share.share({
+                  message: [
+                    '🔨 RECIBO — ConstruConnect',
+                    '─────────────────────────',
+                    `Serviço: ${cat}`,
+                    `Profissional: ${providerProfile?.full_name ?? '—'}`,
+                    `Valor: ${val}`,
+                    `Pagamento: ${paymentConfirmed ? `Confirmado via ${paidVia}` : paymentSent ? 'Enviado — aguardando confirmação' : 'Pendente'}`,
+                    `Avaliação: ${request.client_rating ? `⭐ ${request.client_rating}/5` : 'Ainda não avaliado'}`,
+                    '─────────────────────────',
+                    'ConstruConnect — Seu parceiro de obras',
+                  ].join('\n'),
+                  title: 'Recibo do serviço',
+                });
+              }}
+            >
+              <Ionicons name="share-social-outline" size={16} color={Colors.primary} />
+              <Text style={styles.shareReceiptBtnText}>Compartilhar recibo</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.complaintBtn}
+              onPress={() => { setComplaintReason(''); setComplaintDesc(''); setComplaintModal(true); }}
+            >
+              <Ionicons name="warning-outline" size={16} color={Colors.dangerRed} />
+              <Text style={styles.complaintBtnText}>Abrir reclamação</Text>
+            </TouchableOpacity>
           </View>
 
           {/* Payment form (if not yet paid) */}
@@ -871,6 +989,53 @@ export default function TrackingScreen() {
           <Text style={[styles.statusLabel, { color: statusConf.color }]}>{statusConf.label}</Text>
         </View>
 
+        {/* Bids section — show when waiting for provider */}
+        {request?.status === 'requested' && bids.length > 0 && (
+          <View style={styles.bidsSection}>
+            <Text style={styles.bidsSectionTitle}>
+              {bids.length} orçamento{bids.length !== 1 ? 's' : ''} recebido{bids.length !== 1 ? 's' : ''}
+            </Text>
+            {bids.map((bid: any) => {
+              const providerUser = Array.isArray(bid.app_users) ? bid.app_users[0] : bid.app_users;
+              const providerProfile2 = Array.isArray(bid.provider_profiles) ? bid.provider_profiles[0] : bid.provider_profiles;
+              const name = providerUser?.full_name ?? 'Profissional';
+              const rating = providerProfile2?.average_rating ?? '—';
+              const jobs2 = providerProfile2?.completed_jobs ?? 0;
+              return (
+                <View key={bid.id} style={styles.bidCard}>
+                  <View style={styles.bidCardRow}>
+                    <View style={styles.bidAvatar}>
+                      <Text style={styles.bidAvatarText}>{name.charAt(0).toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.bidProviderName}>{name}</Text>
+                      <View style={styles.bidMeta}>
+                        <Ionicons name="star" size={12} color={Colors.warningAmber} />
+                        <Text style={styles.bidMetaText}>{rating}</Text>
+                        <Text style={styles.bidMetaDot}>·</Text>
+                        <Text style={styles.bidMetaText}>{jobs2} serviços</Text>
+                      </View>
+                    </View>
+                    <Text style={styles.bidAmount}>
+                      R$ {Number(bid.amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                    </Text>
+                  </View>
+                  {bid.notes ? <Text style={styles.bidNotes}>{bid.notes}</Text> : null}
+                  <TouchableOpacity
+                    style={[styles.acceptBidBtn, acceptingBidId === bid.id && styles.btnDisabled]}
+                    onPress={() => handleAcceptBid(bid.id)}
+                    disabled={acceptingBidId === bid.id}
+                  >
+                    {acceptingBidId === bid.id
+                      ? <ActivityIndicator color={Colors.cardWhite} size="small" />
+                      : <Text style={styles.acceptBidBtnText}>Aceitar este orçamento</Text>}
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </View>
+        )}
+
         {/* Payment section */}
         {isCompleted && paymentConfirmed && (
           <View style={styles.paymentConfirmedCard}>
@@ -1045,6 +1210,17 @@ export default function TrackingScreen() {
           </View>
         )}
 
+        {/* Chat button — only once a provider is assigned */}
+        {request?.provider_user_id && request?.status !== 'requested' && request?.status !== 'cancelled' && (
+          <TouchableOpacity
+            style={styles.chatBtn}
+            onPress={() => router.push(`/chat/${id}` as any)}
+          >
+            <Ionicons name="chatbubble-outline" size={16} color={Colors.primary} />
+            <Text style={styles.chatBtnText}>Chat com profissional</Text>
+          </TouchableOpacity>
+        )}
+
         {/* Cancel button */}
         {request?.status !== 'completed' && request?.status !== 'cancelled' && (
           <TouchableOpacity
@@ -1149,6 +1325,61 @@ export default function TrackingScreen() {
             <TouchableOpacity onPress={() => setRatingModal(false)} style={{ marginTop: 8 }}>
               <Text style={styles.ratingSkipText}>Avaliar depois</Text>
             </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Complaint modal */}
+      <Modal visible={complaintModal} transparent animationType="slide" onRequestClose={() => setComplaintModal(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Abrir reclamação</Text>
+            <Text style={styles.modalSubtitle}>Selecione o motivo</Text>
+
+            {['Serviço não concluído', 'Qualidade insatisfatória', 'Profissional não compareceu', 'Cobrança indevida', 'Comportamento inadequado'].map((reason) => (
+              <TouchableOpacity
+                key={reason}
+                style={[styles.complaintOption, complaintReason === reason && styles.complaintOptionActive]}
+                onPress={() => setComplaintReason(reason)}
+              >
+                <Ionicons
+                  name={complaintReason === reason ? 'radio-button-on' : 'radio-button-off'}
+                  size={18}
+                  color={complaintReason === reason ? Colors.dangerRed : Colors.textSecondary}
+                />
+                <Text style={[styles.complaintOptionText, complaintReason === reason && { color: Colors.dangerRed }]}>
+                  {reason}
+                </Text>
+              </TouchableOpacity>
+            ))}
+
+            <TextInput
+              style={styles.complaintInput}
+              placeholder="Descreva o ocorrido em detalhes..."
+              placeholderTextColor={Colors.textSecondary}
+              value={complaintDesc}
+              onChangeText={setComplaintDesc}
+              multiline
+              numberOfLines={4}
+              maxLength={500}
+              textAlignVertical="top"
+            />
+            <Text style={styles.complaintCharCount}>{complaintDesc.length}/500</Text>
+
+            <View style={styles.modalButtons}>
+              <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setComplaintModal(false)}>
+                <Text style={styles.modalCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.complaintSubmitBtn, (submittingComplaint || !complaintReason || !complaintDesc.trim()) && styles.btnDisabled]}
+                onPress={handleSubmitComplaint}
+                disabled={submittingComplaint || !complaintReason || !complaintDesc.trim()}
+              >
+                {submittingComplaint
+                  ? <ActivityIndicator color={Colors.cardWhite} size="small" />
+                  : <Text style={styles.modalConfirmText}>Enviar</Text>}
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
       </Modal>
@@ -1698,4 +1929,113 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   modalConfirmText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  shareReceiptBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: 12,
+    height: 44,
+    backgroundColor: '#FFF4EE',
+  },
+  shareReceiptBtnText: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  chatBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: 12,
+    height: 44,
+    backgroundColor: '#FFF4EE',
+    marginBottom: 8,
+  },
+  chatBtnText: { fontSize: 14, fontWeight: '600', color: Colors.primary },
+  complaintBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.dangerRed,
+    borderRadius: 12,
+    height: 44,
+    backgroundColor: '#FEF2F2',
+  },
+  complaintBtnText: { fontSize: 14, fontWeight: '600', color: Colors.dangerRed },
+  complaintOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  complaintOptionActive: { borderBottomColor: '#FECACA' },
+  complaintOptionText: { fontSize: 14, color: Colors.textPrimary, flex: 1 },
+  complaintInput: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    padding: 12,
+    fontSize: 14,
+    color: Colors.textPrimary,
+    backgroundColor: Colors.background,
+    minHeight: 90,
+    marginTop: 12,
+  },
+  complaintCharCount: { fontSize: 11, color: Colors.textSecondary, textAlign: 'right', marginTop: 4 },
+  complaintSubmitBtn: {
+    flex: 2,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: Colors.dangerRed,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bidsSection: {
+    gap: 10,
+  },
+  bidsSectionTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  bidCard: {
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 14,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  bidCardRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  bidAvatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bidAvatarText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  bidProviderName: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  bidMeta: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
+  bidMetaText: { fontSize: 12, color: Colors.textSecondary },
+  bidMetaDot: { fontSize: 12, color: Colors.border },
+  bidAmount: { fontSize: 18, fontWeight: '800', color: Colors.successGreen },
+  bidNotes: { fontSize: 13, color: Colors.textSecondary, fontStyle: 'italic' },
+  acceptBidBtn: {
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+    height: 42,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acceptBidBtnText: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
 });

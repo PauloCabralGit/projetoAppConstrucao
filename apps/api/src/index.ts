@@ -170,6 +170,13 @@ app.patch("/v1/service-requests/:id/complete", async (c) => {
   return c.json({ message: "Serviço concluído com sucesso." });
 });
 
+app.post("/v1/service-requests/:id/reject", async (c) => {
+  const jobId = c.req.param("id");
+  const body = await c.req.json<{ provider_user_id: string; reason?: string }>().catch(() => ({} as any));
+  if (!jobId || !body.provider_user_id) return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  return c.json({ message: "Chamado recusado." });
+});
+
 app.patch("/v1/service-requests/:id/cancel", async (c) => {
   const jobId = c.req.param("id");
   const body = await c.req.json<{ client_user_id: string }>();
@@ -196,6 +203,7 @@ app.post("/v1/service-requests", async (c) => {
     description: string;
     latitude?: number;
     longitude?: number;
+    scheduled_date?: string;
   }>();
 
   if (!body.client_user_id || !body.category || !body.description) {
@@ -210,17 +218,18 @@ app.post("/v1/service-requests", async (c) => {
     .eq("id", body.client_user_id)
     .maybeSingle();
 
-  const today = new Date().toISOString().split("T")[0];
+  const city = userProfile?.city ?? "";
+  const scheduledDate = body.scheduled_date ?? new Date().toISOString().split("T")[0];
 
   const insertData: Record<string, unknown> = {
     client_user_id: body.client_user_id,
     category: body.category,
     description: body.description,
     status: "requested",
-    city: userProfile?.city ?? "",
+    city,
     budget_min: 0,
     budget_max: 0,
-    scheduled_date: today,
+    scheduled_date: scheduledDate,
   };
 
   if (body.latitude != null) insertData.latitude = body.latitude;
@@ -233,6 +242,37 @@ app.post("/v1/service-requests", async (c) => {
     .single();
 
   if (error) return c.json({ message: error.message }, 400);
+
+  // Notify available providers in the same city
+  if (city) {
+    const { data: nearbyProviders } = await adminDb
+      .from("provider_profiles")
+      .select("user_id, app_users!user_id(push_token, city)")
+      .eq("status", "available")
+      .limit(50);
+
+    const catLabels: Record<string, string> = {
+      alvenaria: "Alvenaria", hidraulica: "Hidráulica", eletrica: "Elétrica",
+      pintura: "Pintura", piso: "Piso", acabamento: "Acabamento",
+    };
+    const catLabel = catLabels[body.category] ?? body.category;
+
+    for (const prov of nearbyProviders ?? []) {
+      const user = Array.isArray((prov as any).app_users) ? (prov as any).app_users[0] : (prov as any).app_users;
+      if (!user?.push_token?.startsWith("ExponentPushToken")) continue;
+      if (user.city && !user.city.toLowerCase().includes(city.toLowerCase())) continue;
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          to: user.push_token,
+          title: "🔨 Novo chamado disponível!",
+          body: `Serviço de ${catLabel} em ${city}. Abra o app para aceitar.`,
+          sound: "default",
+        }),
+      }).catch(() => {});
+    }
+  }
 
   return c.json({ id: data.id, message: "Pedido criado com sucesso." }, 201);
 });
@@ -1114,6 +1154,264 @@ app.patch("/v1/admin/providers/:id/unblock", async (c) => {
     .eq("user_id", c.req.param("id"));
   await sendPush(c.env, c.req.param("id"), "✅ Conta reativada", "Sua conta foi reativada pelo administrador.");
   return c.json({ message: "Prestador desbloqueado." });
+});
+
+// ── Chat: list messages for a request ────────────────────────────────────
+app.get("/v1/service-requests/:id/messages", async (c) => {
+  const requestId = c.req.param("id");
+  const { data, error } = await db(c.env)
+    .from("messages")
+    .select("id, sender_id, sender_role, content, created_at, app_users!sender_id(full_name)")
+    .eq("request_id", requestId)
+    .order("created_at", { ascending: true })
+    .limit(200);
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ messages: data ?? [] });
+});
+
+// ── Chat: send a message ──────────────────────────────────────────────────
+app.post("/v1/service-requests/:id/messages", async (c) => {
+  const requestId = c.req.param("id");
+  const body = await c.req.json<{
+    sender_id: string;
+    sender_role: "client" | "provider";
+    content: string;
+  }>().catch(() => ({} as any));
+
+  if (!body.sender_id || !body.sender_role || !body.content?.trim()) {
+    return c.json({ message: "Campos obrigatórios ausentes." }, 400);
+  }
+
+  const { data, error } = await db(c.env)
+    .from("messages")
+    .insert({
+      request_id: requestId,
+      sender_id: body.sender_id,
+      sender_role: body.sender_role,
+      content: body.content.trim(),
+    })
+    .select("id, sender_id, sender_role, content, created_at")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  // Notify the other party
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id, provider_user_id")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (req) {
+    const recipientId = body.sender_role === "client" ? req.provider_user_id : req.client_user_id;
+    if (recipientId) {
+      await sendPush(c.env, recipientId, "💬 Nova mensagem", body.content.trim().slice(0, 80));
+    }
+  }
+
+  return c.json({ message: data }, 201);
+});
+
+// ── Portfolio: list photos for a provider ─────────────────────────────────
+app.get("/v1/providers/:id/portfolio", async (c) => {
+  const providerId = c.req.param("id");
+  const { data, error } = await db(c.env)
+    .from("portfolio_photos")
+    .select("id, url, caption, category, created_at")
+    .eq("provider_user_id", providerId)
+    .order("created_at", { ascending: false });
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ photos: data ?? [] });
+});
+
+// ── Portfolio: upload a photo ─────────────────────────────────────────────
+app.post("/v1/providers/:id/portfolio", async (c) => {
+  const providerId = c.req.param("id");
+  const body = await c.req.json<{
+    file_data: string;
+    file_name?: string;
+    mime_type?: string;
+    caption?: string;
+    category?: string;
+  }>().catch(() => ({} as any));
+
+  if (!body.file_data) return c.json({ message: "file_data obrigatório." }, 400);
+
+  const supabaseDb = db(c.env);
+
+  const base64Data = body.file_data.includes(",") ? body.file_data.split(",")[1] : body.file_data;
+  const binary = Uint8Array.from(atob(base64Data), (c) => c.charCodeAt(0));
+  const fileName = body.file_name ?? `portfolio_${providerId}_${Date.now()}.jpg`;
+  const mimeType = body.mime_type ?? "image/jpeg";
+
+  const { error: uploadError } = await supabaseDb.storage
+    .from("portfolio")
+    .upload(fileName, binary, { contentType: mimeType, upsert: false });
+
+  if (uploadError) return c.json({ message: uploadError.message }, 400);
+
+  const { data: urlData } = supabaseDb.storage.from("portfolio").getPublicUrl(fileName);
+
+  const { data, error } = await supabaseDb
+    .from("portfolio_photos")
+    .insert({
+      provider_user_id: providerId,
+      url: urlData.publicUrl,
+      caption: body.caption ?? null,
+      category: body.category ?? null,
+    })
+    .select("id, url, caption, category, created_at")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ photo: data }, 201);
+});
+
+// ── Portfolio: delete a photo ─────────────────────────────────────────────
+app.delete("/v1/providers/:id/portfolio/:photoId", async (c) => {
+  const providerId = c.req.param("id");
+  const photoId = c.req.param("photoId");
+
+  const { error } = await db(c.env)
+    .from("portfolio_photos")
+    .delete()
+    .eq("id", photoId)
+    .eq("provider_user_id", providerId);
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Foto removida." });
+});
+
+// ── Complaints: submit a formal complaint ─────────────────────────────────
+app.post("/v1/complaints", async (c) => {
+  const body = await c.req.json<{
+    request_id: string;
+    client_user_id: string;
+    provider_user_id?: string;
+    reason: string;
+    description: string;
+  }>().catch(() => ({} as any));
+
+  if (!body.request_id || !body.client_user_id || !body.reason || !body.description) {
+    return c.json({ message: "Campos obrigatórios ausentes." }, 400);
+  }
+
+  const { data, error } = await db(c.env)
+    .from("formal_complaints")
+    .insert({
+      request_id: body.request_id,
+      client_user_id: body.client_user_id,
+      provider_user_id: body.provider_user_id ?? null,
+      reason: body.reason,
+      description: body.description,
+      status: "open",
+    })
+    .select("id")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ id: data.id, message: "Reclamação registrada com sucesso." }, 201);
+});
+
+// ── Bids: provider submits a bid ──────────────────────────────────────────
+app.post("/v1/service-requests/:id/bids", async (c) => {
+  const requestId = c.req.param("id");
+  const body = await c.req.json<{
+    provider_user_id: string;
+    amount: number;
+    notes?: string;
+  }>().catch(() => ({} as any));
+
+  if (!body.provider_user_id || !body.amount) {
+    return c.json({ message: "Campos obrigatórios ausentes." }, 400);
+  }
+
+  const { data, error } = await db(c.env)
+    .from("bids")
+    .upsert({
+      request_id: requestId,
+      provider_user_id: body.provider_user_id,
+      amount: body.amount,
+      notes: body.notes ?? null,
+      status: "pending",
+    }, { onConflict: "request_id,provider_user_id" })
+    .select("id, amount, notes, status, created_at")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  // Notify the client
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (req?.client_user_id) {
+    const amtStr = `R$ ${Number(body.amount).toFixed(2).replace(".", ",")}`;
+    await sendPush(c.env, req.client_user_id, "💰 Novo orçamento recebido!", `Um profissional enviou um orçamento de ${amtStr}. Toque para comparar.`);
+  }
+
+  return c.json({ bid: data }, 201);
+});
+
+// ── Bids: list bids for a request ─────────────────────────────────────────
+app.get("/v1/service-requests/:id/bids", async (c) => {
+  const requestId = c.req.param("id");
+  const { data, error } = await db(c.env)
+    .from("bids")
+    .select(`
+      id, amount, notes, status, created_at,
+      provider_user_id,
+      app_users!provider_user_id(full_name, city),
+      provider_profiles!provider_user_id(average_rating, completed_jobs, description)
+    `)
+    .eq("request_id", requestId)
+    .order("amount", { ascending: true });
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ bids: data ?? [] });
+});
+
+// ── Bids: client accepts a bid ────────────────────────────────────────────
+app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
+  const requestId = c.req.param("id");
+  const bidId = c.req.param("bidId");
+
+  // Fetch the winning bid
+  const { data: bid, error: bidErr } = await db(c.env)
+    .from("bids")
+    .select("provider_user_id, amount")
+    .eq("id", bidId)
+    .eq("request_id", requestId)
+    .maybeSingle();
+
+  if (bidErr || !bid) return c.json({ message: "Bid não encontrado." }, 404);
+
+  // Mark winning bid accepted, reject others
+  await db(c.env).from("bids").update({ status: "accepted" }).eq("id", bidId);
+  await db(c.env)
+    .from("bids")
+    .update({ status: "rejected" })
+    .eq("request_id", requestId)
+    .neq("id", bidId);
+
+  // Assign provider and quote to the request
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({
+      provider_user_id: bid.provider_user_id,
+      quote_amount: bid.amount,
+      status: "accepted",
+    })
+    .eq("id", requestId);
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  // Notify winning provider
+  const amtStr = `R$ ${Number(bid.amount).toFixed(2).replace(".", ",")}`;
+  await sendPush(c.env, bid.provider_user_id, "✅ Seu orçamento foi aceito!", `O cliente aceitou seu orçamento de ${amtStr}. Prepare-se para o serviço!`);
+
+  return c.json({ message: "Bid aceito. Prestador atribuído ao chamado." });
 });
 
 export default app;

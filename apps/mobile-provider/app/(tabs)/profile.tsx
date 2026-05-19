@@ -1,15 +1,23 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
-  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch,
+  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch, Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+
+interface PortfolioPhoto {
+  id: string;
+  url: string;
+  caption?: string;
+  category?: string;
+}
 
 interface ProviderProfile {
   full_name: string;
@@ -47,7 +55,12 @@ export default function ProviderProfileScreen() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
 
+  const [portfolio, setPortfolio] = useState<PortfolioPhoto[]>([]);
+  const [loadingPortfolio, setLoadingPortfolio] = useState(false);
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+
   useEffect(() => { loadProfile(); }, []);
+  useEffect(() => { if (userId) loadPortfolio(); }, [userId]);
 
   async function loadProfile() {
     setLoading(true);
@@ -189,6 +202,62 @@ export default function ProviderProfileScreen() {
     setTogglingAvailability(false);
   }
 
+  async function loadPortfolio() {
+    if (!userId) return;
+    setLoadingPortfolio(true);
+    try {
+      const res = await fetch(`${API_BASE}/providers/${userId}/portfolio`);
+      if (res.ok) {
+        const data = await res.json();
+        setPortfolio(data.photos ?? []);
+      }
+    } finally {
+      setLoadingPortfolio(false);
+    }
+  }
+
+  async function handleAddPortfolioPhoto() {
+    if (!userId) return;
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permissão negada', 'Permita o acesso à galeria.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.7, base64: true });
+    if (result.canceled || !result.assets[0].base64) return;
+
+    setUploadingPhoto(true);
+    try {
+      const res = await fetch(`${API_BASE}/providers/${userId}/portfolio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_data: result.assets[0].base64, file_name: `portfolio_${Date.now()}.jpg`, mime_type: 'image/jpeg' }),
+      });
+      if (res.ok) {
+        await loadPortfolio();
+      } else {
+        Alert.alert('Erro', 'Não foi possível enviar a foto.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Erro de conexão.');
+    }
+    setUploadingPhoto(false);
+  }
+
+  async function handleDeletePortfolioPhoto(photoId: string) {
+    if (!userId) return;
+    Alert.alert('Remover foto', 'Deseja remover esta foto do portfólio?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Remover', style: 'destructive',
+        onPress: async () => {
+          await fetch(`${API_BASE}/providers/${userId}/portfolio/${photoId}`, { method: 'DELETE' }).catch(() => {});
+          setPortfolio((prev) => prev.filter((p) => p.id !== photoId));
+        },
+      },
+    ]);
+  }
+
   async function handleSignOut() {
     Alert.alert('Sair da conta', 'Tem certeza que deseja sair?', [
       { text: 'Cancelar', style: 'cancel' },
@@ -276,6 +345,45 @@ export default function ProviderProfileScreen() {
             value={profile?.accepts_emergency_jobs ? 'Sim' : 'Não'}
             isLast
           />
+        </View>
+
+        {/* Portfolio */}
+        <View style={styles.portfolioCard}>
+          <View style={styles.portfolioHeader}>
+            <Text style={styles.portfolioTitle}>Portfólio</Text>
+            <TouchableOpacity
+              style={[styles.addPhotoBtn, uploadingPhoto && { opacity: 0.6 }]}
+              onPress={handleAddPortfolioPhoto}
+              disabled={uploadingPhoto}
+            >
+              {uploadingPhoto
+                ? <ActivityIndicator size="small" color={Colors.cardWhite} />
+                : <Ionicons name="add" size={18} color={Colors.cardWhite} />}
+            </TouchableOpacity>
+          </View>
+
+          {loadingPortfolio ? (
+            <ActivityIndicator color={Colors.primary} style={{ marginTop: 12 }} />
+          ) : portfolio.length === 0 ? (
+            <View style={styles.portfolioEmpty}>
+              <Ionicons name="images-outline" size={32} color={Colors.border} />
+              <Text style={styles.portfolioEmptyText}>Adicione fotos dos seus trabalhos{'\n'}para atrair mais clientes.</Text>
+            </View>
+          ) : (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.portfolioRow}>
+              {portfolio.map((photo) => (
+                <View key={photo.id} style={styles.portfolioThumbWrap}>
+                  <Image source={{ uri: photo.url }} style={styles.portfolioThumb} />
+                  <TouchableOpacity
+                    style={styles.portfolioDeleteBtn}
+                    onPress={() => handleDeletePortfolioPhoto(photo.id)}
+                  >
+                    <Ionicons name="trash-outline" size={14} color={Colors.cardWhite} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
+          )}
         </View>
 
         <TouchableOpacity
@@ -463,6 +571,42 @@ const styles = StyleSheet.create({
   infoRowContent: { flex: 1 },
   infoRowLabel: { fontSize: 12, color: Colors.textSecondary, marginBottom: 2 },
   infoRowValue: { fontSize: 15, fontWeight: '500', color: Colors.textPrimary },
+  portfolioCard: {
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  portfolioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  portfolioTitle: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.8 },
+  addPhotoBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  portfolioEmpty: { alignItems: 'center', gap: 8, paddingVertical: 16 },
+  portfolioEmptyText: { fontSize: 13, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  portfolioRow: { gap: 10, paddingRight: 4 },
+  portfolioThumbWrap: { position: 'relative', borderRadius: 10, overflow: 'hidden' },
+  portfolioThumb: { width: 90, height: 90, borderRadius: 10 },
+  portfolioDeleteBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   signOutButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: '#FEF2F2', borderWidth: 1.5, borderColor: Colors.dangerRed,

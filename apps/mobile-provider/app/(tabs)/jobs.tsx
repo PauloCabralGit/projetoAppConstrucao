@@ -9,6 +9,7 @@ import {
   RefreshControl,
   Switch,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -72,7 +73,12 @@ export default function JobsScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [online, setOnline] = useState(false);
   const [providerName, setProviderName] = useState('Prestador');
+  const [userId, setUserId] = useState<string>('');
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const [bidAmounts, setBidAmounts] = useState<Record<string, string>>({});
+  const [biddingJob, setBiddingJob] = useState<string | null>(null);
+  const [submittedBids, setSubmittedBids] = useState<Set<string>>(new Set());
+  const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
   const fetchJobs = useCallback(async () => {
     const { data, error } = await supabase
@@ -110,12 +116,42 @@ export default function JobsScreen() {
   async function loadProvider() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
+    setUserId(user.id);
     const { data } = await supabase
       .from('app_users')
       .select('full_name')
       .eq('id', user.id)
       .maybeSingle();
     if (data) setProviderName(data.full_name);
+  }
+
+  async function handleSubmitBid(jobId: string) {
+    const amountStr = bidAmounts[jobId] ?? '';
+    const amount = parseFloat(amountStr.replace(',', '.'));
+    if (isNaN(amount) || amount <= 0) {
+      Alert.alert('Valor inválido', 'Informe um valor válido para o orçamento.');
+      return;
+    }
+    if (!userId) return;
+    setBiddingJob(jobId);
+    try {
+      const res = await fetch(`${API_BASE}/service-requests/${jobId}/bids`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider_user_id: userId, amount }),
+      });
+      if (res.ok) {
+        setSubmittedBids((prev) => new Set([...prev, jobId]));
+        setBidAmounts((prev) => ({ ...prev, [jobId]: '' }));
+        Alert.alert('Orçamento enviado!', 'O cliente receberá uma notificação.');
+      } else {
+        const json = await res.json().catch(() => ({}));
+        Alert.alert('Erro', (json as any)?.message ?? 'Não foi possível enviar o orçamento.');
+      }
+    } catch {
+      Alert.alert('Erro de conexão', 'Verifique sua internet.');
+    }
+    setBiddingJob(null);
   }
 
   function startListening() {
@@ -203,6 +239,36 @@ export default function JobsScreen() {
             </Text>
           </View>
         </View>
+
+        {submittedBids.has(item.id) ? (
+          <View style={styles.bidSentBanner}>
+            <Ionicons name="checkmark-circle" size={16} color={Colors.successGreen} />
+            <Text style={styles.bidSentText}>Orçamento enviado — aguardando cliente</Text>
+          </View>
+        ) : (
+          <View style={styles.bidRow}>
+            <View style={styles.bidInputWrap}>
+              <Text style={styles.bidCurrency}>R$</Text>
+              <TextInput
+                style={styles.bidInput}
+                placeholder="Seu valor"
+                placeholderTextColor={Colors.textSecondary}
+                value={bidAmounts[item.id] ?? ''}
+                onChangeText={(v) => setBidAmounts((prev) => ({ ...prev, [item.id]: v }))}
+                keyboardType="numeric"
+              />
+            </View>
+            <TouchableOpacity
+              style={[styles.bidSubmitBtn, (biddingJob === item.id || !(bidAmounts[item.id])) && { opacity: 0.5 }]}
+              onPress={() => handleSubmitBid(item.id)}
+              disabled={biddingJob === item.id || !bidAmounts[item.id]}
+            >
+              {biddingJob === item.id
+                ? <ActivityIndicator color={Colors.cardWhite} size="small" />
+                : <Text style={styles.bidSubmitText}>Enviar</Text>}
+            </TouchableOpacity>
+          </View>
+        )}
 
         <TouchableOpacity
           style={styles.viewButton}
@@ -495,4 +561,45 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.cardWhite,
   },
+  bidRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 10,
+  },
+  bidInputWrap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    height: 44,
+    backgroundColor: '#FFF4EE',
+  },
+  bidCurrency: { fontSize: 16, fontWeight: '700', color: Colors.primary, marginRight: 4 },
+  bidInput: { flex: 1, fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  bidSubmitBtn: {
+    height: 44,
+    paddingHorizontal: 18,
+    borderRadius: 10,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  bidSubmitText: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
+  bidSentBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#ECFDF5',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+  },
+  bidSentText: { fontSize: 13, fontWeight: '600', color: Colors.successGreen },
 });

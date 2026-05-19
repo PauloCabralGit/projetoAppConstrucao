@@ -11,6 +11,7 @@ import {
   Dimensions,
   Platform,
   Image,
+  Modal,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
@@ -63,6 +64,10 @@ export default function HomeScreen() {
   const [submitting, setSubmitting] = useState(false);
   const [loadingProviders, setLoadingProviders] = useState(true);
   const [photos, setPhotos] = useState<{ uri: string; base64: string }[]>([]);
+  const [scheduledDate, setScheduledDate] = useState<Date | null>(null);
+  const [showScheduler, setShowScheduler] = useState(false);
+  const [pickerDay, setPickerDay] = useState<number>(0);
+  const [pickerTime, setPickerTime] = useState<string>('');
 
   useEffect(() => {
     requestLocation();
@@ -187,6 +192,40 @@ export default function HomeScreen() {
     }
   }
 
+  const TIME_SLOTS = [
+    { label: 'Manhã (08h–12h)', hour: 8 },
+    { label: 'Tarde (13h–17h)', hour: 13 },
+    { label: 'Noite (18h–21h)', hour: 18 },
+  ];
+
+  function getDateOptions() {
+    const days: { label: string; index: number; date: Date }[] = [];
+    const now = new Date();
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(now);
+      d.setDate(now.getDate() + i);
+      const label = i === 0 ? 'Hoje' : i === 1 ? 'Amanhã' : d.toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit' });
+      days.push({ label, index: i, date: d });
+    }
+    return days;
+  }
+
+  function confirmSchedule() {
+    const opts = getDateOptions();
+    const chosen = opts[pickerDay];
+    const slot = TIME_SLOTS.find(t => t.label === pickerTime);
+    if (!chosen || !slot) { Alert.alert('Selecione data e horário'); return; }
+    const d = new Date(chosen.date);
+    d.setHours(slot.hour, 0, 0, 0);
+    setScheduledDate(d);
+    setShowScheduler(false);
+  }
+
+  function formatScheduledDate(d: Date) {
+    const slotLabel = TIME_SLOTS.find(t => t.hour === d.getHours())?.label.split(' ')[0] ?? '';
+    return d.toLocaleDateString('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }) + ' — ' + slotLabel;
+  }
+
   async function handleRequestService() {
     if (!selectedCategory) {
       Alert.alert('Categoria obrigatória', 'Selecione o tipo de serviço desejado.');
@@ -222,6 +261,7 @@ export default function HomeScreen() {
           description: description.trim(),
           latitude: region.latitude,
           longitude: region.longitude,
+          ...(scheduledDate ? { scheduled_date: scheduledDate.toISOString() } : {}),
         }),
       });
 
@@ -242,6 +282,7 @@ export default function HomeScreen() {
       setSelectedCategory('');
       setDescription('');
       setPhotos([]);
+      setScheduledDate(null);
 
       if (requestId) {
         router.push(`/tracking/${requestId}`);
@@ -371,6 +412,22 @@ export default function HomeScreen() {
           </ScrollView>
         </View>
 
+        {/* Scheduling */}
+        <TouchableOpacity
+          style={styles.scheduleBtn}
+          onPress={() => { setPickerDay(0); setPickerTime(''); setShowScheduler(true); }}
+        >
+          <Ionicons name="calendar-outline" size={18} color={Colors.primary} />
+          <Text style={styles.scheduleBtnText} numberOfLines={1}>
+            {scheduledDate ? formatScheduledDate(scheduledDate) : 'Agendar para uma data (opcional)'}
+          </Text>
+          {scheduledDate && (
+            <TouchableOpacity hitSlop={8} onPress={() => setScheduledDate(null)}>
+              <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          )}
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.searchButton, submitting && styles.searchButtonDisabled]}
           onPress={handleRequestService}
@@ -403,6 +460,59 @@ export default function HomeScreen() {
           </View>
         )}
       </View>
+
+      {/* Schedule modal */}
+      <Modal visible={showScheduler} transparent animationType="slide" onRequestClose={() => setShowScheduler(false)}>
+        <View style={styles.scheduleOverlay}>
+          <View style={styles.scheduleSheet}>
+            <View style={styles.scheduleHandle} />
+            <Text style={styles.scheduleTitle}>Agendar serviço</Text>
+
+            <Text style={styles.scheduleSection}>Data</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.scheduleDaysRow}>
+              {getDateOptions().map((opt) => (
+                <TouchableOpacity
+                  key={opt.index}
+                  style={[styles.scheduleDayChip, pickerDay === opt.index && styles.scheduleDayChipActive]}
+                  onPress={() => setPickerDay(opt.index)}
+                >
+                  <Text style={[styles.scheduleDayText, pickerDay === opt.index && styles.scheduleDayTextActive]}>
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+
+            <Text style={styles.scheduleSection}>Horário</Text>
+            <View style={styles.scheduleTimesRow}>
+              {TIME_SLOTS.map((slot) => (
+                <TouchableOpacity
+                  key={slot.label}
+                  style={[styles.scheduleTimeChip, pickerTime === slot.label && styles.scheduleTimeChipActive]}
+                  onPress={() => setPickerTime(slot.label)}
+                >
+                  <Text style={[styles.scheduleTimeText, pickerTime === slot.label && styles.scheduleTimeTextActive]}>
+                    {slot.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.scheduleActions}>
+              <TouchableOpacity style={styles.scheduleCancelBtn} onPress={() => setShowScheduler(false)}>
+                <Text style={styles.scheduleCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.scheduleConfirmBtn, (!pickerTime) && { opacity: 0.5 }]}
+                onPress={confirmSchedule}
+                disabled={!pickerTime}
+              >
+                <Text style={styles.scheduleConfirmText}>Confirmar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -628,4 +738,89 @@ const styles = StyleSheet.create({
     color: Colors.primary,
     fontWeight: '600',
   },
+  scheduleBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    height: 44,
+    backgroundColor: Colors.background,
+    marginBottom: 12,
+  },
+  scheduleBtnText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontWeight: '500',
+  },
+  scheduleOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  scheduleSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 24,
+    paddingBottom: Platform.OS === 'ios' ? 44 : 28,
+    gap: 14,
+  },
+  scheduleHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    alignSelf: 'center',
+    marginBottom: 4,
+  },
+  scheduleTitle: { fontSize: 18, fontWeight: '700', color: Colors.textPrimary },
+  scheduleSection: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  scheduleDaysRow: { gap: 8, paddingRight: 4 },
+  scheduleDayChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  scheduleDayChipActive: { borderColor: Colors.primary, backgroundColor: '#FFF4EE' },
+  scheduleDayText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  scheduleDayTextActive: { color: Colors.primary },
+  scheduleTimesRow: { gap: 8 },
+  scheduleTimeChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    backgroundColor: Colors.background,
+  },
+  scheduleTimeChipActive: { borderColor: Colors.primary, backgroundColor: '#FFF4EE' },
+  scheduleTimeText: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
+  scheduleTimeTextActive: { color: Colors.primary },
+  scheduleActions: { flexDirection: 'row', gap: 12, marginTop: 4 },
+  scheduleCancelBtn: {
+    flex: 1,
+    height: 50,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scheduleCancelText: { fontSize: 15, fontWeight: '600', color: Colors.textSecondary },
+  scheduleConfirmBtn: {
+    flex: 2,
+    height: 50,
+    borderRadius: 12,
+    backgroundColor: Colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scheduleConfirmText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
 });
