@@ -37,6 +37,10 @@ interface JobDetail {
   quote_notes: string | null;
   quote_status: string | null;
   counter_amount: number | null;
+  payment_status: string | null;
+  payment_method: string | null;
+  client_rating: number | null;
+  created_at: string;
 }
 
 interface ClientPhoto {
@@ -159,7 +163,7 @@ export default function JobDetailScreen() {
     const { data, error } = await supabase
       .from('service_requests')
       .select(
-        'id, category, description, status, client_user_id, latitude, longitude, city, budget_min, budget_max, scheduled_date, quote_amount, quote_notes, quote_status, counter_amount'
+        'id, category, description, status, client_user_id, latitude, longitude, city, budget_min, budget_max, scheduled_date, quote_amount, quote_notes, quote_status, counter_amount, payment_status, payment_method, client_rating, created_at'
       )
       .eq('id', id)
       .single();
@@ -189,9 +193,7 @@ export default function JobDetailScreen() {
       const res = await fetch(`${API_BASE}/service-requests/${id}/photos`);
       if (res.ok) {
         const data = await res.json();
-        setClientPhotos(
-          (data.photos ?? []).filter((p: ClientPhoto) => p.photo_type === 'client_request')
-        );
+        setClientPhotos(data.photos ?? []);
       }
     } catch {}
   }
@@ -314,7 +316,64 @@ export default function JobDetailScreen() {
       );
     }
 
-    // Job taken by another provider
+    // Completed job: show summary
+    if (job.status === 'completed') {
+      const paymentLabel =
+        job.payment_status === 'confirmed'
+          ? `Pago via ${job.payment_method === 'cash' ? 'Dinheiro' : job.payment_method === 'card' ? 'Cartão' : 'Pix'}`
+          : job.payment_status === 'client_paid'
+          ? 'Pagamento enviado — aguardando confirmação'
+          : 'Aguardando pagamento';
+      const paymentColor =
+        job.payment_status === 'confirmed' ? Colors.successGreen
+        : job.payment_status === 'client_paid' ? Colors.warningAmber
+        : Colors.textSecondary;
+      return (
+        <View style={styles.completedSummary}>
+          {job.quote_amount != null && Number(job.quote_amount) > 0 && (
+            <View style={styles.summaryRow}>
+              <Ionicons name="cash-outline" size={18} color={Colors.successGreen} />
+              <Text style={styles.summaryValue}>
+                R$ {Number(job.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+              </Text>
+            </View>
+          )}
+          <View style={[styles.paymentChip, { borderColor: paymentColor }]}>
+            <Ionicons
+              name={job.payment_status === 'confirmed' ? 'checkmark-circle' : 'cash-outline'}
+              size={14}
+              color={paymentColor}
+            />
+            <Text style={[styles.paymentChipText, { color: paymentColor }]}>{paymentLabel}</Text>
+          </View>
+          {job.client_rating != null && (
+            <View style={styles.ratingRow}>
+              {[1, 2, 3, 4, 5].map(s => (
+                <Ionicons
+                  key={s}
+                  name={s <= job.client_rating! ? 'star' : 'star-outline'}
+                  size={16}
+                  color={Colors.warningAmber}
+                />
+              ))}
+              <Text style={styles.ratingLabel}>{job.client_rating}.0 — avaliação do cliente</Text>
+            </View>
+          )}
+        </View>
+      );
+    }
+
+    // Cancelled
+    if (job.status === 'cancelled') {
+      return (
+        <View style={styles.unavailableBanner}>
+          <Ionicons name="close-circle-outline" size={16} color={Colors.dangerRed} />
+          <Text style={styles.unavailableBannerText}>Este chamado foi cancelado.</Text>
+        </View>
+      );
+    }
+
+    // Job taken by another provider (in_progress / accepted by someone else)
     if (job.status !== 'requested') {
       return (
         <View style={styles.unavailableBanner}>
@@ -474,23 +533,37 @@ export default function JobDetailScreen() {
 
         <Text style={styles.descriptionText}>{job.description || 'Sem descrição adicional.'}</Text>
 
-        {/* Client photos */}
+        {/* Photos */}
         {clientPhotos.length > 0 && (
           <View style={styles.photosSection}>
             <Text style={styles.photosSectionTitle}>
               <Ionicons name="images-outline" size={14} color={Colors.textSecondary} />
-              {'  '}Fotos enviadas pelo cliente
+              {'  '}Fotos do serviço
             </Text>
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.photosRow}
             >
-              {clientPhotos.map((photo, i) => (
-                <TouchableOpacity key={i} onPress={() => setPhotoViewer(photo.url)} activeOpacity={0.85}>
-                  <Image source={{ uri: photo.url }} style={styles.photoThumb} />
-                </TouchableOpacity>
-              ))}
+              {clientPhotos.map((photo, i) => {
+                const typeLabel =
+                  photo.photo_type === 'client_request' ? 'Cliente'
+                  : photo.photo_type === 'provider_start' ? 'Início'
+                  : photo.photo_type === 'provider_end' ? 'Conclusão'
+                  : '';
+                return (
+                  <TouchableOpacity key={i} onPress={() => setPhotoViewer(photo.url)} activeOpacity={0.85}>
+                    <View>
+                      <Image source={{ uri: photo.url }} style={styles.photoThumb} />
+                      {typeLabel ? (
+                        <View style={styles.photoTypeBadge}>
+                          <Text style={styles.photoTypeText}>{typeLabel}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           </View>
         )}
@@ -761,6 +834,42 @@ const styles = StyleSheet.create({
     borderColor: Colors.dangerRed,
   },
   unavailableBannerText: { fontSize: 14, color: Colors.dangerRed, fontWeight: '600', flex: 1 },
+  completedSummary: {
+    gap: 10,
+    backgroundColor: Colors.background,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+  },
+  summaryRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  summaryValue: { fontSize: 22, fontWeight: '800', color: Colors.successGreen },
+  paymentChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    alignSelf: 'flex-start',
+    backgroundColor: Colors.cardWhite,
+  },
+  paymentChipText: { fontSize: 13, fontWeight: '600' },
+  ratingRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  ratingLabel: { fontSize: 13, color: Colors.textSecondary, marginLeft: 4 },
+  photoTypeBadge: {
+    position: 'absolute',
+    bottom: 4,
+    left: 0,
+    right: 0,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    borderBottomLeftRadius: 10,
+    borderBottomRightRadius: 10,
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  photoTypeText: { fontSize: 9, color: '#fff', fontWeight: '600' },
   startTravelBtn: {
     flexDirection: 'row',
     alignItems: 'center',

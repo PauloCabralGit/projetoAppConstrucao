@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -15,7 +15,7 @@ import {
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -99,8 +99,15 @@ export default function ActiveScreen() {
   const [completing, setCompleting] = useState(false);
   const [confirmingPayment, setConfirmingPayment] = useState(false);
 
+  // Reload job data every time the tab comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      loadActiveJob();
+    }, [])
+  );
+
+  // Cleanup location on unmount only
   useEffect(() => {
-    loadActiveJob();
     return () => {
       locationSubRef.current?.remove();
     };
@@ -190,7 +197,7 @@ export default function ActiveScreen() {
         .limit(1)
         .maybeSingle();
 
-      if (completedData && completedData.payment_status !== 'confirmed') {
+      if (completedData) {
         setActiveJob(completedData as ActiveJob);
         loadClientProfile(completedData.client_user_id);
       }
@@ -405,6 +412,7 @@ export default function ActiveScreen() {
   const isInProgress = activeJob.status === 'in_progress';
   const isCompleted = activeJob.status === 'completed';
   const paymentClientPaid = activeJob.payment_status === 'client_paid';
+  const paymentConfirmed = activeJob.payment_status === 'confirmed';
 
   // ── Completed state: show a card instead of the map ──────────────────────
   if (isCompleted) {
@@ -417,7 +425,7 @@ export default function ActiveScreen() {
 
         <TouchableOpacity
           style={styles.completedCard}
-          onPress={() => router.push('/(tabs)/history')}
+          onPress={() => router.push(`/job/${activeJob.id}`)}
           activeOpacity={0.85}
         >
           <View style={styles.completedCardTop}>
@@ -467,7 +475,12 @@ export default function ActiveScreen() {
             </ScrollView>
           )}
 
-          {paymentClientPaid ? (
+          {paymentConfirmed ? (
+            <View style={styles.paymentSentChip}>
+              <Ionicons name="checkmark-circle" size={14} color={Colors.successGreen} />
+              <Text style={styles.paymentSentChipText}>Pagamento confirmado!</Text>
+            </View>
+          ) : paymentClientPaid ? (
             <View style={styles.paymentSentChip}>
               <Ionicons name="cash-outline" size={14} color={Colors.successGreen} />
               <Text style={styles.paymentSentChipText}>Pagamento enviado pelo cliente</Text>
@@ -475,17 +488,17 @@ export default function ActiveScreen() {
           ) : (
             <View style={styles.paymentPendingChip}>
               <Ionicons name="hourglass-outline" size={14} color={Colors.textSecondary} />
-              <Text style={styles.paymentPendingChipText}>Aguardando pagamento</Text>
+              <Text style={styles.paymentPendingChipText}>Aguardando pagamento do cliente</Text>
             </View>
           )}
 
           <View style={styles.openHistoryRow}>
-            <Text style={styles.openHistoryText}>Ver histórico completo</Text>
+            <Text style={styles.openHistoryText}>Ver detalhes do serviço</Text>
             <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
           </View>
         </TouchableOpacity>
 
-        {paymentClientPaid && (
+        {paymentClientPaid && !paymentConfirmed && (
           <TouchableOpacity
             style={[styles.confirmPaymentBtn, confirmingPayment && styles.disabled]}
             onPress={handleConfirmPayment}
@@ -499,6 +512,16 @@ export default function ActiveScreen() {
                 <Text style={styles.confirmPaymentBtnText}>Confirmar recebimento</Text>
               </>
             )}
+          </TouchableOpacity>
+        )}
+
+        {paymentConfirmed && (
+          <TouchableOpacity
+            style={styles.confirmPaymentBtn}
+            onPress={() => { setActiveJob(null); router.push('/(tabs)/history'); }}
+          >
+            <Ionicons name="time-outline" size={18} color={Colors.cardWhite} />
+            <Text style={styles.confirmPaymentBtnText}>Ir para histórico</Text>
           </TouchableOpacity>
         )}
 
