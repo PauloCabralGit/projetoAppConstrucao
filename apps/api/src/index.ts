@@ -204,6 +204,7 @@ app.post("/v1/service-requests", async (c) => {
     latitude?: number;
     longitude?: number;
     scheduled_date?: string;
+    preferred_provider_id?: string;
   }>();
 
   if (!body.client_user_id || !body.category || !body.description) {
@@ -243,8 +244,22 @@ app.post("/v1/service-requests", async (c) => {
 
   if (error) return c.json({ message: error.message }, 400);
 
+  // Notify preferred provider directly (if specified)
+  if (body.preferred_provider_id) {
+    const catLabels2: Record<string, string> = {
+      alvenaria: "Alvenaria", hidraulica: "Hidráulica", eletrica: "Elétrica",
+      pintura: "Pintura", piso: "Piso", acabamento: "Acabamento",
+    };
+    await sendPush(
+      c.env,
+      body.preferred_provider_id,
+      "⭐ Cliente quer te contratar!",
+      `Um cliente escolheu você para um serviço de ${catLabels2[body.category] ?? body.category}. Abra o app para aceitar.`
+    );
+  }
+
   // Notify available providers in the same city
-  if (city) {
+  if (city && !body.preferred_provider_id) {
     const { data: nearbyProviders } = await adminDb
       .from("provider_profiles")
       .select("user_id, app_users!user_id(push_token, city)")
@@ -1161,7 +1176,7 @@ app.get("/v1/service-requests/:id/messages", async (c) => {
   const requestId = c.req.param("id");
   const { data, error } = await db(c.env)
     .from("messages")
-    .select("id, sender_id, sender_role, content, created_at, app_users!sender_id(full_name)")
+    .select("id, sender_id, sender_role, content, created_at")
     .eq("request_id", requestId)
     .order("created_at", { ascending: true })
     .limit(200);
@@ -1280,6 +1295,74 @@ app.delete("/v1/providers/:id/portfolio/:photoId", async (c) => {
 
   if (error) return c.json({ message: error.message }, 400);
   return c.json({ message: "Foto removida." });
+});
+
+// ── Certifications: list ──────────────────────────────────────────────────
+app.get("/v1/providers/:id/certifications", async (c) => {
+  const { data, error } = await db(c.env)
+    .from("provider_certifications")
+    .select("id, name, url, issued_by, issued_date, created_at")
+    .eq("provider_user_id", c.req.param("id"))
+    .order("created_at", { ascending: false });
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ certifications: data ?? [] });
+});
+
+// ── Certifications: upload ────────────────────────────────────────────────
+app.post("/v1/providers/:id/certifications", async (c) => {
+  const providerId = c.req.param("id");
+  const body = await c.req.json<{
+    file_data: string;
+    file_name?: string;
+    mime_type?: string;
+    name: string;
+    issued_by?: string;
+    issued_date?: string;
+  }>().catch(() => ({} as any));
+
+  if (!body.file_data || !body.name) {
+    return c.json({ message: "file_data e name são obrigatórios." }, 400);
+  }
+
+  const supabaseDb = db(c.env);
+  const base64Data = body.file_data.includes(",") ? body.file_data.split(",")[1] : body.file_data;
+  const binary = Uint8Array.from(atob(base64Data), (ch) => ch.charCodeAt(0));
+  const fileName = body.file_name ?? `cert_${providerId}_${Date.now()}.jpg`;
+  const mimeType = body.mime_type ?? "image/jpeg";
+
+  const { error: uploadError } = await supabaseDb.storage
+    .from("certifications")
+    .upload(fileName, binary, { contentType: mimeType, upsert: false });
+
+  if (uploadError) return c.json({ message: uploadError.message }, 400);
+
+  const { data: urlData } = supabaseDb.storage.from("certifications").getPublicUrl(fileName);
+
+  const { data, error } = await supabaseDb
+    .from("provider_certifications")
+    .insert({
+      provider_user_id: providerId,
+      name: body.name,
+      url: urlData.publicUrl,
+      issued_by: body.issued_by ?? null,
+      issued_date: body.issued_date ?? null,
+    })
+    .select("id, name, url, issued_by, issued_date, created_at")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ certification: data }, 201);
+});
+
+// ── Certifications: delete ────────────────────────────────────────────────
+app.delete("/v1/providers/:id/certifications/:certId", async (c) => {
+  const { error } = await db(c.env)
+    .from("provider_certifications")
+    .delete()
+    .eq("id", c.req.param("certId"))
+    .eq("provider_user_id", c.req.param("id"));
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Certificação removida." });
 });
 
 // ── Complaints: submit a formal complaint ─────────────────────────────────

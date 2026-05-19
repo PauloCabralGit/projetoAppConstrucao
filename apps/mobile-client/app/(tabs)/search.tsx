@@ -10,6 +10,7 @@ import {
   RefreshControl,
   ScrollView,
   Image,
+  Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
@@ -101,6 +102,10 @@ export default function SearchScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [search, setSearch] = useState('');
   const [roleFilter, setRoleFilter] = useState('all');
+  const [minRating, setMinRating] = useState(0);
+  const [availableOnly, setAvailableOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<'rating' | 'price' | 'jobs'>('rating');
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [portfolios, setPortfolios] = useState<Record<string, PortfolioPhoto[]>>({});
   const [loadingPortfolio, setLoadingPortfolio] = useState<string | null>(null);
@@ -168,18 +173,28 @@ export default function SearchScreen() {
   }
 
   const filtered = providers.filter((p) => {
-    if (!search) return true;
-    const q = search.toLowerCase();
-    return (
-      p.name.toLowerCase().includes(q) ||
-      p.city.toLowerCase().includes(q) ||
-      p.skills.some((s) => s.label.toLowerCase().includes(q))
-    );
+    if (search) {
+      const q = search.toLowerCase();
+      const matchesSearch = p.name.toLowerCase().includes(q) || p.city.toLowerCase().includes(q) || p.skills.some((s) => s.label.toLowerCase().includes(q));
+      if (!matchesSearch) return false;
+    }
+    if (minRating > 0 && p.rating < minRating) return false;
+    if (availableOnly && p.availability !== 'available') return false;
+    return true;
   });
 
-  const favProviders = filtered.filter((p) => favorites.includes(p.id));
-  const otherProviders = filtered.filter((p) => !favorites.includes(p.id));
+  const sortedAll = [...filtered].sort((a, b) => {
+    if (sortBy === 'rating') return b.rating - a.rating;
+    if (sortBy === 'price') return a.priceFrom - b.priceFrom;
+    if (sortBy === 'jobs') return b.completedJobs - a.completedJobs;
+    return 0;
+  });
+
+  const favProviders = sortedAll.filter((p) => favorites.includes(p.id));
+  const otherProviders = sortedAll.filter((p) => !favorites.includes(p.id));
   const sortedProviders = [...favProviders, ...otherProviders];
+
+  const activeFilters = (minRating > 0 ? 1 : 0) + (availableOnly ? 1 : 0) + (sortBy !== 'rating' ? 1 : 0);
 
   function renderProvider({ item }: { item: Provider }) {
     const isFav = favorites.includes(item.id);
@@ -295,13 +310,27 @@ export default function SearchScreen() {
           )
         )}
 
-        <TouchableOpacity
-          style={styles.hireBtn}
-          onPress={() => router.push('/(tabs)/home')}
-        >
-          <Ionicons name="add-circle-outline" size={16} color={Colors.cardWhite} />
-          <Text style={styles.hireBtnText}>Solicitar serviço</Text>
-        </TouchableOpacity>
+        <View style={styles.actionRow}>
+          <TouchableOpacity
+            style={[styles.hireBtn, { flex: 1 }]}
+            onPress={() => router.navigate({
+              pathname: '/(tabs)/home',
+              params: { providerId: item.id, providerName: item.name },
+            })}
+          >
+            <Ionicons name="add-circle-outline" size={16} color={Colors.cardWhite} />
+            <Text style={styles.hireBtnText}>Solicitar serviço</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.shareProfileBtn}
+            onPress={() => Share.share({
+              message: `${item.name} — ${item.skills.map(s => s.label).join(', ') || item.role}\n⭐ ${item.rating.toFixed(1)} · ${item.completedJobs} serviços · ${item.city}\n\nContrate via ConstruConnect!`,
+              title: item.name,
+            })}
+          >
+            <Ionicons name="share-social-outline" size={18} color={Colors.primary} />
+          </TouchableOpacity>
+        </View>
       </View>
     );
   }
@@ -341,6 +370,13 @@ export default function SearchScreen() {
             </Text>
           </TouchableOpacity>
         ))}
+        <TouchableOpacity
+          style={[styles.filterBtn, (activeFilters > 0 || showAdvanced) && styles.filterBtnActive]}
+          onPress={() => setShowAdvanced(v => !v)}
+        >
+          <Ionicons name="options-outline" size={14} color={activeFilters > 0 || showAdvanced ? Colors.cardWhite : Colors.textPrimary} />
+          {activeFilters > 0 && <Text style={[styles.filterBtnText, styles.filterBtnTextActive]}>{activeFilters}</Text>}
+        </TouchableOpacity>
         {favorites.length > 0 && (
           <View style={styles.favCount}>
             <Ionicons name="heart" size={13} color={Colors.dangerRed} />
@@ -348,6 +384,57 @@ export default function SearchScreen() {
           </View>
         )}
       </View>
+
+      {showAdvanced && (
+        <View style={styles.advancedPanel}>
+          <Text style={styles.advancedLabel}>Nota mínima</Text>
+          <View style={styles.advancedRow}>
+            {[0, 3, 4, 5].map((r) => (
+              <TouchableOpacity
+                key={r}
+                style={[styles.advancedChip, minRating === r && styles.advancedChipActive]}
+                onPress={() => setMinRating(r)}
+              >
+                {r === 0 ? (
+                  <Text style={[styles.advancedChipText, minRating === r && styles.advancedChipTextActive]}>Qualquer</Text>
+                ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3 }}>
+                    <Ionicons name="star" size={12} color={minRating === r ? Colors.cardWhite : Colors.warningAmber} />
+                    <Text style={[styles.advancedChipText, minRating === r && styles.advancedChipTextActive]}>{r}+</Text>
+                  </View>
+                )}
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={styles.advancedLabel}>Ordenar por</Text>
+          <View style={styles.advancedRow}>
+            {([['rating', 'Avaliação'], ['jobs', 'Serviços'], ['price', 'Menor preço']] as const).map(([key, label]) => (
+              <TouchableOpacity
+                key={key}
+                style={[styles.advancedChip, sortBy === key && styles.advancedChipActive]}
+                onPress={() => setSortBy(key)}
+              >
+                <Text style={[styles.advancedChipText, sortBy === key && styles.advancedChipTextActive]}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <TouchableOpacity
+            style={[styles.advancedChip, availableOnly && styles.advancedChipActive, { alignSelf: 'flex-start' }]}
+            onPress={() => setAvailableOnly(v => !v)}
+          >
+            <Ionicons name={availableOnly ? 'checkmark-circle' : 'ellipse-outline'} size={14} color={availableOnly ? Colors.cardWhite : Colors.textSecondary} />
+            <Text style={[styles.advancedChipText, availableOnly && styles.advancedChipTextActive]}>Somente disponíveis</Text>
+          </TouchableOpacity>
+
+          {activeFilters > 0 && (
+            <TouchableOpacity onPress={() => { setMinRating(0); setAvailableOnly(false); setSortBy('rating'); }}>
+              <Text style={styles.clearFilters}>Limpar filtros</Text>
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.loadingContainer}>
@@ -456,6 +543,22 @@ const styles = StyleSheet.create({
     marginLeft: 'auto',
   },
   favCountText: { fontSize: 13, fontWeight: '700', color: Colors.dangerRed },
+  advancedPanel: {
+    marginHorizontal: 16, marginBottom: 10, padding: 14,
+    backgroundColor: Colors.cardWhite, borderRadius: 12,
+    borderWidth: 1, borderColor: Colors.border, gap: 10,
+  },
+  advancedLabel: { fontSize: 11, fontWeight: '700', color: Colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5 },
+  advancedRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  advancedChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8,
+    backgroundColor: Colors.background, borderWidth: 1, borderColor: Colors.border,
+  },
+  advancedChipActive: { backgroundColor: Colors.primary, borderColor: Colors.primary },
+  advancedChipText: { fontSize: 12, fontWeight: '600', color: Colors.textSecondary },
+  advancedChipTextActive: { color: Colors.cardWhite },
+  clearFilters: { fontSize: 12, fontWeight: '700', color: Colors.primary, textAlign: 'right' },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', gap: 12 },
   loadingText: { fontSize: 14, color: Colors.textSecondary },
   list: { paddingHorizontal: 16, paddingBottom: 24 },
@@ -533,6 +636,11 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
   },
   hireBtnText: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
+  actionRow: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  shareProfileBtn: {
+    width: 42, height: 42, borderRadius: 10, borderWidth: 1.5, borderColor: Colors.primary,
+    backgroundColor: '#FFF4EE', justifyContent: 'center', alignItems: 'center',
+  },
   emptyContainer: {
     paddingTop: 60,
     alignItems: 'center',

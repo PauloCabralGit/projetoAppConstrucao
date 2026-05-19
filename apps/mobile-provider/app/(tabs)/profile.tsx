@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
-  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch, Image,
+  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch, Image, Share,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useTheme } from '@/contexts/ThemeContext';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -17,6 +18,14 @@ interface PortfolioPhoto {
   url: string;
   caption?: string;
   category?: string;
+}
+
+interface Certification {
+  id: string;
+  name: string;
+  url: string;
+  issued_by?: string;
+  issued_date?: string;
 }
 
 interface ProviderProfile {
@@ -38,6 +47,7 @@ function getInitials(name: string): string {
 }
 
 export default function ProviderProfileScreen() {
+  const { isDark, toggleTheme } = useTheme();
   const [profile, setProfile] = useState<ProviderProfile | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,8 +69,22 @@ export default function ProviderProfileScreen() {
   const [loadingPortfolio, setLoadingPortfolio] = useState(false);
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
+  const [certifications, setCertifications] = useState<Certification[]>([]);
+  const [loadingCerts, setLoadingCerts] = useState(false);
+  const [certModalVisible, setCertModalVisible] = useState(false);
+  const [certName, setCertName] = useState('');
+  const [certIssuedBy, setCertIssuedBy] = useState('');
+  const [certImageBase64, setCertImageBase64] = useState('');
+  const [certImageName, setCertImageName] = useState('');
+  const [uploadingCert, setUploadingCert] = useState(false);
+
   useEffect(() => { loadProfile(); }, []);
-  useEffect(() => { if (userId) loadPortfolio(); }, [userId]);
+  useEffect(() => {
+    if (userId) {
+      loadPortfolio();
+      loadCertifications();
+    }
+  }, [userId]);
 
   async function loadProfile() {
     setLoading(true);
@@ -244,6 +268,77 @@ export default function ProviderProfileScreen() {
     setUploadingPhoto(false);
   }
 
+  async function loadCertifications() {
+    if (!userId) return;
+    setLoadingCerts(true);
+    try {
+      const res = await fetch(`${API_BASE}/providers/${userId}/certifications`);
+      if (res.ok) {
+        const data = await res.json();
+        setCertifications(data.certifications ?? []);
+      }
+    } finally {
+      setLoadingCerts(false);
+    }
+  }
+
+  async function handlePickCertImage() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') { Alert.alert('Permissão negada', 'Permita o acesso à galeria.'); return; }
+    const result = await ImagePicker.launchImageLibraryAsync({ quality: 0.7, base64: true });
+    if (result.canceled || !result.assets[0].base64) return;
+    setCertImageBase64(result.assets[0].base64);
+    setCertImageName(`cert_${Date.now()}.jpg`);
+  }
+
+  async function handleSubmitCertification() {
+    if (!certName.trim()) { Alert.alert('Nome obrigatório', 'Digite o nome da certificação.'); return; }
+    if (!certImageBase64) { Alert.alert('Imagem obrigatória', 'Selecione a foto da certificação.'); return; }
+    if (!userId) return;
+    setUploadingCert(true);
+    try {
+      const res = await fetch(`${API_BASE}/providers/${userId}/certifications`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          file_data: certImageBase64,
+          file_name: certImageName,
+          mime_type: 'image/jpeg',
+          name: certName.trim(),
+          issued_by: certIssuedBy.trim() || undefined,
+        }),
+      });
+      if (res.ok) {
+        await loadCertifications();
+        setCertModalVisible(false);
+        setCertName('');
+        setCertIssuedBy('');
+        setCertImageBase64('');
+        setCertImageName('');
+      } else {
+        const json = await res.json();
+        Alert.alert('Erro', json?.message ?? 'Não foi possível enviar.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Erro de conexão.');
+    }
+    setUploadingCert(false);
+  }
+
+  async function handleDeleteCertification(certId: string) {
+    if (!userId) return;
+    Alert.alert('Remover certificação', 'Deseja remover esta certificação?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Remover', style: 'destructive',
+        onPress: async () => {
+          await fetch(`${API_BASE}/providers/${userId}/certifications/${certId}`, { method: 'DELETE' }).catch(() => {});
+          setCertifications((prev) => prev.filter((c) => c.id !== certId));
+        },
+      },
+    ]);
+  }
+
   async function handleDeletePortfolioPhoto(photoId: string) {
     if (!userId) return;
     Alert.alert('Remover foto', 'Deseja remover esta foto do portfólio?', [
@@ -386,6 +481,76 @@ export default function ProviderProfileScreen() {
           )}
         </View>
 
+        <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/(tabs)/faq' as any)}>
+          <Ionicons name="help-circle-outline" size={22} color={Colors.darkNavy} />
+          <Text style={styles.faqBtnText}>FAQ e Suporte</Text>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
+        </TouchableOpacity>
+
+        {/* Dark Mode */}
+        <View style={styles.availabilityCard}>
+          <View style={styles.availabilityLeft}>
+            <Ionicons name={isDark ? 'moon' : 'sunny-outline'} size={20} color={isDark ? '#818CF8' : Colors.warningAmber} />
+            <View>
+              <Text style={styles.availabilityTitle}>{isDark ? 'Modo escuro ativo' : 'Modo claro ativo'}</Text>
+              <Text style={styles.availabilityDesc}>Toque para alternar o tema do app</Text>
+            </View>
+          </View>
+          <Switch
+            value={isDark}
+            onValueChange={toggleTheme}
+            trackColor={{ false: Colors.border, true: '#818CF8' }}
+            thumbColor={Colors.cardWhite}
+          />
+        </View>
+
+        {/* Certificações */}
+        <View style={styles.portfolioCard}>
+          <View style={styles.portfolioHeader}>
+            <Text style={styles.portfolioTitle}>Certificações e Documentos</Text>
+            <TouchableOpacity style={styles.addPhotoBtn} onPress={() => setCertModalVisible(true)}>
+              <Ionicons name="add" size={18} color={Colors.cardWhite} />
+            </TouchableOpacity>
+          </View>
+
+          {loadingCerts ? (
+            <ActivityIndicator color={Colors.primary} style={{ marginTop: 12 }} />
+          ) : certifications.length === 0 ? (
+            <View style={styles.portfolioEmpty}>
+              <Ionicons name="ribbon-outline" size={32} color={Colors.border} />
+              <Text style={styles.portfolioEmptyText}>Adicione certificados, alvarás{'\n'}ou documentos profissionais.</Text>
+            </View>
+          ) : (
+            <View style={styles.certList}>
+              {certifications.map((cert) => (
+                <View key={cert.id} style={styles.certItem}>
+                  <View style={styles.certIcon}>
+                    <Ionicons name="ribbon-outline" size={20} color={Colors.darkNavy} />
+                  </View>
+                  <View style={styles.certInfo}>
+                    <Text style={styles.certName}>{cert.name}</Text>
+                    {cert.issued_by ? <Text style={styles.certMeta}>Emitido por: {cert.issued_by}</Text> : null}
+                  </View>
+                  <TouchableOpacity onPress={() => handleDeleteCertification(cert.id)} hitSlop={10}>
+                    <Ionicons name="trash-outline" size={18} color={Colors.dangerRed} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
+        <TouchableOpacity
+          style={styles.shareProfileButton}
+          onPress={() => Share.share({
+            message: `${profile?.full_name ?? 'Prestador'} — ${profile?.specialties || profile?.company_name || 'ConstruConnect'}\n📍 ${profile?.city || ''}\n\nContrate via ConstruConnect!`,
+            title: profile?.full_name ?? 'Meu perfil',
+          })}
+        >
+          <Ionicons name="share-social-outline" size={20} color={Colors.darkNavy} />
+          <Text style={styles.shareProfileText}>Compartilhar meu perfil</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity
           style={[styles.signOutButton, signingOut && styles.buttonDisabled]}
           onPress={handleSignOut}
@@ -396,6 +561,52 @@ export default function ProviderProfileScreen() {
             : <><Ionicons name="log-out-outline" size={20} color={Colors.dangerRed} /><Text style={styles.signOutText}>Sair da conta</Text></>}
         </TouchableOpacity>
       </ScrollView>
+
+      {/* Certification Modal */}
+      <Modal visible={certModalVisible} animationType="slide" transparent onRequestClose={() => setCertModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Nova Certificação</Text>
+              <TouchableOpacity onPress={() => setCertModalVisible(false)} hitSlop={12}>
+                <Ionicons name="close" size={24} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <EditField
+                label="Nome da certificação"
+                icon="ribbon-outline"
+                value={certName}
+                onChangeText={setCertName}
+                placeholder="Ex: NR-35, CREA, Alvará..."
+              />
+              <EditField
+                label="Emitido por (opcional)"
+                icon="business-outline"
+                value={certIssuedBy}
+                onChangeText={setCertIssuedBy}
+                placeholder="Ex: SENAI, MTE, Prefeitura..."
+              />
+              <TouchableOpacity style={styles.certPickImageBtn} onPress={handlePickCertImage}>
+                <Ionicons name={certImageBase64 ? 'checkmark-circle' : 'image-outline'} size={20} color={certImageBase64 ? Colors.successGreen : Colors.darkNavy} />
+                <Text style={[styles.certPickImageText, certImageBase64 && { color: Colors.successGreen }]}>
+                  {certImageBase64 ? 'Imagem selecionada' : 'Selecionar foto / documento'}
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.saveButton, uploadingCert && styles.buttonDisabled]}
+                onPress={handleSubmitCertification}
+                disabled={uploadingCert}
+              >
+                {uploadingCert
+                  ? <ActivityIndicator color="#fff" />
+                  : <Text style={styles.saveButtonText}>Salvar certificação</Text>}
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* Edit Modal */}
       <Modal visible={editVisible} animationType="slide" transparent onRequestClose={() => setEditVisible(false)}>
@@ -607,6 +818,37 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  faqBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.cardWhite, borderRadius: 14, padding: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+  },
+  faqBtnText: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.textPrimary },
+  certList: { gap: 8 },
+  certItem: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.background, borderRadius: 10, padding: 12,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  certIcon: {
+    width: 36, height: 36, borderRadius: 18, backgroundColor: '#EFF3F8',
+    justifyContent: 'center', alignItems: 'center',
+  },
+  certInfo: { flex: 1 },
+  certName: { fontSize: 14, fontWeight: '600', color: Colors.textPrimary },
+  certMeta: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
+  certPickImageBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    borderWidth: 1.5, borderColor: Colors.darkNavy, borderRadius: 10,
+    padding: 14, marginBottom: 16, borderStyle: 'dashed',
+  },
+  certPickImageText: { fontSize: 14, fontWeight: '600', color: Colors.darkNavy },
+  shareProfileButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.cardWhite, borderWidth: 1.5, borderColor: Colors.darkNavy,
+    borderRadius: 12, height: 52,
+  },
+  shareProfileText: { fontSize: 15, fontWeight: '700', color: Colors.darkNavy },
   signOutButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: '#FEF2F2', borderWidth: 1.5, borderColor: Colors.dangerRed,

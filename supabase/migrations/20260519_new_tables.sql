@@ -130,7 +130,33 @@ CREATE POLICY "complaints_insert" ON formal_complaints FOR INSERT WITH CHECK (
 );
 
 
--- ── 5. scheduled_date column (if not already TEXT/TIMESTAMPTZ) ──
+-- ── 5. Provider certifications & documents ───────────────────
+CREATE TABLE IF NOT EXISTS provider_certifications (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider_user_id  UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  url               TEXT NOT NULL,
+  issued_by         TEXT,
+  issued_date       DATE,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_certs_provider ON provider_certifications(provider_user_id);
+
+ALTER TABLE provider_certifications ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "certs_select" ON provider_certifications FOR SELECT USING (true);
+
+CREATE POLICY "certs_insert" ON provider_certifications FOR INSERT WITH CHECK (
+  auth.uid() = provider_user_id
+);
+
+CREATE POLICY "certs_delete" ON provider_certifications FOR DELETE USING (
+  auth.uid() = provider_user_id
+);
+
+
+-- ── 6. scheduled_date column (if not already TEXT/TIMESTAMPTZ) ──
 -- The existing service_requests table uses scheduled_date as TEXT (date string).
 -- This migration changes it to TIMESTAMPTZ so it can store full ISO timestamps
 -- from the new scheduling picker. Safe to run even if the column already exists.

@@ -1,8 +1,12 @@
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
+import * as SecureStore from 'expo-secure-store';
 import { supabase } from '@/lib/supabase';
+import { NotificationProvider } from '@/contexts/NotificationContext';
+import { ThemeProvider } from '@/contexts/ThemeContext';
+import { ONBOARDING_KEY } from './onboarding';
 
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -47,6 +51,10 @@ export default function RootLayout() {
   useEffect(() => {
     setupNotificationChannel();
 
+    SecureStore.getItemAsync(ONBOARDING_KEY).then((done) => {
+      if (!done) router.replace('/onboarding');
+    }).catch(() => {});
+
     // Register token on initial load if already signed in
     registerPushToken();
 
@@ -61,10 +69,15 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="(auth)" />
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="tracking/[id]" />
-    </Stack>
+    <ThemeProvider>
+      <NotificationProvider>
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="(auth)" />
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="tracking/[id]" />
+          <Stack.Screen name="onboarding" />
+        </Stack>
+      </NotificationProvider>
+    </ThemeProvider>
   );
 }

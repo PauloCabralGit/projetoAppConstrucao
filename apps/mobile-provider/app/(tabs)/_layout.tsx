@@ -1,16 +1,49 @@
 import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
-import { Platform, StyleSheet } from 'react-native';
+import { Platform, StyleSheet, View, Text } from 'react-native';
+import { useNotifications } from '@/contexts/NotificationContext';
+import { useTheme } from '@/contexts/ThemeContext';
+
+function BellIcon({ color, size }: { color: string; size: number }) {
+  const { unreadCount } = useNotifications();
+  return (
+    <View>
+      <Ionicons name="notifications-outline" size={size} color={color} />
+      {unreadCount > 0 && (
+        <View style={badgeStyles.badge}>
+          <Text style={badgeStyles.badgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+const badgeStyles = StyleSheet.create({
+  badge: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: Colors.dangerRed,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: { fontSize: 9, fontWeight: '800', color: '#fff' },
+});
 
 export default function TabsLayout() {
+  const { colors } = useTheme();
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: Colors.darkNavy,
-        tabBarInactiveTintColor: Colors.textSecondary,
-        tabBarStyle: styles.tabBar,
+        tabBarActiveTintColor: colors.darkNavy,
+        tabBarInactiveTintColor: colors.textSecondary,
+        tabBarStyle: [styles.tabBar, { backgroundColor: colors.cardWhite, borderTopColor: colors.border }],
         tabBarLabelStyle: styles.tabBarLabel,
       }}
     >
@@ -42,6 +75,13 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="notifications"
+        options={{
+          title: 'Avisos',
+          tabBarIcon: ({ color, size }) => <BellIcon color={color} size={size} />,
+        }}
+      />
+      <Tabs.Screen
         name="earnings"
         options={{
           title: 'Ganhos',
@@ -58,6 +98,10 @@ export default function TabsLayout() {
             <Ionicons name="person-outline" size={size} color={color} />
           ),
         }}
+      />
+      <Tabs.Screen
+        name="faq"
+        options={{ href: null }}
       />
     </Tabs>
   );

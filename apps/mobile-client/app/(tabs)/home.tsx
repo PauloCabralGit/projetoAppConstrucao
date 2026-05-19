@@ -16,7 +16,7 @@ import {
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -51,6 +51,7 @@ const DEFAULT_REGION: Region = {
 };
 
 export default function HomeScreen() {
+  const { providerId, providerName, preCategory } = useLocalSearchParams<{ providerId?: string; providerName?: string; preCategory?: string }>();
   const mapRef = useRef<MapView>(null);
   const mapReadyRef = useRef(false);
   const pendingRegionRef = useRef<Region | null>(null);
@@ -74,6 +75,10 @@ export default function HomeScreen() {
     fetchProviders();
     return () => { locationSubRef.current?.remove(); };
   }, []);
+
+  useEffect(() => {
+    if (preCategory) setSelectedCategory(preCategory);
+  }, [preCategory]);
 
   function goToRegion(newRegion: Region) {
     setRegion(newRegion);
@@ -262,6 +267,7 @@ export default function HomeScreen() {
           latitude: region.latitude,
           longitude: region.longitude,
           ...(scheduledDate ? { scheduled_date: scheduledDate.toISOString() } : {}),
+          ...(providerId ? { preferred_provider_id: providerId } : {}),
         }),
       });
 
@@ -369,6 +375,22 @@ export default function HomeScreen() {
             </TouchableOpacity>
           ))}
         </ScrollView>
+
+        {/* Provider pre-selection banner */}
+        {providerName ? (
+          <View style={styles.providerBanner}>
+            <Ionicons name="person-circle-outline" size={18} color={Colors.primary} />
+            <Text style={styles.providerBannerText} numberOfLines={1}>
+              Solicitando para: <Text style={{ fontWeight: '700' }}>{providerName}</Text>
+            </Text>
+            <TouchableOpacity
+              hitSlop={8}
+              onPress={() => router.setParams({ providerId: '', providerName: '' })}
+            >
+              <Ionicons name="close-circle" size={18} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        ) : null}
 
         <View style={styles.descriptionWrapper}>
           <TextInput
@@ -621,6 +643,23 @@ const styles = StyleSheet.create({
   },
   categoryChipTextActive: {
     color: Colors.cardWhite,
+  },
+  providerBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#FFF4EE',
+    borderWidth: 1.5,
+    borderColor: Colors.primary,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  providerBannerText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.textPrimary,
   },
   descriptionWrapper: {
     marginBottom: 16,

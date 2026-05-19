@@ -14,6 +14,8 @@ import {
   ScrollView,
   Share,
 } from 'react-native';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -127,6 +129,7 @@ export default function TrackingScreen() {
   // Bids state
   const [bids, setBids] = useState<any[]>([]);
   const [acceptingBidId, setAcceptingBidId] = useState<string | null>(null);
+  const proximityAlertedRef = useRef(false);
 
   useEffect(() => {
     if (!id) return;
@@ -162,6 +165,11 @@ export default function TrackingScreen() {
           { latitude: midLat, longitude: midLng, latitudeDelta: latDelta, longitudeDelta: lngDelta },
           800
         );
+        const dist = calcDistance(providerLocation, { latitude: request.latitude, longitude: request.longitude });
+        if (dist < 0.5 && !proximityAlertedRef.current && request.status === 'accepted') {
+          proximityAlertedRef.current = true;
+          Alert.alert('🚗 Profissional chegando!', 'O prestador está a menos de 500 metros de você.');
+        }
       } else {
         mapRef.current?.animateToRegion(
           { latitude: providerLocation.latitude, longitude: providerLocation.longitude, latitudeDelta: 0.02, longitudeDelta: 0.02 },
@@ -391,6 +399,67 @@ export default function TrackingScreen() {
     );
   }
 
+  async function generateAndShareReceipt() {
+    if (!request) return;
+    const cat = CATEGORY_LABELS[request.category] ?? request.category;
+    const val = request.quote_amount != null
+      ? `R$ ${Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+      : 'A combinar';
+    const paidVia = request.payment_method === 'cash' ? 'Dinheiro' : request.payment_method === 'card' ? 'Cartão' : 'Pix';
+    const payStatus = paymentConfirmed
+      ? `Confirmado via ${paidVia}`
+      : paymentSent ? 'Enviado — aguardando confirmação' : 'Pendente';
+    const rating = request.client_rating ? `${request.client_rating}/5` : 'Não avaliado';
+    const date = new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' });
+
+    const html = `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<style>
+  body { font-family: Arial, sans-serif; margin: 0; padding: 40px; color: #101828; background: #fff; }
+  .logo { font-size: 22px; font-weight: 800; color: #FF6B35; letter-spacing: -0.5px; }
+  .logo span { color: #1E2A38; }
+  .divider { border: none; border-top: 2px solid #E5E7EB; margin: 20px 0; }
+  .title { font-size: 18px; font-weight: 700; color: #1E2A38; margin: 0 0 4px; }
+  .subtitle { font-size: 13px; color: #6B7280; margin: 0 0 24px; }
+  .row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid #F3F4F6; }
+  .row:last-child { border-bottom: none; }
+  .label { font-size: 13px; color: #6B7280; }
+  .value { font-size: 14px; font-weight: 600; color: #101828; text-align: right; max-width: 60%; }
+  .amount { font-size: 24px; font-weight: 800; color: #12B76A; }
+  .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700; background: #ECFDF5; color: #12B76A; }
+  .footer { margin-top: 40px; text-align: center; font-size: 12px; color: #9CA3AF; }
+</style>
+</head>
+<body>
+  <div class="logo">Constru<span>Connect</span></div>
+  <hr class="divider" />
+  <p class="title">Recibo de Serviço</p>
+  <p class="subtitle">Emitido em ${date}</p>
+  <div class="row"><span class="label">Serviço</span><span class="value">${cat}</span></div>
+  <div class="row"><span class="label">Profissional</span><span class="value">${providerProfile?.full_name ?? '—'}</span></div>
+  <div class="row"><span class="label">Valor</span><span class="value amount">${val}</span></div>
+  <div class="row"><span class="label">Forma de pagamento</span><span class="value">${paidVia}</span></div>
+  <div class="row"><span class="label">Status do pagamento</span><span class="value"><span class="badge">${payStatus}</span></span></div>
+  <div class="row"><span class="label">Avaliação</span><span class="value">${rating}</span></div>
+  <div class="footer">ConstruConnect — Seu parceiro de obras<br/>Este recibo é gerado automaticamente pelo aplicativo.</div>
+</body>
+</html>`;
+
+    try {
+      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: 'Compartilhar recibo', UTI: 'com.adobe.pdf' });
+      } else {
+        Alert.alert('Compartilhamento indisponível', 'Seu dispositivo não suporta o compartilhamento de arquivos.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Não foi possível gerar o PDF do recibo.');
+    }
+  }
+
   async function loadBids() {
     try {
       const res = await fetch(`${API_BASE}/service-requests/${id}/bids`);
@@ -608,30 +677,10 @@ export default function TrackingScreen() {
 
             <TouchableOpacity
               style={styles.shareReceiptBtn}
-              onPress={() => {
-                const cat = CATEGORY_LABELS[request.category] ?? request.category;
-                const val = request.quote_amount != null
-                  ? `R$ ${Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
-                  : 'A combinar';
-                const paidVia = request.payment_method === 'cash' ? 'Dinheiro' : request.payment_method === 'card' ? 'Cartão' : 'Pix';
-                Share.share({
-                  message: [
-                    '🔨 RECIBO — ConstruConnect',
-                    '─────────────────────────',
-                    `Serviço: ${cat}`,
-                    `Profissional: ${providerProfile?.full_name ?? '—'}`,
-                    `Valor: ${val}`,
-                    `Pagamento: ${paymentConfirmed ? `Confirmado via ${paidVia}` : paymentSent ? 'Enviado — aguardando confirmação' : 'Pendente'}`,
-                    `Avaliação: ${request.client_rating ? `⭐ ${request.client_rating}/5` : 'Ainda não avaliado'}`,
-                    '─────────────────────────',
-                    'ConstruConnect — Seu parceiro de obras',
-                  ].join('\n'),
-                  title: 'Recibo do serviço',
-                });
-              }}
+              onPress={generateAndShareReceipt}
             >
-              <Ionicons name="share-social-outline" size={16} color={Colors.primary} />
-              <Text style={styles.shareReceiptBtnText}>Compartilhar recibo</Text>
+              <Ionicons name="document-text-outline" size={16} color={Colors.primary} />
+              <Text style={styles.shareReceiptBtnText}>Compartilhar recibo (PDF)</Text>
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1238,6 +1287,17 @@ export default function TrackingScreen() {
             )}
           </TouchableOpacity>
         )}
+
+        {/* Reabrir pedido cancelado */}
+        {request?.status === 'cancelled' && (
+          <TouchableOpacity
+            style={styles.reopenBtn}
+            onPress={() => router.navigate({ pathname: '/(tabs)/home', params: { preCategory: request.category } } as any)}
+          >
+            <Ionicons name="refresh-outline" size={18} color={Colors.cardWhite} />
+            <Text style={styles.reopenBtnText}>Solicitar novamente</Text>
+          </TouchableOpacity>
+        )}
       </ScrollView>
 
       {/* Counter proposal modal */}
@@ -1420,6 +1480,11 @@ function calcDistance(
 }
 
 const styles = StyleSheet.create({
+  reopenBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: Colors.primary, borderRadius: 12, height: 48,
+  },
+  reopenBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
   container: { flex: 1, backgroundColor: Colors.background },
   loadingContainer: {
     flex: 1,

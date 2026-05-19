@@ -11,10 +11,11 @@ import {
   Image,
   TextInput,
   Modal,
-  Share,
 } from 'react-native';
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
@@ -304,25 +305,74 @@ export default function JobDetailScreen() {
   async function handleShareReceipt() {
     if (!job) return;
     const categoryLabel = CATEGORY_LABELS[job.category] ?? job.category;
-    const value = job.quote_amount != null ? `R$ ${Number(job.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}` : 'A combinar';
+    const value = job.quote_amount != null
+      ? `R$ ${Number(job.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`
+      : 'A combinar';
     const paymentMethod =
       job.payment_method === 'cash' ? 'Dinheiro'
       : job.payment_method === 'card' ? 'Cartão'
       : 'Pix';
-    const rating = job.client_rating ? `⭐ ${job.client_rating}/5` : 'Não avaliado';
-    const text = [
-      '🔨 RECIBO — ConstruConnect',
-      '─────────────────────────',
-      `Serviço: ${categoryLabel}`,
-      `Cidade: ${job.city || 'Não informado'}`,
-      `Valor: ${value}`,
-      `Pagamento: ${job.payment_status === 'confirmed' ? `Confirmado via ${paymentMethod}` : 'Pendente'}`,
-      `Avaliação: ${rating}`,
-      `Data: ${new Date(job.created_at).toLocaleDateString('pt-BR')}`,
-      '─────────────────────────',
-      'ConstruConnect — Seu parceiro de obras',
-    ].join('\n');
-    await Share.share({ message: text, title: 'Recibo do serviço' }).catch(() => {});
+    const paymentStatus = job.payment_status === 'confirmed'
+      ? `Confirmado via ${paymentMethod}`
+      : 'Pendente';
+    const rating = job.client_rating ? `${job.client_rating} / 5` : 'Não avaliado';
+    const date = new Date(job.created_at).toLocaleDateString('pt-BR', {
+      day: '2-digit', month: 'long', year: 'numeric',
+    });
+
+    const html = `
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<style>
+  body { font-family: 'Helvetica Neue', Arial, sans-serif; margin: 0; padding: 40px; background: #fff; color: #101828; }
+  .header { text-align: center; border-bottom: 3px solid #1E2A38; padding-bottom: 24px; margin-bottom: 28px; }
+  .logo { font-size: 26px; font-weight: 900; color: #1E2A38; letter-spacing: 1px; }
+  .subtitle { font-size: 13px; color: #6B7280; margin-top: 4px; }
+  .badge { display: inline-block; background: #FF6B35; color: #fff; font-size: 11px; font-weight: 700; padding: 4px 12px; border-radius: 20px; margin-top: 8px; text-transform: uppercase; letter-spacing: 1px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+  tr { border-bottom: 1px solid #E5E7EB; }
+  td { padding: 13px 4px; font-size: 14px; }
+  td:first-child { color: #6B7280; font-weight: 600; width: 40%; }
+  td:last-child { color: #101828; font-weight: 700; text-align: right; }
+  .value-row td:last-child { font-size: 22px; color: #12B76A; }
+  .footer { text-align: center; font-size: 11px; color: #9CA3AF; margin-top: 32px; border-top: 1px solid #E5E7EB; padding-top: 16px; }
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">ConstruConnect</div>
+  <div class="subtitle">Recibo de Serviço — Prestador</div>
+  <div class="badge">Concluído</div>
+</div>
+<table>
+  <tr><td>Serviço</td><td>${categoryLabel}</td></tr>
+  <tr><td>Cidade</td><td>${job.city || 'Não informado'}</td></tr>
+  <tr><td>Data</td><td>${date}</td></tr>
+  <tr class="value-row"><td>Valor cobrado</td><td>${value}</td></tr>
+  <tr><td>Pagamento</td><td>${paymentStatus}</td></tr>
+  <tr><td>Avaliação do cliente</td><td>${rating}</td></tr>
+</table>
+<div class="footer">ConstruConnect &bull; Seu parceiro de obras &bull; construconnect.app</div>
+</body>
+</html>`;
+
+    try {
+      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      const canShare = await Sharing.isAvailableAsync();
+      if (canShare) {
+        await Sharing.shareAsync(uri, {
+          mimeType: 'application/pdf',
+          dialogTitle: 'Compartilhar recibo',
+          UTI: 'com.adobe.pdf',
+        });
+      } else {
+        Alert.alert('Compartilhamento indisponível', 'Não foi possível abrir o compartilhamento neste dispositivo.');
+      }
+    } catch {
+      Alert.alert('Erro', 'Não foi possível gerar o recibo em PDF.');
+    }
   }
 
   if (loading) {
@@ -421,8 +471,8 @@ export default function JobDetailScreen() {
             <Text style={styles.chatBtnText}>Chat com cliente</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.shareReceiptBtn} onPress={handleShareReceipt}>
-            <Ionicons name="share-social-outline" size={16} color={Colors.primary} />
-            <Text style={styles.shareReceiptBtnText}>Compartilhar recibo</Text>
+            <Ionicons name="document-text-outline" size={16} color={Colors.primary} />
+            <Text style={styles.shareReceiptBtnText}>Compartilhar recibo (PDF)</Text>
           </TouchableOpacity>
         </View>
       );

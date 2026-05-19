@@ -1,13 +1,14 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
-  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform,
+  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useTheme } from '@/contexts/ThemeContext';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -31,6 +32,7 @@ function getRoleLabel(role: string): string {
 }
 
 export default function ProfileScreen() {
+  const { isDark, toggleTheme } = useTheme();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -167,6 +169,28 @@ export default function ProfileScreen() {
           <InfoRow icon="call-outline" label="Telefone" value={profile?.phone || '—'} />
           <InfoRow icon="location-outline" label="Cidade" value={profile?.city || '—'} />
           <InfoRow icon="shield-checkmark-outline" label="Tipo de conta" value={getRoleLabel(profile?.role ?? 'client')} isLast />
+        </View>
+
+        <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/(tabs)/faq' as any)}>
+          <Ionicons name="help-circle-outline" size={22} color={Colors.primary} />
+          <Text style={styles.faqBtnText}>FAQ e Suporte</Text>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
+        </TouchableOpacity>
+
+        <View style={styles.themeCard}>
+          <View style={styles.themeLeft}>
+            <Ionicons name={isDark ? 'moon' : 'sunny-outline'} size={20} color={isDark ? '#818CF8' : Colors.warningAmber} />
+            <View>
+              <Text style={styles.themeTitle}>{isDark ? 'Modo escuro ativo' : 'Modo claro ativo'}</Text>
+              <Text style={styles.themeDesc}>Toque para alternar o tema do app</Text>
+            </View>
+          </View>
+          <Switch
+            value={isDark}
+            onValueChange={toggleTheme}
+            trackColor={{ false: Colors.border, true: '#818CF8' }}
+            thumbColor={Colors.cardWhite}
+          />
         </View>
 
         <TouchableOpacity
@@ -310,6 +334,20 @@ const styles = StyleSheet.create({
   infoRowContent: { flex: 1 },
   infoRowLabel: { fontSize: 12, color: Colors.textSecondary, marginBottom: 2 },
   infoRowValue: { fontSize: 15, fontWeight: '500', color: Colors.textPrimary },
+  faqBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: Colors.cardWhite, borderRadius: 14, padding: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+  },
+  faqBtnText: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.textPrimary },
+  themeCard: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    backgroundColor: Colors.cardWhite, borderRadius: 14, padding: 16,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+  },
+  themeLeft: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  themeTitle: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
+  themeDesc: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   signOutButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: '#FEF2F2', borderWidth: 1.5, borderColor: Colors.dangerRed,
