@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
-type Page = "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints";
+type Page = "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags";
 
 interface Overview {
   totalUsers: number;
@@ -1275,6 +1275,211 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
   );
 }
 
+// ── Feature Flags ─────────────────────────────────────────────────────────────
+interface FeatureFlag {
+  key: string;
+  label: string;
+  description: string;
+  category: string;
+  enabled: boolean;
+  updated_at: string;
+}
+
+const FLAG_CATEGORY_ICON: Record<string, string> = {
+  "Acesso": "🔑",
+  "Chamados": "📋",
+  "Pagamentos": "💳",
+  "Comunicação": "💬",
+  "Qualidade": "⭐",
+  "Localização": "📍",
+};
+
+function FeatureFlagsPage({ adminKey }: { adminKey: string }) {
+  const [flags, setFlags] = useState<FeatureFlag[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [toggling, setToggling] = useState<string | null>(null);
+  const [actionMsg, setActionMsg] = useState<{ text: string; ok: boolean } | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    apiFetch("/v1/admin/feature-flags", adminKey)
+      .then((r) => r.json())
+      .then((d: any) => { setFlags(d.data ?? []); setLoading(false); })
+      .catch(() => { setError("Erro ao carregar feature flags."); setLoading(false); });
+  }, [adminKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function showMsg(text: string, ok: boolean) {
+    setActionMsg({ text, ok });
+    setTimeout(() => setActionMsg(null), 3000);
+  }
+
+  async function toggle(flag: FeatureFlag) {
+    setToggling(flag.key);
+    try {
+      const r = await apiFetch(`/v1/admin/feature-flags/${flag.key}`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled: !flag.enabled }),
+      });
+      if (!r.ok) throw new Error("Erro ao atualizar flag.");
+      setFlags((prev) =>
+        prev.map((f) => f.key === flag.key ? { ...f, enabled: !f.enabled, updated_at: new Date().toISOString() } : f)
+      );
+      showMsg(`"${flag.label}" ${!flag.enabled ? "ativada" : "desativada"} com sucesso.`, true);
+    } catch (e: any) {
+      showMsg(e.message ?? "Erro ao atualizar.", false);
+    } finally {
+      setToggling(null);
+    }
+  }
+
+  const grouped = flags.reduce<Record<string, FeatureFlag[]>>((acc, f) => {
+    (acc[f.category] = acc[f.category] ?? []).push(f);
+    return acc;
+  }, {});
+
+  const totalEnabled = flags.filter((f) => f.enabled).length;
+  const hasMaintenanceOn = flags.find((f) => f.key === "maintenance_mode")?.enabled;
+
+  return (
+    <div>
+      <h2 className="page-title">Feature Flags</h2>
+      <p style={{ color: "var(--text-secondary)", fontSize: 14, marginBottom: 20, marginTop: -8 }}>
+        Ative ou desative funcionalidades da plataforma em tempo real, sem necessidade de novo deploy.
+      </p>
+
+      {hasMaintenanceOn && (
+        <div style={{
+          marginBottom: 20, padding: "12px 16px", borderRadius: 10,
+          background: "#fff3cd", border: "1px solid #ffc107", color: "#856404",
+          fontWeight: 600, fontSize: 14,
+        }}>
+          ⚠️ Modo de manutenção ativo — o app está bloqueado para clientes e prestadores.
+        </div>
+      )}
+
+      {actionMsg && (
+        <div style={{
+          marginBottom: 16, padding: "10px 14px", borderRadius: 8, fontSize: 14,
+          background: actionMsg.ok ? "#d4edda" : "#f8d7da",
+          color: actionMsg.ok ? "#155724" : "#721c24",
+        }}>
+          {actionMsg.text}
+        </div>
+      )}
+
+      {loading ? (
+        <div className="loading">Carregando...</div>
+      ) : error ? (
+        <div className="error-msg">{error}</div>
+      ) : (
+        <>
+          <div style={{ marginBottom: 20, display: "flex", gap: 12, flexWrap: "wrap" }}>
+            <div style={{ padding: "10px 18px", borderRadius: 10, background: "var(--card)", border: "1px solid var(--border)", fontSize: 13 }}>
+              <strong style={{ color: "#27ae60", fontSize: 20 }}>{totalEnabled}</strong>
+              <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>flags ativas</span>
+            </div>
+            <div style={{ padding: "10px 18px", borderRadius: 10, background: "var(--card)", border: "1px solid var(--border)", fontSize: 13 }}>
+              <strong style={{ color: "#e74c3c", fontSize: 20 }}>{flags.length - totalEnabled}</strong>
+              <span style={{ color: "var(--text-secondary)", marginLeft: 6 }}>flags inativas</span>
+            </div>
+          </div>
+
+          {Object.entries(grouped).map(([category, items]) => (
+            <div key={category} style={{ marginBottom: 28 }}>
+              <h3 style={{ fontSize: 14, fontWeight: 700, color: "var(--text-secondary)", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                {FLAG_CATEGORY_ICON[category] ?? "🔧"} {category}
+              </h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {items.map((flag) => {
+                  const isLoading = toggling === flag.key;
+                  return (
+                    <div
+                      key={flag.key}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "space-between",
+                        padding: "14px 18px",
+                        background: "var(--card)",
+                        border: `1px solid ${flag.enabled ? "var(--border)" : "var(--border)"}`,
+                        borderLeft: `4px solid ${flag.enabled ? "#27ae60" : "#ccc"}`,
+                        borderRadius: 10,
+                        opacity: isLoading ? 0.6 : 1,
+                        transition: "all 0.2s",
+                      }}
+                    >
+                      <div style={{ flex: 1 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 2 }}>
+                          <span style={{ fontWeight: 700, fontSize: 14, color: "var(--text)" }}>
+                            {flag.label}
+                          </span>
+                          <span style={{
+                            fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 6,
+                            background: flag.enabled ? "#d4edda" : "#f1f1f1",
+                            color: flag.enabled ? "#155724" : "#666",
+                          }}>
+                            {flag.enabled ? "ATIVO" : "INATIVO"}
+                          </span>
+                        </div>
+                        <p style={{ fontSize: 12, color: "var(--text-secondary)", margin: 0 }}>
+                          {flag.description}
+                        </p>
+                        <p style={{ fontSize: 11, color: "var(--text-secondary)", margin: "4px 0 0", opacity: 0.7 }}>
+                          Atualizado em: {flag.updated_at ? new Date(flag.updated_at).toLocaleString("pt-BR") : "—"}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => toggle(flag)}
+                        disabled={isLoading}
+                        style={{
+                          marginLeft: 20,
+                          width: 52,
+                          height: 28,
+                          borderRadius: 14,
+                          border: "none",
+                          cursor: isLoading ? "not-allowed" : "pointer",
+                          background: flag.enabled ? "#27ae60" : "#ccc",
+                          position: "relative",
+                          transition: "background 0.25s",
+                          flexShrink: 0,
+                        }}
+                        title={flag.enabled ? "Desativar" : "Ativar"}
+                      >
+                        <span style={{
+                          display: "block",
+                          width: 22,
+                          height: 22,
+                          borderRadius: "50%",
+                          background: "#fff",
+                          position: "absolute",
+                          top: 3,
+                          left: flag.enabled ? 27 : 3,
+                          transition: "left 0.25s",
+                          boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
+                        }} />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+
+          {flags.length === 0 && (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--text-secondary)" }}>
+              <p style={{ fontSize: 16 }}>Nenhuma feature flag cadastrada.</p>
+              <p style={{ fontSize: 13 }}>Execute o SQL de criação da tabela no Supabase para começar.</p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Nav config ────────────────────────────────────────────────────────────────
 const NAV: { key: Page; label: string; icon: string }[] = [
   { key: "dashboard", label: "Dashboard", icon: "🏠" },
@@ -1283,6 +1488,7 @@ const NAV: { key: Page; label: string; icon: string }[] = [
   { key: "users", label: "Usuários", icon: "👥" },
   { key: "payments", label: "Pagamentos", icon: "💰" },
   { key: "complaints", label: "Reclamações", icon: "⚠️" },
+  { key: "flags", label: "Feature Flags", icon: "🚩" },
 ];
 
 // ── Root ──────────────────────────────────────────────────────────────────────
@@ -1413,6 +1619,7 @@ export function App() {
           {page === "users" && <UsersPage adminKey={adminKey} />}
           {page === "payments" && <PaymentsPage adminKey={adminKey} />}
           {page === "complaints" && <ComplaintsPage adminKey={adminKey} />}
+          {page === "flags" && <FeatureFlagsPage adminKey={adminKey} />}
         </div>
       </main>
     </div>

@@ -1387,6 +1387,40 @@ app.patch("/v1/admin/users/:id/unblock", async (c) => {
   return c.json({ message: "Cliente desbloqueado." });
 });
 
+// ── Feature Flags (public read) ───────────────────────────────────────────
+app.get("/v1/feature-flags", async (c) => {
+  const { data } = await db(c.env)
+    .from("feature_flags")
+    .select("key, enabled");
+  const flags: Record<string, boolean> = {};
+  for (const f of data ?? []) flags[f.key] = f.enabled;
+  return c.json(flags);
+});
+
+// ── Feature Flags (admin) ─────────────────────────────────────────────────
+app.get("/v1/admin/feature-flags", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env)
+    .from("feature_flags")
+    .select("key, label, description, category, enabled, updated_at")
+    .order("category")
+    .order("key");
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ data: data ?? [] });
+});
+
+app.patch("/v1/admin/feature-flags/:key", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const key = c.req.param("key");
+  const { enabled } = await c.req.json<{ enabled: boolean }>();
+  const { error } = await db(c.env)
+    .from("feature_flags")
+    .update({ enabled, updated_at: new Date().toISOString() })
+    .eq("key", key);
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ ok: true });
+});
+
 // ── Chat: list messages for a request ────────────────────────────────────
 app.get("/v1/service-requests/:id/messages", async (c) => {
   const requestId = c.req.param("id");
