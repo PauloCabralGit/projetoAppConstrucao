@@ -254,38 +254,61 @@ export default function HomeScreen() {
     }
 
     try {
+      const { data: profile } = await supabase
+        .from('app_users')
+        .select('city')
+        .eq('id', user.id)
+        .maybeSingle();
+      const city = profile?.city ?? '';
+
+      const scheduledStr = scheduledDate
+        ? scheduledDate.toISOString().split('T')[0]
+        : new Date().toISOString().split('T')[0];
+
+      const { data: reqData, error: reqError } = await supabase
+        .from('service_requests')
+        .insert({
+          client_user_id: user.id,
+          category: selectedCategory,
+          description: description.trim(),
+          status: 'requested',
+          city,
+          budget_min: 0,
+          budget_max: 0,
+          scheduled_date: scheduledStr,
+          latitude: region.latitude,
+          longitude: region.longitude,
+        })
+        .select('id')
+        .single();
+
+      if (reqError) {
+        Alert.alert('Erro', reqError.message);
+        setSubmitting(false);
+        return;
+      }
+
+      const requestId = reqData.id;
+
+      if (photos.length > 0) {
+        await uploadPhotos(requestId);
+      }
+
+      // Notifica prestadores via API (fire and forget)
       const { data: sessionData } = await supabase.auth.getSession();
       const token = sessionData.session?.access_token;
-
-      const response = await fetch(`${API_BASE}/service-requests`, {
+      fetch(`${API_BASE}/service-requests/${requestId}/notify-providers`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
         body: JSON.stringify({
-          client_user_id: user.id,
           category: selectedCategory,
-          description: description.trim(),
-          latitude: region.latitude,
-          longitude: region.longitude,
-          ...(scheduledDate ? { scheduled_date: scheduledDate.toISOString() } : {}),
+          city,
           ...(providerId ? { preferred_provider_id: providerId } : {}),
         }),
-      });
-
-      if (!response.ok) {
-        Alert.alert('Erro', 'Não foi possível criar a solicitação. Tente novamente.');
-        setSubmitting(false);
-        return;
-      }
-
-      const data = await response.json();
-      const requestId = data?.id ?? data?.service_request?.id;
-
-      if (requestId && photos.length > 0) {
-        await uploadPhotos(requestId);
-      }
+      }).catch(() => {});
 
       setSubmitting(false);
       setSelectedCategory('');
@@ -293,11 +316,7 @@ export default function HomeScreen() {
       setPhotos([]);
       setScheduledDate(null);
 
-      if (requestId) {
-        router.push(`/tracking/${requestId}`);
-      } else {
-        router.push('/(tabs)/requests');
-      }
+      router.push(`/tracking/${requestId}`);
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
       setSubmitting(false);

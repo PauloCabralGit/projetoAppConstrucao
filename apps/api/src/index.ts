@@ -298,6 +298,55 @@ app.post("/v1/service-requests", async (c) => {
   return c.json({ id: data.id, message: "Pedido criado com sucesso." }, 201);
 });
 
+// ── Notify providers about a new request (insert already done on client) ──────
+app.post("/v1/service-requests/:id/notify-providers", async (c) => {
+  const body = await c.req.json<{
+    category: string;
+    city?: string;
+    preferred_provider_id?: string;
+  }>().catch(() => ({} as any));
+
+  const adminDb = db(c.env);
+  const catLabels: Record<string, string> = {
+    alvenaria: "Alvenaria", hidraulica: "Hidráulica", eletrica: "Elétrica",
+    pintura: "Pintura", piso: "Piso", acabamento: "Acabamento",
+  };
+  const catLabel = catLabels[body.category] ?? body.category;
+
+  if (body.preferred_provider_id) {
+    await sendPush(
+      c.env,
+      body.preferred_provider_id,
+      "⭐ Cliente quer te contratar!",
+      `Um cliente escolheu você para um serviço de ${catLabel}. Abra o app para aceitar.`
+    );
+  } else if (body.city) {
+    const { data: nearbyProviders } = await adminDb
+      .from("provider_profiles")
+      .select("user_id, app_users!user_id(push_token, city)")
+      .eq("status", "available")
+      .limit(50);
+
+    for (const prov of nearbyProviders ?? []) {
+      const user = Array.isArray((prov as any).app_users) ? (prov as any).app_users[0] : (prov as any).app_users;
+      if (!user?.push_token?.startsWith("ExponentPushToken")) continue;
+      if (user.city && body.city && !user.city.toLowerCase().includes(body.city.toLowerCase())) continue;
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          to: user.push_token,
+          title: "🔨 Novo chamado disponível!",
+          body: `Serviço de ${catLabel} em ${body.city}. Abra o app para aceitar.`,
+          sound: "default",
+        }),
+      }).catch(() => {});
+    }
+  }
+
+  return c.json({ ok: true });
+});
+
 app.get("/v1/requests", async (c) => {
   const { data, error } = await db(c.env)
     .from("service_requests")
