@@ -3,6 +3,7 @@ import { Platform, Modal, View, Text, StyleSheet, TouchableOpacity, Linking, App
 import { Stack, router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
+import Constants from 'expo-constants';
 import { supabase } from '@/lib/supabase';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
@@ -42,13 +43,14 @@ async function registerPushToken() {
     }
     if (finalStatus !== 'granted') return;
 
-    const { data: token } = await Notifications.getExpoPushTokenAsync();
+    const projectId = Constants.expoConfig?.extra?.eas?.projectId ?? Constants.easConfig?.projectId;
+    const { data: token } = await Notifications.getExpoPushTokenAsync({ projectId });
     const { data: { user } } = await supabase.auth.getUser();
     if (user && token) {
       await supabase.from('app_users').update({ push_token: token }).eq('id', user.id);
     }
-  } catch {
-    // Push notifications unavailable (simulator or no EAS project)
+  } catch (err) {
+    console.warn('[PushToken] Erro ao registrar token:', err);
   }
 }
 

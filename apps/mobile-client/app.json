@@ -25,6 +25,7 @@
     },
     "android": {
       "package": "com.orionsystem.construconnect.client",
+      "googleServicesFile": "./google-services-client.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#FF6B35"

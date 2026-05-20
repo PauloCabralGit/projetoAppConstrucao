@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1042895373985",
+    "project_id": "construconnect-provider",
+    "storage_bucket": "construconnect-provider.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1042895373985:android:09a0b1840879a8425892e0",
+        "android_client_info": {
+          "package_name": "com.orionsystem.construconnect.provider"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCAlcx__83IquVLf8keND95KAxVikgPTME"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

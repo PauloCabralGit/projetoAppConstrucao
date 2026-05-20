@@ -65,19 +65,27 @@ app.get("/health", (c) => c.json({ ok: true }));
 // ── Push notification helper ───────────────────────────────────────────────
 async function sendPush(env: Bindings, userId: string, title: string, body: string) {
   try {
-    const { data } = await db(env)
+    const { data, error: dbErr } = await db(env)
       .from("app_users")
       .select("push_token")
       .eq("id", userId)
       .maybeSingle();
+    if (dbErr) { console.error("[Push] DB error fetching token:", dbErr.message); return; }
     const token = data?.push_token;
-    if (!token || !token.startsWith("ExponentPushToken")) return;
-    await fetch("https://exp.host/--/api/v2/push/send", {
+    if (!token) { console.warn("[Push] No token for user:", userId); return; }
+    if (!token.startsWith("ExponentPushToken")) { console.warn("[Push] Invalid token format:", token.slice(0, 30)); return; }
+    const res = await fetch("https://exp.host/--/api/v2/push/send", {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify({ to: token, title, body, sound: "default" }),
     });
-  } catch {}
+    const result = await res.json() as any;
+    if (result?.data?.status === "error") {
+      console.error("[Push] Expo error:", result.data.message, "details:", JSON.stringify(result.data.details));
+    }
+  } catch (err) {
+    console.error("[Push] Exception:", err);
+  }
 }
 
 app.get("/v1/providers", async (c) => {
