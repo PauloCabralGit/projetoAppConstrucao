@@ -17,6 +17,7 @@ interface Overview {
   onlineProviders: number;
   onlineClients: number;
   sla: { onTime: number; warning: number; critical: number };
+  complaintsByStatus?: { open: number; investigating: number; resolved: number; dismissed: number };
 }
 
 interface AdminRequest {
@@ -305,6 +306,15 @@ function DashboardPage({ adminKey, onNavigate }: { adminKey: string; onNavigate:
     { label: "Crítico (> 72h)", count: sla.critical, color: "#e74c3c" },
   ];
 
+  const cbs = data.complaintsByStatus ?? { open: 0, investigating: 0, resolved: 0, dismissed: 0 };
+  const cbsTotal = cbs.open + cbs.investigating + cbs.resolved + cbs.dismissed;
+  const cbsRows = [
+    { label: "Abertas",     count: cbs.open,         color: "#e74c3c" },
+    { label: "Em análise",  count: cbs.investigating, color: "#f59e0b" },
+    { label: "Resolvidas",  count: cbs.resolved,      color: "#27ae60" },
+    { label: "Arquivadas",  count: cbs.dismissed,     color: "#94a3b8" },
+  ];
+
   return (
     <div>
       <h2 className="page-title">Dashboard</h2>
@@ -374,6 +384,49 @@ function DashboardPage({ adminKey, onNavigate }: { adminKey: string; onNavigate:
               )}
             </p>
           </>
+        )}
+      </div>
+
+      {/* Reclamações por status */}
+      <div style={{
+        marginTop: 16,
+        border: "1.5px solid var(--border)",
+        borderRadius: 12,
+        padding: "20px 24px",
+        background: "var(--card)",
+      }}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700, color: "var(--text)", display: "flex", alignItems: "center", gap: 8 }}>
+          📊 Reclamações por Status
+          <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 400, color: "var(--text-secondary)" }}>
+            Total: <strong style={{ color: "var(--text)" }}>{cbsTotal}</strong>
+          </span>
+        </h3>
+        {cbsTotal === 0 ? (
+          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>Nenhuma reclamação registrada.</p>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {cbsRows.map((row) => (
+              <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 10, height: 10, borderRadius: "50%", background: row.color, flexShrink: 0 }} />
+                <span style={{ fontSize: 13, color: "var(--text)", minWidth: 100 }}>{row.label}</span>
+                <span style={{ fontSize: 18, fontWeight: 700, color: row.color, minWidth: 30, textAlign: "right" }}>
+                  {row.count}
+                </span>
+                <div style={{ flex: 1, height: 8, background: "var(--border)", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{
+                    width: cbsTotal > 0 ? `${(row.count / cbsTotal) * 100}%` : "0%",
+                    height: "100%",
+                    background: row.color,
+                    borderRadius: 4,
+                    transition: "width 0.4s ease",
+                  }} />
+                </div>
+                <span style={{ fontSize: 12, color: "var(--text-secondary)", minWidth: 36, textAlign: "right" }}>
+                  {cbsTotal > 0 ? Math.round((row.count / cbsTotal) * 100) : 0}%
+                </span>
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -1144,8 +1197,9 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
                       <button
                         key={s}
                         className={`status-btn ${selected.status === s ? "active" : ""}`}
-                        disabled={selected.status === s || updatingId === selected.id}
+                        disabled={selected.status === s || updatingId === selected.id || selected.status === "resolved"}
                         onClick={() => updateStatus(selected.id, s)}
+                        title={selected.status === "resolved" ? "Reclamações resolvidas não podem ser reabertas" : undefined}
                       >
                         {updatingId === selected.id && selected.status !== s ? "..." : COMPLAINT_STATUS_LABEL[s]}
                       </button>

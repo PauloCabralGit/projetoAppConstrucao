@@ -1140,6 +1140,9 @@ app.get("/v1/admin/overview", async (c) => {
     { data: openComplaintsRows },
     { data: onlineProviderRows },
     { data: onlineClientRows },
+    { data: investigatingRows },
+    { data: resolvedRows },
+    { data: dismissedRows },
   ] = await Promise.all([
     d.from("app_users").select("id"),
     d.from("provider_profiles").select("user_id"),
@@ -1149,9 +1152,12 @@ app.get("/v1/admin/overview", async (c) => {
     d.from("app_users").select("id").gte("created_at", sevenDaysAgo),
     d.from("service_requests").select("quote_amount").eq("payment_status", "confirmed"),
     d.from("service_requests").select("quote_amount").eq("payment_status", "client_paid"),
-    d.from("formal_complaints").select("id, created_at").in("status", ["open", "investigating"]),
+    d.from("formal_complaints").select("id, created_at").eq("status", "open"),
     d.from("provider_profiles").select("user_id").eq("status", "available").gt("last_seen_at", heartbeatCutoff),
     d.from("app_users").select("id").eq("role", "client").gt("last_seen_at", heartbeatCutoff),
+    d.from("formal_complaints").select("id, created_at").eq("status", "investigating"),
+    d.from("formal_complaints").select("id").eq("status", "resolved"),
+    d.from("formal_complaints").select("id").eq("status", "dismissed"),
   ]);
 
   const totalRevenue = (revenueRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
@@ -1162,9 +1168,11 @@ app.get("/v1/admin/overview", async (c) => {
   const H24 = 24 * 60 * 60 * 1000;
   const H72 = 72 * 60 * 60 * 1000;
   const openList = openComplaintsRows ?? [];
-  const slaOnTime  = openList.filter((c: any) => nowMs - new Date(c.created_at).getTime() < H24).length;
-  const slaWarning = openList.filter((c: any) => { const a = nowMs - new Date(c.created_at).getTime(); return a >= H24 && a < H72; }).length;
-  const slaCritical = openList.filter((c: any) => nowMs - new Date(c.created_at).getTime() >= H72).length;
+  const investigatingList = investigatingRows ?? [];
+  const slaSource = [...openList, ...investigatingList];
+  const slaOnTime  = slaSource.filter((c: any) => nowMs - new Date(c.created_at).getTime() < H24).length;
+  const slaWarning = slaSource.filter((c: any) => { const a = nowMs - new Date(c.created_at).getTime(); return a >= H24 && a < H72; }).length;
+  const slaCritical = slaSource.filter((c: any) => nowMs - new Date(c.created_at).getTime() >= H72).length;
 
   return c.json({
     totalUsers: (usersRows ?? []).length,
@@ -1179,6 +1187,12 @@ app.get("/v1/admin/overview", async (c) => {
     onlineProviders: (onlineProviderRows ?? []).length,
     onlineClients: (onlineClientRows ?? []).length,
     sla: { onTime: slaOnTime, warning: slaWarning, critical: slaCritical },
+    complaintsByStatus: {
+      open: openList.length,
+      investigating: investigatingList.length,
+      resolved: (resolvedRows ?? []).length,
+      dismissed: (dismissedRows ?? []).length,
+    },
   });
 });
 
@@ -1296,12 +1310,17 @@ app.patch("/v1/admin/complaints/:id/status", async (c) => {
 
   const adminDb = db(c.env);
 
-  // Busca complaint antes de atualizar para pegar client/provider
+  // Busca complaint antes de atualizar para pegar client/provider e status atual
   const { data: complaint } = await adminDb
     .from("formal_complaints")
-    .select("client_user_id, provider_user_id, reason")
+    .select("client_user_id, provider_user_id, reason, status")
     .eq("id", id)
     .maybeSingle();
+
+  if (!complaint) return c.json({ message: "Reclamação não encontrada." }, 404);
+  if (complaint.status === "resolved") {
+    return c.json({ message: "Reclamações resolvidas não podem ser reabertas." }, 400);
+  }
 
   const updatePayload: Record<string, unknown> = { status };
   if (admin_note !== undefined) updatePayload.admin_note = admin_note;
