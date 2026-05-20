@@ -1044,6 +1044,7 @@ app.get("/v1/admin/overview", async (c) => {
     { data: newUserRows },
     { data: revenueRows },
     { data: pendingRows },
+    { data: openComplaintsRows },
   ] = await Promise.all([
     d.from("app_users").select("id"),
     d.from("provider_profiles").select("user_id"),
@@ -1053,6 +1054,7 @@ app.get("/v1/admin/overview", async (c) => {
     d.from("app_users").select("id").gte("created_at", sevenDaysAgo),
     d.from("service_requests").select("quote_amount").eq("payment_status", "confirmed"),
     d.from("service_requests").select("quote_amount").eq("payment_status", "client_paid"),
+    d.from("formal_complaints").select("id").eq("status", "open"),
   ]);
 
   const totalRevenue = (revenueRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
@@ -1067,6 +1069,7 @@ app.get("/v1/admin/overview", async (c) => {
     pendingRevenue,
     blockedProviders: (blockedRows ?? []).length,
     newUsers: (newUserRows ?? []).length,
+    openComplaints: (openComplaintsRows ?? []).length,
   });
 });
 
@@ -1215,6 +1218,26 @@ app.patch("/v1/admin/providers/:id/unblock", async (c) => {
     .eq("user_id", c.req.param("id"));
   await sendPush(c.env, c.req.param("id"), "✅ Conta reativada", "Sua conta foi reativada pelo administrador.");
   return c.json({ message: "Prestador desbloqueado." });
+});
+
+// ── Block client (ban auth account) ──────────────────────────────────────
+app.patch("/v1/admin/users/:id/block", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const id = c.req.param("id");
+  const { error } = await db(c.env).auth.admin.updateUserById(id, { ban_duration: "876600h" });
+  if (error) return c.json({ message: error.message }, 400);
+  await sendPush(c.env, id, "⛔ Conta suspensa", "Sua conta foi suspensa pelo administrador da plataforma.");
+  return c.json({ message: "Cliente bloqueado." });
+});
+
+// ── Unblock client ────────────────────────────────────────────────────────
+app.patch("/v1/admin/users/:id/unblock", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const id = c.req.param("id");
+  const { error } = await db(c.env).auth.admin.updateUserById(id, { ban_duration: "none" });
+  if (error) return c.json({ message: error.message }, 400);
+  await sendPush(c.env, id, "✅ Conta reativada", "Sua conta foi reativada pelo administrador da plataforma.");
+  return c.json({ message: "Cliente desbloqueado." });
 });
 
 // ── Chat: list messages for a request ────────────────────────────────────
@@ -1425,6 +1448,8 @@ app.post("/v1/complaints", async (c) => {
     return c.json({ message: "Campos obrigatórios ausentes." }, 400);
   }
 
+  console.log("complaint body:", JSON.stringify(body));
+
   const { data, error } = await db(c.env)
     .from("formal_complaints")
     .insert({
@@ -1438,7 +1463,10 @@ app.post("/v1/complaints", async (c) => {
     .select("id")
     .single();
 
-  if (error) return c.json({ message: error.message }, 400);
+  if (error) {
+    console.error("complaint insert error:", JSON.stringify(error));
+    return c.json({ message: error.message }, 400);
+  }
   return c.json({ id: data.id, message: "Reclamação registrada com sucesso." }, 201);
 });
 

@@ -13,6 +13,7 @@ interface Overview {
   pendingRevenue: number;
   blockedProviders: number;
   newUsers: number;
+  openComplaints: number;
 }
 
 interface AdminRequest {
@@ -207,6 +208,7 @@ function DashboardPage({ adminKey }: { adminKey: string }) {
     { label: "Receita pendente", value: fmt(data.pendingRevenue, true), icon: "⏳", color: "orange" },
     { label: "Prestadores bloqueados", value: data.blockedProviders, icon: "🚫", color: "red" },
     { label: "Novos usuários (7d)", value: data.newUsers, icon: "🆕", color: "blue" },
+    { label: "Reclamações abertas", value: data.openComplaints ?? 0, icon: "⚠️", color: "red" },
   ];
 
   return (
@@ -437,11 +439,10 @@ function ProvidersPage({ adminKey }: { adminKey: string }) {
                             Verificar
                           </button>
                         )}
-                        {!isBlocked ? (
-                          <button className="btn-sm btn-danger" onClick={() => setBlockTarget(p.user_id)}>
-                            Bloquear
-                          </button>
-                        ) : (
+                        <button className="btn-sm btn-danger" onClick={() => setBlockTarget(p.user_id)}>
+                          Bloquear
+                        </button>
+                        {isBlocked && (
                           <button className="btn-sm btn-green" onClick={() => unblock(p.user_id)}>
                             Desbloquear
                           </button>
@@ -672,6 +673,8 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<FormalComplaint | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [actionMsg, setActionMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [actioning, setActioning] = useState(false);
 
   const load = useCallback(() => {
     setLoading(true);
@@ -682,6 +685,70 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
   }, [adminKey]);
 
   useEffect(() => { load(); }, [load]);
+
+  function showMsg(text: string, ok: boolean) {
+    setActionMsg({ text, ok });
+    setTimeout(() => setActionMsg(null), 3500);
+  }
+
+  async function blockClient(userId: string) {
+    setActioning(true);
+    try {
+      const r = await apiFetch(`/v1/admin/users/${userId}/block`, adminKey, { method: "PATCH" });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao bloquear.");
+      showMsg("Cliente bloqueado com sucesso.", true);
+    } catch (e: any) {
+      showMsg(e.message ?? "Erro ao bloquear cliente.", false);
+    } finally {
+      setActioning(false);
+    }
+  }
+
+  async function unblockClient(userId: string) {
+    setActioning(true);
+    try {
+      const r = await apiFetch(`/v1/admin/users/${userId}/unblock`, adminKey, { method: "PATCH" });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao desbloquear.");
+      showMsg("Cliente desbloqueado com sucesso.", true);
+    } catch (e: any) {
+      showMsg(e.message ?? "Erro ao desbloquear cliente.", false);
+    } finally {
+      setActioning(false);
+    }
+  }
+
+  async function blockProvider(providerId: string) {
+    setActioning(true);
+    try {
+      const r = await apiFetch(`/v1/admin/providers/${providerId}/block`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify({ days: 30 }),
+      });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao bloquear.");
+      showMsg("Prestador bloqueado por 30 dias.", true);
+    } catch (e: any) {
+      showMsg(e.message ?? "Erro ao bloquear prestador.", false);
+    } finally {
+      setActioning(false);
+    }
+  }
+
+  async function unblockProvider(providerId: string) {
+    setActioning(true);
+    try {
+      const r = await apiFetch(`/v1/admin/providers/${providerId}/unblock`, adminKey, { method: "PATCH" });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao desbloquear.");
+      showMsg("Prestador desbloqueado com sucesso.", true);
+    } catch (e: any) {
+      showMsg(e.message ?? "Erro ao desbloquear prestador.", false);
+    } finally {
+      setActioning(false);
+    }
+  }
 
   async function updateStatus(id: string, status: string) {
     setUpdatingId(id);
@@ -774,6 +841,19 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
               <button className="modal-close" onClick={() => setSelected(null)}>✕</button>
             </div>
 
+            {actionMsg && (
+              <div style={{
+                margin: "0 0 12px",
+                padding: "10px 14px",
+                borderRadius: 8,
+                background: actionMsg.ok ? "#d4edda" : "#f8d7da",
+                color: actionMsg.ok ? "#155724" : "#721c24",
+                fontSize: 14,
+              }}>
+                {actionMsg.text}
+              </div>
+            )}
+
             <div className="complaint-detail-grid">
               {/* Status */}
               <div className="detail-card full-width">
@@ -811,22 +891,62 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
                     💬 WhatsApp cliente
                   </a>
                 )}
+                <div className="status-actions" style={{ marginTop: 10 }}>
+                  <button
+                    className="status-btn"
+                    style={{ background: "#e74c3c", color: "#fff" }}
+                    disabled={actioning}
+                    onClick={() => blockClient(selected.client_user_id)}
+                  >
+                    🚫 Bloquear
+                  </button>
+                  <button
+                    className="status-btn"
+                    style={{ background: "#27ae60", color: "#fff" }}
+                    disabled={actioning}
+                    onClick={() => unblockClient(selected.client_user_id)}
+                  >
+                    ✅ Desbloquear
+                  </button>
+                </div>
               </div>
 
               {/* Provider */}
               <div className="detail-card">
                 <div className="detail-card-title">👷 Prestador</div>
-                {selected.provider ? <>
-                  <p className="detail-name">{selected.provider.full_name}</p>
-                  <p className="detail-text">{selected.provider.email}</p>
-                  <p className="detail-text">{selected.provider.phone}</p>
-                  <p className="detail-text">{selected.provider.city}</p>
-                  {selected.provider.phone && (
-                    <a className="whatsapp-btn" href={whatsappLink(selected.provider.phone)} target="_blank" rel="noreferrer">
-                      💬 WhatsApp prestador
-                    </a>
-                  )}
-                </> : <p className="detail-text muted">Não vinculado</p>}
+                {selected.provider ? (
+                  <>
+                    <p className="detail-name">{selected.provider.full_name}</p>
+                    <p className="detail-text">{selected.provider.email}</p>
+                    <p className="detail-text">{selected.provider.phone}</p>
+                    <p className="detail-text">{selected.provider.city}</p>
+                    {selected.provider.phone && (
+                      <a className="whatsapp-btn" href={whatsappLink(selected.provider.phone)} target="_blank" rel="noreferrer">
+                        💬 WhatsApp prestador
+                      </a>
+                    )}
+                    {selected.provider_user_id && (
+                      <div className="status-actions" style={{ marginTop: 10 }}>
+                        <button
+                          className="status-btn"
+                          style={{ background: "#e74c3c", color: "#fff" }}
+                          disabled={actioning}
+                          onClick={() => blockProvider(selected.provider_user_id!)}
+                        >
+                          🚫 Bloquear
+                        </button>
+                        <button
+                          className="status-btn"
+                          style={{ background: "#27ae60", color: "#fff" }}
+                          disabled={actioning}
+                          onClick={() => unblockProvider(selected.provider_user_id!)}
+                        >
+                          ✅ Desbloquear
+                        </button>
+                      </div>
+                    )}
+                  </>
+                ) : <p className="detail-text muted">Não vinculado</p>}
               </div>
 
               {/* Service */}
