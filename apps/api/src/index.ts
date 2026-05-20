@@ -1036,21 +1036,21 @@ app.get("/v1/admin/overview", async (c) => {
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const [
-    { count: totalUsers },
-    { count: totalProviders },
-    { count: activeRequests },
-    { count: completedJobs },
-    { count: blockedProviders },
-    { count: newUsers },
+    { data: usersRows },
+    { data: providerRows },
+    { data: activeRows },
+    { data: completedRows },
+    { data: blockedRows },
+    { data: newUserRows },
     { data: revenueRows },
     { data: pendingRows },
   ] = await Promise.all([
-    d.from("app_users").select("*", { count: "exact", head: true }),
-    d.from("provider_profiles").select("*", { count: "exact", head: true }),
-    d.from("service_requests").select("*", { count: "exact", head: true }).in("status", ["requested", "accepted", "in_progress"]),
-    d.from("service_requests").select("*", { count: "exact", head: true }).eq("status", "completed"),
-    d.from("provider_profiles").select("*", { count: "exact", head: true }).gt("blocked_until", now),
-    d.from("app_users").select("*", { count: "exact", head: true }).gte("created_at", sevenDaysAgo),
+    d.from("app_users").select("id"),
+    d.from("provider_profiles").select("user_id"),
+    d.from("service_requests").select("id").in("status", ["requested", "accepted", "in_progress"]),
+    d.from("service_requests").select("id").eq("status", "completed"),
+    d.from("provider_profiles").select("user_id").gt("blocked_until", now),
+    d.from("app_users").select("id").gte("created_at", sevenDaysAgo),
     d.from("service_requests").select("quote_amount").eq("payment_status", "confirmed"),
     d.from("service_requests").select("quote_amount").eq("payment_status", "client_paid"),
   ]);
@@ -1059,14 +1059,14 @@ app.get("/v1/admin/overview", async (c) => {
   const pendingRevenue = (pendingRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
 
   return c.json({
-    totalUsers: totalUsers ?? 0,
-    totalProviders: totalProviders ?? 0,
-    activeRequests: activeRequests ?? 0,
-    completedJobs: completedJobs ?? 0,
+    totalUsers: (usersRows ?? []).length,
+    totalProviders: (providerRows ?? []).length,
+    activeRequests: (activeRows ?? []).length,
+    completedJobs: (completedRows ?? []).length,
     totalRevenue,
     pendingRevenue,
-    blockedProviders: blockedProviders ?? 0,
-    newUsers: newUsers ?? 0,
+    blockedProviders: (blockedRows ?? []).length,
+    newUsers: (newUserRows ?? []).length,
   });
 });
 
