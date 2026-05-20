@@ -1220,11 +1220,12 @@ app.patch("/v1/admin/providers/:id/unblock", async (c) => {
   return c.json({ message: "Prestador desbloqueado." });
 });
 
-// ── Block client (ban auth account) ──────────────────────────────────────
+// ── Block client ──────────────────────────────────────────────────────────
 app.patch("/v1/admin/users/:id/block", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const id = c.req.param("id");
-  const { error } = await db(c.env).auth.admin.updateUserById(id, { ban_duration: "876600h" });
+  const blockedUntil = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+  const { error } = await db(c.env).from("app_users").update({ blocked_until: blockedUntil }).eq("id", id);
   if (error) return c.json({ message: error.message }, 400);
   await sendPush(c.env, id, "⛔ Conta suspensa", "Sua conta foi suspensa pelo administrador da plataforma.");
   return c.json({ message: "Cliente bloqueado." });
@@ -1234,7 +1235,7 @@ app.patch("/v1/admin/users/:id/block", async (c) => {
 app.patch("/v1/admin/users/:id/unblock", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const id = c.req.param("id");
-  const { error } = await db(c.env).auth.admin.updateUserById(id, { ban_duration: "none" });
+  const { error } = await db(c.env).from("app_users").update({ blocked_until: null }).eq("id", id);
   if (error) return c.json({ message: error.message }, 400);
   await sendPush(c.env, id, "✅ Conta reativada", "Sua conta foi reativada pelo administrador da plataforma.");
   return c.json({ message: "Cliente desbloqueado." });
