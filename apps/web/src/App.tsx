@@ -353,27 +353,38 @@ function ProvidersPage({ adminKey }: { adminKey: string }) {
   useEffect(() => { load(); }, [load]);
 
   async function verify(id: string) {
-    await apiFetch(`/v1/admin/providers/${id}/verify`, adminKey, { method: "PATCH" });
-    setActionMsg("Prestador verificado com sucesso!");
-    load();
+    try {
+      const r = await apiFetch(`/v1/admin/providers/${id}/verify`, adminKey, { method: "PATCH" });
+      if (!r.ok) { const j = await r.json() as any; throw new Error(j?.message ?? "Erro"); }
+      setActionMsg("Prestador verificado com sucesso!");
+      load();
+    } catch (e: any) { setActionMsg(`Erro: ${e.message}`); }
   }
 
   async function block(id: string) {
     if (!blockDate) return;
-    await apiFetch(`/v1/admin/providers/${id}/block`, adminKey, {
-      method: "PATCH",
-      body: JSON.stringify({ until: blockDate }),
-    });
-    setBlockTarget(null);
-    setBlockDate("");
-    setActionMsg("Prestador bloqueado.");
-    load();
+    try {
+      const r = await apiFetch(`/v1/admin/providers/${id}/block`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify({ until: blockDate }),
+      });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao bloquear.");
+      setBlockTarget(null);
+      setBlockDate("");
+      setActionMsg("Prestador bloqueado com sucesso.");
+      load();
+    } catch (e: any) { setActionMsg(`Erro: ${e.message}`); }
   }
 
   async function unblock(id: string) {
-    await apiFetch(`/v1/admin/providers/${id}/unblock`, adminKey, { method: "PATCH" });
-    setActionMsg("Prestador desbloqueado.");
-    load();
+    try {
+      const r = await apiFetch(`/v1/admin/providers/${id}/unblock`, adminKey, { method: "PATCH" });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao desbloquear.");
+      setActionMsg("Prestador desbloqueado com sucesso.");
+      load();
+    } catch (e: any) { setActionMsg(`Erro: ${e.message}`); }
   }
 
   const todayStr = new Date().toISOString().split("T")[0];

@@ -1199,23 +1199,31 @@ app.patch("/v1/admin/providers/:id/verify", async (c) => {
 // ── Block provider ────────────────────────────────────────────────────────
 app.patch("/v1/admin/providers/:id/block", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  const { days = 30 } = await c.req.json<{ days?: number }>().catch(() => ({ days: 30 }));
-  const blockedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
-  await db(c.env)
+  const body = await c.req.json<{ days?: number; until?: string }>().catch(() => ({} as any));
+  let blockedUntil: string;
+  if (body.until) {
+    blockedUntil = new Date(body.until).toISOString();
+  } else {
+    const days = body.days ?? 30;
+    blockedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+  }
+  const { error } = await db(c.env)
     .from("provider_profiles")
     .update({ blocked_until: blockedUntil, status: "offline" })
     .eq("user_id", c.req.param("id"));
-  await sendPush(c.env, c.req.param("id"), "⛔ Conta suspensa", `Sua conta foi suspensa por ${days} dias pelo administrador.`);
-  return c.json({ message: `Prestador bloqueado por ${days} dias.` });
+  if (error) return c.json({ message: error.message }, 400);
+  await sendPush(c.env, c.req.param("id"), "⛔ Conta suspensa", "Sua conta foi suspensa pelo administrador da plataforma.");
+  return c.json({ message: "Prestador bloqueado." });
 });
 
 // ── Unblock provider ──────────────────────────────────────────────────────
 app.patch("/v1/admin/providers/:id/unblock", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  await db(c.env)
+  const { error } = await db(c.env)
     .from("provider_profiles")
     .update({ blocked_until: null, status: "available" })
     .eq("user_id", c.req.param("id"));
+  if (error) return c.json({ message: error.message }, 400);
   await sendPush(c.env, c.req.param("id"), "✅ Conta reativada", "Sua conta foi reativada pelo administrador.");
   return c.json({ message: "Prestador desbloqueado." });
 });
