@@ -869,6 +869,61 @@ export default function TrackingScreen() {
             {photoViewer && <Image source={{ uri: photoViewer }} style={styles.photoViewerImage} resizeMode="contain" />}
           </View>
         </Modal>
+
+        {/* Complaint modal */}
+        <Modal visible={complaintModal} transparent animationType="slide" onRequestClose={() => setComplaintModal(false)}>
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>Abrir reclamação</Text>
+              <Text style={styles.modalSubtitle}>Selecione o motivo</Text>
+
+              {['Serviço não concluído', 'Qualidade insatisfatória', 'Profissional não compareceu', 'Cobrança indevida', 'Comportamento inadequado'].map((reason) => (
+                <TouchableOpacity
+                  key={reason}
+                  style={[styles.complaintOption, complaintReason === reason && styles.complaintOptionActive]}
+                  onPress={() => setComplaintReason(reason)}
+                >
+                  <Ionicons
+                    name={complaintReason === reason ? 'radio-button-on' : 'radio-button-off'}
+                    size={18}
+                    color={complaintReason === reason ? Colors.dangerRed : Colors.textSecondary}
+                  />
+                  <Text style={[styles.complaintOptionText, complaintReason === reason && { color: Colors.dangerRed }]}>
+                    {reason}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+
+              <TextInput
+                style={styles.complaintInput}
+                placeholder="Descreva o ocorrido em detalhes..."
+                placeholderTextColor={Colors.textSecondary}
+                value={complaintDesc}
+                onChangeText={setComplaintDesc}
+                multiline
+                numberOfLines={4}
+                maxLength={500}
+                textAlignVertical="top"
+              />
+              <Text style={styles.complaintCharCount}>{complaintDesc.length}/500</Text>
+
+              <View style={styles.modalButtons}>
+                <TouchableOpacity style={styles.modalCancelBtn} onPress={() => setComplaintModal(false)}>
+                  <Text style={styles.modalCancelText}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.complaintSubmitBtn, (submittingComplaint || !complaintReason || !complaintDesc.trim()) && styles.btnDisabled]}
+                  onPress={handleSubmitComplaint}
+                  disabled={submittingComplaint || !complaintReason || !complaintDesc.trim()}
+                >
+                  {submittingComplaint
+                    ? <ActivityIndicator color={Colors.cardWhite} size="small" />
+                    : <Text style={styles.modalConfirmText}>Enviar</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </Modal>
       </View>
     );
   }

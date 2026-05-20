@@ -61,7 +61,31 @@ interface AdminPayment {
   provider_profiles?: any;
 }
 
+interface FormalComplaint {
+  id: string;
+  reason: string;
+  description: string;
+  status: string;
+  created_at: string;
+  request_id: string;
+  client_user_id: string;
+  provider_user_id: string | null;
+  client: { full_name: string; phone: string; email: string; city: string } | null;
+  provider: { full_name: string; phone: string; email: string; city: string } | null;
+  request: {
+    id: string;
+    category: string;
+    description: string;
+    city: string;
+    quote_amount: number | null;
+    scheduled_date: string | null;
+    status: string;
+    payment_status: string | null;
+  } | null;
+}
+
 interface Complaints {
+  formal: FormalComplaint[];
   lowRated: AdminRequest[];
   cancelled: AdminRequest[];
 }
@@ -623,18 +647,52 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
 }
 
 // ── Complaints ────────────────────────────────────────────────────────────────
+const COMPLAINT_STATUS_LABEL: Record<string, string> = {
+  open: "Aberta",
+  investigating: "Em análise",
+  resolved: "Resolvida",
+  dismissed: "Arquivada",
+};
+const COMPLAINT_STATUS_COLOR: Record<string, string> = {
+  open: "badge-red",
+  investigating: "badge-amber",
+  resolved: "badge-green",
+  dismissed: "badge-muted",
+};
+
+function whatsappLink(phone: string) {
+  const digits = phone.replace(/\D/g, "");
+  const number = digits.startsWith("55") ? digits : `55${digits}`;
+  return `https://wa.me/${number}`;
+}
+
 function ComplaintsPage({ adminKey }: { adminKey: string }) {
   const [data, setData] = useState<Complaints | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [selected, setSelected] = useState<FormalComplaint | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
     apiFetch("/v1/admin/complaints", adminKey)
       .then((r) => r.json())
       .then((d) => { setData(d); setLoading(false); })
       .catch(() => { setError("Erro ao carregar reclamações."); setLoading(false); });
   }, [adminKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function updateStatus(id: string, status: string) {
+    setUpdatingId(id);
+    await apiFetch(`/v1/admin/complaints/${id}/status`, adminKey, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    setUpdatingId(null);
+    if (selected?.id === id) setSelected((s) => s ? { ...s, status } : s);
+    load();
+  }
 
   if (loading) return <div className="loading">Carregando...</div>;
   if (error) return <div className="error-msg">{error}</div>;
@@ -643,44 +701,23 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
   function ReqTable({ rows, label }: { rows: AdminRequest[]; label: string }) {
     return (
       <section className="complaint-section">
-        <h3>
-          {label}
-          <span className="count-badge">{rows.length}</span>
-        </h3>
-        {rows.length === 0 ? (
-          <p className="empty-msg">Nenhum registro encontrado.</p>
-        ) : (
+        <h3>{label}<span className="count-badge">{rows.length}</span></h3>
+        {rows.length === 0 ? <p className="empty-msg">Nenhum registro.</p> : (
           <div className="table-wrap">
             <table>
-              <thead>
-                <tr>
-                  <th>Categoria</th>
-                  <th>Cliente</th>
-                  <th>Prestador</th>
-                  <th>Cidade</th>
-                  <th>Nota</th>
-                  <th>Status</th>
-                  <th>Data</th>
-                </tr>
-              </thead>
+              <thead><tr>
+                <th>Categoria</th><th>Cliente</th><th>Prestador</th>
+                <th>Cidade</th><th>Nota</th><th>Status</th><th>Data</th>
+              </tr></thead>
               <tbody>
                 {rows.map((r) => (
                   <tr key={r.id}>
-                    <td>
-                      <strong>{r.category}</strong>
-                      <span className="muted-sm block">
-                        {r.description?.slice(0, 55)}{r.description?.length > 55 ? "…" : ""}
-                      </span>
-                    </td>
+                    <td><strong>{r.category}</strong><span className="muted-sm block">{r.description?.slice(0, 50)}{(r.description?.length ?? 0) > 50 ? "…" : ""}</span></td>
                     <td>{r.app_users?.full_name ?? "—"}</td>
                     <td>{getProviderName(r.provider_profiles)}</td>
                     <td>{r.city}</td>
                     <td>{stars(r.client_rating)}</td>
-                    <td>
-                      <span className={`badge ${STATUS_COLOR[r.status] ?? "badge-muted"}`}>
-                        {STATUS_LABEL[r.status] ?? r.status}
-                      </span>
-                    </td>
+                    <td><span className={`badge ${STATUS_COLOR[r.status] ?? "badge-muted"}`}>{STATUS_LABEL[r.status] ?? r.status}</span></td>
                     <td>{fmtDate(r.created_at)}</td>
                   </tr>
                 ))}
@@ -695,8 +732,122 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
   return (
     <div>
       <h2 className="page-title">Reclamações</h2>
+
+      {/* Formal complaints */}
+      <section className="complaint-section">
+        <h3>📋 Reclamações formais<span className="count-badge">{data.formal.length}</span></h3>
+        {data.formal.length === 0 ? <p className="empty-msg">Nenhuma reclamação formal.</p> : (
+          <div className="table-wrap">
+            <table>
+              <thead><tr>
+                <th>Motivo</th><th>Cliente</th><th>Prestador</th>
+                <th>Cidade</th><th>Valor</th><th>Status</th><th>Data</th><th></th>
+              </tr></thead>
+              <tbody>
+                {data.formal.map((f) => (
+                  <tr key={f.id}>
+                    <td><strong>{f.reason}</strong><span className="muted-sm block">{f.description.slice(0, 45)}{f.description.length > 45 ? "…" : ""}</span></td>
+                    <td>{f.client?.full_name ?? "—"}</td>
+                    <td>{f.provider?.full_name ?? "—"}</td>
+                    <td>{f.request?.city ?? "—"}</td>
+                    <td>{f.request?.quote_amount ? `R$ ${Number(f.request.quote_amount).toFixed(2)}` : "—"}</td>
+                    <td><span className={`badge ${COMPLAINT_STATUS_COLOR[f.status] ?? "badge-muted"}`}>{COMPLAINT_STATUS_LABEL[f.status] ?? f.status}</span></td>
+                    <td>{fmtDate(f.created_at)}</td>
+                    <td><button className="action-btn" onClick={() => setSelected(f)}>Ver detalhes</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
       <ReqTable rows={data.lowRated} label="⭐ Avaliações baixas (≤ 2 estrelas)" />
       <ReqTable rows={data.cancelled} label="❌ Chamados cancelados" />
+
+      {/* Detail modal */}
+      {selected && (
+        <div className="modal-overlay" onClick={() => setSelected(null)}>
+          <div className="modal-box complaint-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Reclamação — {selected.reason}</h3>
+              <button className="modal-close" onClick={() => setSelected(null)}>✕</button>
+            </div>
+
+            <div className="complaint-detail-grid">
+              {/* Status */}
+              <div className="detail-card full-width">
+                <div className="detail-card-title">Status da reclamação</div>
+                <div className="complaint-status-row">
+                  <span className={`badge ${COMPLAINT_STATUS_COLOR[selected.status] ?? "badge-muted"}`}>
+                    {COMPLAINT_STATUS_LABEL[selected.status] ?? selected.status}
+                  </span>
+                  <div className="status-actions">
+                    {["open","investigating","resolved","dismissed"].map((s) => (
+                      <button
+                        key={s}
+                        className={`status-btn ${selected.status === s ? "active" : ""}`}
+                        disabled={selected.status === s || updatingId === selected.id}
+                        onClick={() => updateStatus(selected.id, s)}
+                      >
+                        {COMPLAINT_STATUS_LABEL[s]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <p className="detail-text"><strong>Descrição:</strong> {selected.description}</p>
+                <p className="detail-meta">Aberta em: {new Date(selected.created_at).toLocaleString("pt-BR")}</p>
+              </div>
+
+              {/* Client */}
+              <div className="detail-card">
+                <div className="detail-card-title">👤 Cliente</div>
+                <p className="detail-name">{selected.client?.full_name ?? "—"}</p>
+                <p className="detail-text">{selected.client?.email ?? "—"}</p>
+                <p className="detail-text">{selected.client?.phone ?? "—"}</p>
+                <p className="detail-text">{selected.client?.city ?? "—"}</p>
+                {selected.client?.phone && (
+                  <a className="whatsapp-btn" href={whatsappLink(selected.client.phone)} target="_blank" rel="noreferrer">
+                    💬 WhatsApp cliente
+                  </a>
+                )}
+              </div>
+
+              {/* Provider */}
+              <div className="detail-card">
+                <div className="detail-card-title">👷 Prestador</div>
+                {selected.provider ? <>
+                  <p className="detail-name">{selected.provider.full_name}</p>
+                  <p className="detail-text">{selected.provider.email}</p>
+                  <p className="detail-text">{selected.provider.phone}</p>
+                  <p className="detail-text">{selected.provider.city}</p>
+                  {selected.provider.phone && (
+                    <a className="whatsapp-btn" href={whatsappLink(selected.provider.phone)} target="_blank" rel="noreferrer">
+                      💬 WhatsApp prestador
+                    </a>
+                  )}
+                </> : <p className="detail-text muted">Não vinculado</p>}
+              </div>
+
+              {/* Service */}
+              <div className="detail-card full-width">
+                <div className="detail-card-title">🔨 Serviço</div>
+                {selected.request ? (
+                  <div className="service-detail-grid">
+                    <div><strong>Categoria:</strong> {selected.request.category}</div>
+                    <div><strong>Cidade:</strong> {selected.request.city}</div>
+                    <div><strong>Valor:</strong> {selected.request.quote_amount ? `R$ ${Number(selected.request.quote_amount).toFixed(2)}` : "Não definido"}</div>
+                    <div><strong>Status:</strong> {STATUS_LABEL[selected.request.status] ?? selected.request.status}</div>
+                    <div><strong>Pagamento:</strong> {selected.request.payment_status ?? "—"}</div>
+                    <div><strong>Agendado:</strong> {selected.request.scheduled_date ? new Date(selected.request.scheduled_date).toLocaleString("pt-BR") : "—"}</div>
+                    <div className="full-width"><strong>Descrição:</strong> {selected.request.description}</div>
+                  </div>
+                ) : <p className="detail-text muted">Serviço não encontrado</p>}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

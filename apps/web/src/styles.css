@@ -686,3 +686,142 @@ tr:hover td {
     padding: 28px 24px;
   }
 }
+
+/* ── Complaint detail modal ─────────────────────────────────────────────────── */
+
+.modal-box {
+  background: var(--card-bg);
+  border-radius: 16px;
+  padding: 0;
+  width: 100%;
+  max-width: 780px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  background: var(--card-bg);
+  z-index: 1;
+}
+
+.modal-header h3 {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+}
+
+.modal-close {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  cursor: pointer;
+  color: var(--muted);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+.modal-close:hover { background: var(--bg); }
+
+.complaint-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  padding: 20px 24px;
+}
+
+.detail-card {
+  background: var(--bg);
+  border-radius: 12px;
+  padding: 16px;
+  border: 1px solid var(--border);
+}
+
+.detail-card.full-width { grid-column: 1 / -1; }
+
+.detail-card-title {
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+
+.detail-name {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0 0 4px;
+}
+
+.detail-text {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin: 2px 0;
+}
+
+.detail-meta {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin-top: 8px;
+}
+
+.complaint-status-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.status-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.status-btn {
+  padding: 4px 10px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--card-bg);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--muted);
+  transition: all 0.15s;
+}
+.status-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.status-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.status-btn:disabled { opacity: 0.5; cursor: default; }
+
+.whatsapp-btn {
+  display: inline-block;
+  margin-top: 10px;
+  padding: 7px 14px;
+  background: #25d366;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+.whatsapp-btn:hover { opacity: 0.88; }
+
+.service-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px 20px;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+.service-detail-grid .full-width { grid-column: 1 / -1; }
+.service-detail-grid strong { color: var(--text); }

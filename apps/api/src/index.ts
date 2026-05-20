@@ -1121,25 +1121,69 @@ app.get("/v1/admin/payments", async (c) => {
   return c.json({ data: data ?? [] });
 });
 
-// ── Complaints (low ratings + cancelled) ──────────────────────────────────
+// ── Complaints (formal + low ratings + cancelled) ─────────────────────────
 app.get("/v1/admin/complaints", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  const [{ data: lowRated }, { data: cancelled }] = await Promise.all([
-    db(c.env)
-      .from("service_requests")
+  const d = db(c.env);
+
+  const [{ data: formalRaw }, { data: lowRated }, { data: cancelled }] = await Promise.all([
+    d.from("formal_complaints")
+      .select("id, reason, description, status, created_at, request_id, client_user_id, provider_user_id")
+      .order("created_at", { ascending: false })
+      .limit(100),
+    d.from("service_requests")
       .select("id, category, city, description, client_rating, status, created_at, client_user_id, provider_user_id")
       .lte("client_rating", 2)
       .not("client_rating", "is", null)
       .order("created_at", { ascending: false })
       .limit(150),
-    db(c.env)
-      .from("service_requests")
+    d.from("service_requests")
       .select("id, category, city, description, client_rating, status, created_at, client_user_id, provider_user_id")
       .eq("status", "cancelled")
       .order("created_at", { ascending: false })
       .limit(150),
   ]);
-  return c.json({ lowRated: lowRated ?? [], cancelled: cancelled ?? [] });
+
+  // Enrich formal complaints with user + request details
+  let formal: any[] = [];
+  if (formalRaw && formalRaw.length > 0) {
+    const userIds = [...new Set([
+      ...formalRaw.map((f: any) => f.client_user_id),
+      ...formalRaw.map((f: any) => f.provider_user_id).filter(Boolean),
+    ])];
+    const requestIds = [...new Set(formalRaw.map((f: any) => f.request_id))];
+
+    const [{ data: users }, { data: requests }] = await Promise.all([
+      d.from("app_users").select("id, full_name, phone, email, city").in("id", userIds),
+      d.from("service_requests")
+        .select("id, category, description, city, quote_amount, scheduled_date, status, payment_status")
+        .in("id", requestIds),
+    ]);
+
+    const userMap: Record<string, any> = Object.fromEntries((users ?? []).map((u: any) => [u.id, u]));
+    const reqMap: Record<string, any> = Object.fromEntries((requests ?? []).map((r: any) => [r.id, r]));
+
+    formal = formalRaw.map((f: any) => ({
+      ...f,
+      client: userMap[f.client_user_id] ?? null,
+      provider: f.provider_user_id ? (userMap[f.provider_user_id] ?? null) : null,
+      request: reqMap[f.request_id] ?? null,
+    }));
+  }
+
+  return c.json({ formal, lowRated: lowRated ?? [], cancelled: cancelled ?? [] });
+});
+
+// ── Update complaint status ────────────────────────────────────────────────
+app.patch("/v1/admin/complaints/:id/status", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { status } = await c.req.json<{ status: string }>();
+  const { error } = await db(c.env)
+    .from("formal_complaints")
+    .update({ status })
+    .eq("id", c.req.param("id"));
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Status atualizado." });
 });
 
 // ── Verify provider ───────────────────────────────────────────────────────
