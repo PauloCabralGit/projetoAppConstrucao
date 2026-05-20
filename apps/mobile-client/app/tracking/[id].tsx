@@ -22,6 +22,7 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useFlags } from '@/contexts/FeatureFlagsContext';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -94,6 +95,7 @@ const DEFAULT_REGION: Region = {
 
 export default function TrackingScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const flags = useFlags();
   const mapRef = useRef<MapView>(null);
   const markerAnim = useRef(new Animated.Value(0)).current;
 
@@ -667,21 +669,23 @@ export default function TrackingScreen() {
                 ))}
                 <Text style={styles.completedRatingLabel}>Sua avaliação: {request.client_rating} estrela{request.client_rating !== 1 ? 's' : ''}</Text>
               </View>
-            ) : (
+            ) : flags.ratings ? (
               <TouchableOpacity style={styles.completedRatePrompt} onPress={() => { setSelectedRating(0); setRatingModal(true); }}>
                 <Ionicons name="star-outline" size={16} color={Colors.warningAmber} />
                 <Text style={styles.completedRatePromptText}>Avaliar profissional</Text>
                 <Ionicons name="chevron-forward" size={14} color={Colors.textSecondary} />
               </TouchableOpacity>
-            )}
+            ) : null}
 
-            <TouchableOpacity
-              style={styles.chatBtn}
-              onPress={() => router.push(`/chat/${id}` as any)}
-            >
-              <Ionicons name="chatbubble-outline" size={16} color={Colors.primary} />
-              <Text style={styles.chatBtnText}>Chat com profissional</Text>
-            </TouchableOpacity>
+            {flags.chat && (
+              <TouchableOpacity
+                style={styles.chatBtn}
+                onPress={() => router.push(`/chat/${id}` as any)}
+              >
+                <Ionicons name="chatbubble-outline" size={16} color={Colors.primary} />
+                <Text style={styles.chatBtnText}>Chat com profissional</Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity
               style={styles.shareReceiptBtn}
@@ -691,13 +695,15 @@ export default function TrackingScreen() {
               <Text style={styles.shareReceiptBtnText}>Compartilhar recibo (PDF)</Text>
             </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.complaintBtn}
-              onPress={() => { setComplaintReason(''); setComplaintDesc(''); setComplaintModal(true); }}
-            >
-              <Ionicons name="warning-outline" size={16} color={Colors.dangerRed} />
-              <Text style={styles.complaintBtnText}>Abrir reclamação</Text>
-            </TouchableOpacity>
+            {flags.formal_complaints && (
+              <TouchableOpacity
+                style={styles.complaintBtn}
+                onPress={() => { setComplaintReason(''); setComplaintDesc(''); setComplaintModal(true); }}
+              >
+                <Ionicons name="warning-outline" size={16} color={Colors.dangerRed} />
+                <Text style={styles.complaintBtnText}>Abrir reclamação</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Payment form (if not yet paid) */}
@@ -714,7 +720,9 @@ export default function TrackingScreen() {
               )}
               <Text style={styles.paymentMethodLabel}>Forma de pagamento</Text>
               <View style={styles.paymentMethodRow}>
-                {(['pix', 'cash', 'card'] as const).map((m) => (
+                {(['pix', 'cash', 'card'] as const).filter(m =>
+                  !(m === 'pix' && !flags.pix_payments) && !(m === 'cash' && !flags.cash_payments)
+                ).map((m) => (
                   <TouchableOpacity
                     key={m}
                     style={[styles.methodChip, paymentMethod === m && styles.methodChipActive]}
@@ -1198,7 +1206,9 @@ export default function TrackingScreen() {
             )}
             <Text style={styles.paymentMethodLabel}>Forma de pagamento</Text>
             <View style={styles.paymentMethodRow}>
-              {(['pix', 'cash', 'card'] as const).map((m) => (
+              {(['pix', 'cash', 'card'] as const).filter(m =>
+                !(m === 'pix' && !flags.pix_payments) && !(m === 'cash' && !flags.cash_payments)
+              ).map((m) => (
                 <TouchableOpacity
                   key={m}
                   style={[styles.methodChip, paymentMethod === m && styles.methodChipActive]}

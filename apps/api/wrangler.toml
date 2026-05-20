@@ -7,3 +7,7 @@ APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
 # Mercado Pago — substitua pela sua Access Token (sandbox começa com TEST-, produção com APP_USR-)
 MERCADOPAGO_ACCESS_TOKEN = ""
+
+[[kv_namespaces]]
+binding = "FEATURE_FLAGS"
+id = "17281fd061e64ac0b32c469a8044d980"

@@ -15,8 +15,10 @@ import { Link, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useFlags } from '@/contexts/FeatureFlagsContext';
 
 export default function LoginScreen() {
+  const { new_registrations } = useFlags();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -123,14 +125,20 @@ export default function LoginScreen() {
               )}
             </TouchableOpacity>
 
-            <View style={styles.registerRow}>
-              <Text style={styles.registerText}>Ainda não tem conta? </Text>
-              <Link href="/(auth)/register" asChild>
-                <TouchableOpacity>
-                  <Text style={styles.registerLink}>Criar conta</Text>
-                </TouchableOpacity>
-              </Link>
-            </View>
+            {new_registrations ? (
+              <View style={styles.registerRow}>
+                <Text style={styles.registerText}>Ainda não tem conta? </Text>
+                <Link href="/(auth)/register" asChild>
+                  <TouchableOpacity>
+                    <Text style={styles.registerLink}>Criar conta</Text>
+                  </TouchableOpacity>
+                </Link>
+              </View>
+            ) : (
+              <Text style={[styles.registerText, { textAlign: 'center', marginTop: 8 }]}>
+                Cadastros temporariamente desabilitados.
+              </Text>
+            )}
           </View>
         </ScrollView>
       </KeyboardAvoidingView>

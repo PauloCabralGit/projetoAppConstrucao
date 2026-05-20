@@ -9,7 +9,36 @@ type Bindings = {
   SUPABASE_SERVICE_KEY: string;
   MERCADOPAGO_ACCESS_TOKEN: string;
   ADMIN_KEY: string;
+  FEATURE_FLAGS: KVNamespace;
 };
+
+const DEFAULT_FLAGS = [
+  { key: "new_registrations",   label: "Novos cadastros",           description: "Permite que novos usuários e prestadores se cadastrem na plataforma.",       category: "Acesso",      enabled: true  },
+  { key: "maintenance_mode",    label: "Modo de manutenção",         description: "Bloqueia o acesso ao app exibindo uma mensagem de manutenção.",              category: "Acesso",      enabled: false },
+  { key: "emergency_requests",  label: "Pedidos de emergência",      description: "Habilita a opção de pedido urgente na criação de chamados.",                 category: "Chamados",    enabled: true  },
+  { key: "provider_bidding",    label: "Sistema de lances",          description: "Permite que prestadores enviem propostas de valor para chamados.",           category: "Chamados",    enabled: true  },
+  { key: "pix_payments",        label: "Pagamento via Pix",          description: "Habilita a geração de QR Code Pix para pagamentos.",                        category: "Pagamentos",  enabled: true  },
+  { key: "cash_payments",       label: "Pagamento em dinheiro",      description: "Permite pagamento em dinheiro como forma de pagamento.",                    category: "Pagamentos",  enabled: true  },
+  { key: "chat",                label: "Chat cliente-prestador",     description: "Habilita o sistema de mensagens entre clientes e prestadores.",              category: "Comunicação", enabled: true  },
+  { key: "push_notifications",  label: "Notificações push",          description: "Habilita o envio de notificações push para usuários.",                      category: "Comunicação", enabled: true  },
+  { key: "ratings",             label: "Avaliações",                 description: "Permite que clientes avaliem prestadores após o serviço.",                  category: "Qualidade",   enabled: true  },
+  { key: "formal_complaints",   label: "Reclamações formais",        description: "Habilita o formulário de reclamação formal para clientes.",                 category: "Qualidade",   enabled: true  },
+  { key: "provider_tracking",   label: "Rastreamento de prestador",  description: "Permite que clientes vejam a localização do prestador em tempo real.",     category: "Localização", enabled: true  },
+];
+
+async function getFlags(kv: KVNamespace) {
+  const results = await Promise.all(
+    DEFAULT_FLAGS.map(async (def) => {
+      const stored = await kv.get(def.key, "json") as { enabled: boolean; updated_at: string } | null;
+      return {
+        ...def,
+        enabled: stored != null ? stored.enabled : def.enabled,
+        updated_at: stored?.updated_at ?? new Date(0).toISOString(),
+      };
+    })
+  );
+  return results.sort((a, b) => a.category.localeCompare(b.category) || a.key.localeCompare(b.key));
+}
 
 const app = new Hono<{ Bindings: Bindings }>();
 
@@ -1389,35 +1418,27 @@ app.patch("/v1/admin/users/:id/unblock", async (c) => {
 
 // ── Feature Flags (public read) ───────────────────────────────────────────
 app.get("/v1/feature-flags", async (c) => {
-  const { data } = await db(c.env)
-    .from("feature_flags")
-    .select("key, enabled");
-  const flags: Record<string, boolean> = {};
-  for (const f of data ?? []) flags[f.key] = f.enabled;
-  return c.json(flags);
+  const flags = await getFlags(c.env.FEATURE_FLAGS);
+  const result: Record<string, boolean> = {};
+  for (const f of flags) result[f.key] = f.enabled;
+  return c.json(result);
 });
 
 // ── Feature Flags (admin) ─────────────────────────────────────────────────
 app.get("/v1/admin/feature-flags", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  const { data, error } = await db(c.env)
-    .from("feature_flags")
-    .select("key, label, description, category, enabled, updated_at")
-    .order("category")
-    .order("key");
-  if (error) return c.json({ message: error.message }, 500);
-  return c.json({ data: data ?? [] });
+  const data = await getFlags(c.env.FEATURE_FLAGS);
+  return c.json({ data });
 });
 
 app.patch("/v1/admin/feature-flags/:key", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const key = c.req.param("key");
   const { enabled } = await c.req.json<{ enabled: boolean }>();
-  const { error } = await db(c.env)
-    .from("feature_flags")
-    .update({ enabled, updated_at: new Date().toISOString() })
-    .eq("key", key);
-  if (error) return c.json({ message: error.message }, 500);
+  if (!DEFAULT_FLAGS.find((f) => f.key === key)) {
+    return c.json({ message: "Flag não encontrada." }, 404);
+  }
+  await c.env.FEATURE_FLAGS.put(key, JSON.stringify({ enabled, updated_at: new Date().toISOString() }));
   return c.json({ ok: true });
 });
 

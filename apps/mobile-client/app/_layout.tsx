@@ -6,6 +6,7 @@ import * as SecureStore from 'expo-secure-store';
 import { supabase } from '@/lib/supabase';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
+import { FeatureFlagsProvider, useFlags } from '@/contexts/FeatureFlagsContext';
 import { ONBOARDING_KEY } from './onboarding';
 
 Notifications.setNotificationHandler({
@@ -145,6 +146,36 @@ const bs = StyleSheet.create({
   contactBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
 });
 
+function MaintenanceOverlay() {
+  return (
+    <Modal visible statusBarTranslucent animationType="fade" onRequestClose={() => {}}>
+      <View style={bs.container}>
+        <Text style={bs.icon}>🔧</Text>
+        <Text style={bs.title}>Em Manutenção</Text>
+        <Text style={bs.body}>
+          A plataforma ConstruConnect está temporariamente em manutenção.{'\n\n'}Voltaremos em breve!
+        </Text>
+      </View>
+    </Modal>
+  );
+}
+
+function RootLayoutInner({ blockedUntil }: { blockedUntil: string | null }) {
+  const { maintenance_mode } = useFlags();
+  return (
+    <>
+      {maintenance_mode && <MaintenanceOverlay />}
+      {!maintenance_mode && blockedUntil && <BlockedOverlay blockedUntil={blockedUntil} />}
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="(auth)" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="tracking/[id]" />
+        <Stack.Screen name="onboarding" />
+      </Stack>
+    </>
+  );
+}
+
 export default function RootLayout() {
   const [blockedUntil, setBlockedUntil] = useState<string | null>(null);
   const currentUserId = useRef<string | null>(null);
@@ -227,16 +258,12 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <ThemeProvider>
-      <NotificationProvider>
-        {blockedUntil && <BlockedOverlay blockedUntil={blockedUntil} />}
-        <Stack screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="(auth)" />
-          <Stack.Screen name="(tabs)" />
-          <Stack.Screen name="tracking/[id]" />
-          <Stack.Screen name="onboarding" />
-        </Stack>
-      </NotificationProvider>
-    </ThemeProvider>
+    <FeatureFlagsProvider>
+      <ThemeProvider>
+        <NotificationProvider>
+          <RootLayoutInner blockedUntil={blockedUntil} />
+        </NotificationProvider>
+      </ThemeProvider>
+    </FeatureFlagsProvider>
   );
 }

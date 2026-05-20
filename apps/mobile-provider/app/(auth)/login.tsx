@@ -15,8 +15,10 @@ import { Link, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { useFlags } from '@/contexts/FeatureFlagsContext';
 
 export default function ProviderLoginScreen() {
+  const { new_registrations } = useFlags();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -126,14 +128,20 @@ export default function ProviderLoginScreen() {
               )}
             </TouchableOpacity>
 
-            <View style={styles.registerRow}>
-              <Text style={styles.registerText}>Ainda não é prestador? </Text>
-              <Link href="/(auth)/register" asChild>
-                <TouchableOpacity>
-                  <Text style={styles.registerLink}>Cadastrar</Text>
-                </TouchableOpacity>
-              </Link>
-            </View>
+            {new_registrations ? (
+              <View style={styles.registerRow}>
+                <Text style={styles.registerText}>Ainda não é prestador? </Text>
+                <Link href="/(auth)/register" asChild>
+                  <TouchableOpacity>
+                    <Text style={styles.registerLink}>Cadastrar</Text>
+                  </TouchableOpacity>
+                </Link>
+              </View>
+            ) : (
+              <Text style={[styles.registerText, { textAlign: 'center', marginTop: 20 }]}>
+                Cadastros temporariamente desabilitados.
+              </Text>
+            )}
           </View>
 
           <View style={styles.proTip}>
