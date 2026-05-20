@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
@@ -89,6 +89,65 @@ interface Complaints {
   formal: FormalComplaint[];
   lowRated: AdminRequest[];
   cancelled: AdminRequest[];
+}
+
+function browserNotify(title: string, body: string) {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "granted") {
+    new Notification(title, { body, icon: "/favicon.ico" });
+  }
+}
+
+function useAdminNotifications(adminKey: string, onBadge: (page: Page, count: number) => void) {
+  const prev = useRef({ openComplaints: 0, pendingPayments: 0, activeRequests: 0 });
+  const initialized = useRef(false);
+
+  useEffect(() => {
+    if (!adminKey) return;
+
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
+    async function poll() {
+      try {
+        const r = await apiFetch("/v1/admin/overview", adminKey);
+        if (!r.ok) return;
+        const data = await r.json() as Overview;
+
+        const newComplaints = (data.openComplaints ?? 0) - prev.current.openComplaints;
+        const newPayments = data.activeRequests - prev.current.activeRequests;
+
+        if (initialized.current) {
+          if (newComplaints > 0) {
+            browserNotify(
+              "⚠️ Nova reclamação",
+              `${newComplaints} nova(s) reclamação(ões) aberta(s) aguardando análise.`
+            );
+            onBadge("complaints", data.openComplaints ?? 0);
+          }
+          if (newPayments > 0) {
+            browserNotify(
+              "📋 Novos chamados",
+              `${newPayments} novo(s) chamado(s) ativo(s) na plataforma.`
+            );
+            onBadge("requests", data.activeRequests);
+          }
+        }
+
+        prev.current = {
+          openComplaints: data.openComplaints ?? 0,
+          pendingPayments: data.pendingRevenue ?? 0,
+          activeRequests: data.activeRequests ?? 0,
+        };
+        initialized.current = true;
+      } catch {}
+    }
+
+    poll();
+    const id = setInterval(poll, 30000);
+    return () => clearInterval(id);
+  }, [adminKey]);
 }
 
 function apiFetch(path: string, key: string, init?: RequestInit) {
@@ -182,7 +241,7 @@ const PROV_STATUS_COLOR: Record<string, string> = {
 };
 
 // ── Dashboard ─────────────────────────────────────────────────────────────────
-function DashboardPage({ adminKey }: { adminKey: string }) {
+function DashboardPage({ adminKey, onNavigate }: { adminKey: string; onNavigate: (p: Page) => void }) {
   const [data, setData] = useState<Overview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -199,16 +258,16 @@ function DashboardPage({ adminKey }: { adminKey: string }) {
   if (error) return <div className="error-msg">{error}</div>;
   if (!data) return null;
 
-  const cards = [
-    { label: "Usuários", value: data.totalUsers, icon: "👥", color: "blue" },
-    { label: "Prestadores", value: data.totalProviders, icon: "👷", color: "green" },
-    { label: "Chamados ativos", value: data.activeRequests, icon: "📋", color: "orange" },
-    { label: "Serviços concluídos", value: data.completedJobs, icon: "✅", color: "green" },
-    { label: "Receita total", value: fmt(data.totalRevenue, true), icon: "💰", color: "green" },
-    { label: "Receita pendente", value: fmt(data.pendingRevenue, true), icon: "⏳", color: "orange" },
-    { label: "Prestadores bloqueados", value: data.blockedProviders, icon: "🚫", color: "red" },
-    { label: "Novos usuários (7d)", value: data.newUsers, icon: "🆕", color: "blue" },
-    { label: "Reclamações abertas", value: data.openComplaints ?? 0, icon: "⚠️", color: "red" },
+  const cards: { label: string; value: string | number; icon: string; color: string; page?: Page }[] = [
+    { label: "Usuários", value: data.totalUsers, icon: "👥", color: "blue", page: "users" },
+    { label: "Prestadores", value: data.totalProviders, icon: "👷", color: "green", page: "providers" },
+    { label: "Chamados ativos", value: data.activeRequests, icon: "📋", color: "orange", page: "requests" },
+    { label: "Serviços concluídos", value: data.completedJobs, icon: "✅", color: "green", page: "requests" },
+    { label: "Receita total", value: fmt(data.totalRevenue, true), icon: "💰", color: "green", page: "payments" },
+    { label: "Receita pendente", value: fmt(data.pendingRevenue, true), icon: "⏳", color: "orange", page: "payments" },
+    { label: "Prestadores bloqueados", value: data.blockedProviders, icon: "🚫", color: "red", page: "providers" },
+    { label: "Novos usuários (7d)", value: data.newUsers, icon: "🆕", color: "blue", page: "users" },
+    { label: "Reclamações abertas", value: data.openComplaints ?? 0, icon: "⚠️", color: "red", page: "complaints" },
   ];
 
   return (
@@ -216,7 +275,12 @@ function DashboardPage({ adminKey }: { adminKey: string }) {
       <h2 className="page-title">Dashboard</h2>
       <div className="stats-grid">
         {cards.map((c) => (
-          <div className={`stat-card stat-${c.color}`} key={c.label}>
+          <div
+            className={`stat-card stat-${c.color}`}
+            key={c.label}
+            style={c.page ? { cursor: "pointer" } : undefined}
+            onClick={c.page ? () => onNavigate(c.page!) : undefined}
+          >
             <span className="stat-icon">{c.icon}</span>
             <div>
               <p className="stat-label">{c.label}</p>
@@ -1000,6 +1064,18 @@ export function App() {
   const [loginError, setLoginError] = useState("");
   const [logging, setLogging] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
+  const [badges, setBadges] = useState<Partial<Record<Page, number>>>({});
+
+  function handleBadge(p: Page, count: number) {
+    setBadges((prev) => ({ ...prev, [p]: count }));
+  }
+
+  useAdminNotifications(adminKey, handleBadge);
+
+  function navigate(p: Page) {
+    setPage(p);
+    setBadges((prev) => ({ ...prev, [p]: 0 }));
+  }
 
   const loggedIn = adminKey.length > 0;
 
@@ -1074,10 +1150,25 @@ export function App() {
             <button
               key={n.key}
               className={`nav-item${page === n.key ? " active" : ""}`}
-              onClick={() => setPage(n.key)}
+              onClick={() => navigate(n.key)}
             >
               <span className="nav-icon">{n.icon}</span>
               {n.label}
+              {(badges[n.key] ?? 0) > 0 && (
+                <span style={{
+                  marginLeft: "auto",
+                  background: "#e74c3c",
+                  color: "#fff",
+                  borderRadius: "10px",
+                  padding: "1px 7px",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  minWidth: 18,
+                  textAlign: "center",
+                }}>
+                  {badges[n.key]}
+                </span>
+              )}
             </button>
           ))}
         </nav>
@@ -1088,7 +1179,7 @@ export function App() {
 
       <main className="admin-main">
         <div className="admin-content">
-          {page === "dashboard" && <DashboardPage adminKey={adminKey} />}
+          {page === "dashboard" && <DashboardPage adminKey={adminKey} onNavigate={navigate} />}
           {page === "requests" && <RequestsPage adminKey={adminKey} />}
           {page === "providers" && <ProvidersPage adminKey={adminKey} />}
           {page === "users" && <UsersPage adminKey={adminKey} />}
