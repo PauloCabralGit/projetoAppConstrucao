@@ -26,8 +26,7 @@
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#1E2A38"
       },
-      "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false,
+
       "config": {
         "googleMaps": {
           "apiKey": "GOOGLE_MAPS_KEY_HERE"
