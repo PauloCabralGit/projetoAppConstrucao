@@ -17,7 +17,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.orionsystem.construconnect.provider",
       "config": {
-        "googleMapsApiKey": "GOOGLE_MAPS_KEY_HERE"
+        "googleMapsApiKey": "AIzaSyBBUwl-6dPEsrgQG_bCP4esUyLSaStLXr0"
       }
     },
     "android": {
@@ -55,6 +55,14 @@
           "cameraPermission": "Use a câmera para tirar fotos das obras."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "1b3e185e-b981-4aab-b3e3-aa9bd86b30f1"
+      }
+    }
   }
 }

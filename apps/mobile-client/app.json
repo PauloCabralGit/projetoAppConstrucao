@@ -17,7 +17,10 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.orionsystem.construconnect.client",
       "config": {
-        "googleMapsApiKey": "GOOGLE_MAPS_KEY_HERE"
+        "googleMapsApiKey": "AIzaSyBBUwl-6dPEsrgQG_bCP4esUyLSaStLXr0"
+      },
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -30,9 +33,14 @@
       "predictiveBackGestureEnabled": false,
       "config": {
         "googleMaps": {
-          "apiKey": "GOOGLE_MAPS_KEY_HERE"
+          "apiKey": "AIzaSyBBUwl-6dPEsrgQG_bCP4esUyLSaStLXr0"
         }
-      }
+      },
+      "permissions": [
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -55,6 +63,14 @@
           "cameraPermission": "Use a câmera para tirar fotos das obras."
         }
       ]
-    ]
+    ],
+    "extra": {
+      "router": {
+        "origin": false
+      },
+      "eas": {
+        "projectId": "de270f5f-49c3-46c3-a10f-3cafac51b5c3"
+      }
+    }
   }
 }

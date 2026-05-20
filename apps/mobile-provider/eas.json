@@ -32,11 +32,6 @@
       "android": {
         "serviceAccountKeyPath": "./google-services-key.json",
         "track": "production"
-      },
-      "ios": {
-        "appleId": "paulinhocabral90@gmail.com",
-        "ascAppId": "",
-        "appleTeamId": ""
       }
     }
   }
