@@ -167,6 +167,18 @@ function apiFetch(path: string, key: string, init?: RequestInit) {
   });
 }
 
+function slaInfo(createdAt: string, status: string): { text: string; color: string } {
+  if (status === "resolved" || status === "dismissed") return { text: "—", color: "var(--text-secondary)" };
+  const ageMs = Date.now() - new Date(createdAt).getTime();
+  const H24 = 24 * 60 * 60 * 1000;
+  const H72 = 72 * 60 * 60 * 1000;
+  const hours = Math.floor(ageMs / (60 * 60 * 1000));
+  if (ageMs < H24) return { text: `${hours}h`, color: "#27ae60" };
+  if (ageMs < H72) return { text: `${hours}h`, color: "#f59e0b" };
+  const days = Math.floor(ageMs / (24 * 60 * 60 * 1000));
+  return { text: `${days}d`, color: "#e74c3c" };
+}
+
 function fmt(n: number | null | undefined, currency = false): string {
   if (n == null) return "—";
   return currency ? `R$ ${n.toFixed(2).replace(".", ",")}` : String(n);
@@ -284,6 +296,15 @@ function DashboardPage({ adminKey, onNavigate }: { adminKey: string; onNavigate:
     { label: "Reclamações abertas", value: data.openComplaints ?? 0, icon: "⚠️", color: "red", page: "complaints" },
   ];
 
+  const sla = data.sla ?? { onTime: 0, warning: 0, critical: 0 };
+  const slaTotal = sla.onTime + sla.warning + sla.critical;
+  const slaBorderColor = sla.critical > 0 ? "#e74c3c" : sla.warning > 0 ? "#f59e0b" : "#27ae60";
+  const slaRows = [
+    { label: "No prazo (< 24h)", count: sla.onTime, color: "#27ae60" },
+    { label: "Atenção (24–72h)", count: sla.warning, color: "#f59e0b" },
+    { label: "Crítico (> 72h)", count: sla.critical, color: "#e74c3c" },
+  ];
+
   return (
     <div>
       <h2 className="page-title">Dashboard</h2>
@@ -302,6 +323,58 @@ function DashboardPage({ adminKey, onNavigate }: { adminKey: string; onNavigate:
             </div>
           </div>
         ))}
+      </div>
+
+      {/* SLA Widget */}
+      <div style={{
+        marginTop: 24,
+        border: `2px solid ${slaBorderColor}`,
+        borderRadius: 12,
+        padding: "20px 24px",
+        background: "var(--card)",
+      }}>
+        <h3 style={{ margin: "0 0 16px", fontSize: 15, fontWeight: 700, color: "var(--text)" }}>
+          ⏱ SLA — Tempo de Resolução de Reclamações
+        </h3>
+        {slaTotal === 0 ? (
+          <p style={{ color: "var(--text-secondary)", fontSize: 13, margin: 0 }}>
+            Nenhuma reclamação aberta ou em análise.
+          </p>
+        ) : (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {slaRows.map((row) => (
+                <div key={row.label} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 10, height: 10, borderRadius: "50%", background: row.color, flexShrink: 0 }} />
+                  <span style={{ fontSize: 13, color: "var(--text)", minWidth: 160 }}>{row.label}</span>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: row.color, minWidth: 30, textAlign: "right" }}>
+                    {row.count}
+                  </span>
+                  <div style={{ flex: 1, height: 8, background: "var(--border)", borderRadius: 4, overflow: "hidden" }}>
+                    <div style={{
+                      width: `${(row.count / slaTotal) * 100}%`,
+                      height: "100%",
+                      background: row.color,
+                      borderRadius: 4,
+                      transition: "width 0.4s ease",
+                    }} />
+                  </div>
+                  <span style={{ fontSize: 12, color: "var(--text-secondary)", minWidth: 36, textAlign: "right" }}>
+                    {slaTotal > 0 ? Math.round((row.count / slaTotal) * 100) : 0}%
+                  </span>
+                </div>
+              ))}
+            </div>
+            <p style={{ marginTop: 12, fontSize: 12, color: "var(--text-secondary)", margin: "12px 0 0" }}>
+              Total em aberto/análise: <strong style={{ color: "var(--text)" }}>{slaTotal}</strong>
+              {sla.critical > 0 && (
+                <span style={{ marginLeft: 12, color: "#e74c3c", fontWeight: 600 }}>
+                  ⚠ {sla.critical} em estado crítico — ação necessária
+                </span>
+              )}
+            </p>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1006,10 +1079,12 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
             <table>
               <thead><tr>
                 <th>Motivo</th><th>Cliente</th><th>Prestador</th>
-                <th>Cidade</th><th>Valor</th><th>Status</th><th>Data</th><th></th>
+                <th>Cidade</th><th>Valor</th><th>Status</th><th>Tempo</th><th>Data</th><th></th>
               </tr></thead>
               <tbody>
-                {data.formal.map((f) => (
+                {data.formal.map((f) => {
+                  const sla = slaInfo(f.created_at, f.status);
+                  return (
                   <tr key={f.id}>
                     <td><strong>{f.reason}</strong><span className="muted-sm block">{f.description.slice(0, 45)}{f.description.length > 45 ? "…" : ""}</span></td>
                     <td>{f.client?.full_name ?? "—"}</td>
@@ -1017,10 +1092,14 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
                     <td>{f.request?.city ?? "—"}</td>
                     <td>{f.request?.quote_amount ? `R$ ${Number(f.request.quote_amount).toFixed(2)}` : "—"}</td>
                     <td><span className={`badge ${COMPLAINT_STATUS_COLOR[f.status] ?? "badge-muted"}`}>{COMPLAINT_STATUS_LABEL[f.status] ?? f.status}</span></td>
+                    <td>
+                      <span style={{ fontWeight: 700, fontSize: 13, color: sla.color }}>{sla.text}</span>
+                    </td>
                     <td>{fmtDate(f.created_at)}</td>
                     <td><button className="action-btn" onClick={() => setSelected(f)}>Ver detalhes</button></td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
