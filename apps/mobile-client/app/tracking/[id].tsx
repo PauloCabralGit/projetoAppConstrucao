@@ -507,7 +507,14 @@ export default function TrackingScreen() {
         setComplaintModal(false);
         setComplaintReason('');
         setComplaintDesc('');
-        Alert.alert('Reclamação enviada', 'Nossa equipe irá analisar sua reclamação em breve.');
+        Alert.alert(
+          'Reclamação enviada',
+          'Nossa equipe irá analisar em breve. Deseja continuar em contato via chat?',
+          [
+            { text: 'Fechar', style: 'cancel' },
+            { text: 'Abrir chat', onPress: () => router.push(`/chat/${id}` as any) },
+          ]
+        );
       } else {
         Alert.alert('Erro', 'Não foi possível registrar a reclamação. Tente novamente.');
       }
