@@ -31,6 +31,7 @@ interface Provider {
   completedJobs: number;
   priceFrom: number;
   availability: string;
+  lastSeenAt: string | null;
   bio: string;
   skills: { id: string; label: string }[];
 }
@@ -63,6 +64,20 @@ const AVAILABILITY_LABEL: Record<string, string> = {
   offline: 'Offline',
 };
 
+function formatLastSeen(lastSeenAt: string | null): string | null {
+  if (!lastSeenAt) return null;
+  const d = new Date(lastSeenAt);
+  const diffMs = Date.now() - d.getTime();
+  const diffMin = Math.floor(diffMs / 60000);
+  if (diffMin < 3) return null; // considera online, não mostra
+  if (diffMin < 60) return `Visto há ${diffMin} min`;
+  const today = new Date();
+  const isToday = d.toDateString() === today.toDateString();
+  const time = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  if (isToday) return `Visto hoje às ${time}`;
+  return `Visto em ${d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })} às ${time}`;
+}
+
 function mapProvider(raw: any): Provider {
   const user = Array.isArray(raw.app_users) ? raw.app_users[0] : raw.app_users;
   return {
@@ -74,6 +89,7 @@ function mapProvider(raw: any): Provider {
     completedJobs: raw.completed_jobs ?? 0,
     priceFrom: Number(raw.price_from ?? 0),
     availability: raw.status ?? 'offline',
+    lastSeenAt: raw.last_seen_at ?? null,
     bio: raw.description ?? '',
     skills: (raw.provider_skills ?? []).map((ps: any) => ({
       id: ps.skill_id,
@@ -201,6 +217,7 @@ export default function SearchScreen() {
   function renderProvider({ item }: { item: Provider }) {
     const isFav = favorites.includes(item.id);
     const availColor = AVAILABILITY_COLOR[item.availability] ?? Colors.textSecondary;
+    const lastSeenLabel = formatLastSeen(item.lastSeenAt);
 
     return (
       <View style={[styles.card, { backgroundColor: colors.cardWhite }]}>
@@ -230,6 +247,11 @@ export default function SearchScreen() {
                 {AVAILABILITY_LABEL[item.availability] ?? item.availability}
               </Text>
             </View>
+            {lastSeenLabel ? (
+              <Text style={styles.lastSeenText}>{lastSeenLabel}</Text>
+            ) : item.availability === 'available' ? (
+              <Text style={[styles.lastSeenText, { color: Colors.successGreen }]}>Online agora</Text>
+            ) : null}
           </View>
         </View>
 
@@ -604,6 +626,7 @@ const styles = StyleSheet.create({
   roleBadgeText: { fontSize: 11, fontWeight: '700', color: '#3B82F6' },
   availDot: { width: 7, height: 7, borderRadius: 4 },
   availText: { fontSize: 12, fontWeight: '600' },
+  lastSeenText: { fontSize: 11, color: Colors.textSecondary, marginTop: 2 },
   locationRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   locationText: { fontSize: 12, color: Colors.textSecondary },
   bioText: { fontSize: 13, color: Colors.textSecondary, lineHeight: 18 },

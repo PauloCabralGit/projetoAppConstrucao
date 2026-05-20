@@ -75,7 +75,8 @@ export default function HomeScreen() {
   useEffect(() => {
     requestLocation();
     fetchProviders();
-    return () => { locationSubRef.current?.remove(); };
+    const poll = setInterval(fetchProviders, 20000);
+    return () => { locationSubRef.current?.remove(); clearInterval(poll); };
   }, []);
 
   useEffect(() => {

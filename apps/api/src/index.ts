@@ -63,6 +63,7 @@ app.get("/v1/providers", async (c) => {
       company_name,
       description,
       status,
+      last_seen_at,
       price_from,
       average_rating,
       completed_jobs,
@@ -83,18 +84,21 @@ app.get("/v1/providers", async (c) => {
 
 app.get("/v1/providers/available", async (c) => {
   const now = new Date().toISOString();
+  const heartbeatCutoff = new Date(Date.now() - 3 * 60 * 1000).toISOString();
   const { data, error } = await db(c.env)
     .from("provider_profiles")
     .select(`
       user_id,
       status,
+      last_seen_at,
       accepts_emergency_jobs,
       average_rating,
       app_users!inner(full_name, city),
       provider_skills(skills(label))
     `)
     .eq("status", "available")
-    .or(`blocked_until.is.null,blocked_until.lt.${now}`);
+    .or(`blocked_until.is.null,blocked_until.lt.${now}`)
+    .gt("last_seen_at", heartbeatCutoff);
 
   if (error) return c.json({ error: error.message }, 500);
 
@@ -1035,6 +1039,7 @@ app.get("/v1/admin/overview", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const d = db(c.env);
   const now = new Date().toISOString();
+  const heartbeatCutoff = new Date(Date.now() - 3 * 60 * 1000).toISOString();
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 
   const [
@@ -1047,6 +1052,8 @@ app.get("/v1/admin/overview", async (c) => {
     { data: revenueRows },
     { data: pendingRows },
     { data: openComplaintsRows },
+    { data: onlineProviderRows },
+    { data: onlineClientRows },
   ] = await Promise.all([
     d.from("app_users").select("id"),
     d.from("provider_profiles").select("user_id"),
@@ -1056,11 +1063,22 @@ app.get("/v1/admin/overview", async (c) => {
     d.from("app_users").select("id").gte("created_at", sevenDaysAgo),
     d.from("service_requests").select("quote_amount").eq("payment_status", "confirmed"),
     d.from("service_requests").select("quote_amount").eq("payment_status", "client_paid"),
-    d.from("formal_complaints").select("id").eq("status", "open"),
+    d.from("formal_complaints").select("id, created_at").in("status", ["open", "investigating"]),
+    d.from("provider_profiles").select("user_id").eq("status", "available").gt("last_seen_at", heartbeatCutoff),
+    d.from("app_users").select("id").eq("role", "client").gt("last_seen_at", heartbeatCutoff),
   ]);
 
   const totalRevenue = (revenueRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
   const pendingRevenue = (pendingRows ?? []).reduce((s: number, r: any) => s + Number(r.quote_amount ?? 0), 0);
+
+  // SLA de reclamações abertas/em análise
+  const nowMs = Date.now();
+  const H24 = 24 * 60 * 60 * 1000;
+  const H72 = 72 * 60 * 60 * 1000;
+  const openList = openComplaintsRows ?? [];
+  const slaOnTime  = openList.filter((c: any) => nowMs - new Date(c.created_at).getTime() < H24).length;
+  const slaWarning = openList.filter((c: any) => { const a = nowMs - new Date(c.created_at).getTime(); return a >= H24 && a < H72; }).length;
+  const slaCritical = openList.filter((c: any) => nowMs - new Date(c.created_at).getTime() >= H72).length;
 
   return c.json({
     totalUsers: (usersRows ?? []).length,
@@ -1071,7 +1089,10 @@ app.get("/v1/admin/overview", async (c) => {
     pendingRevenue,
     blockedProviders: (blockedRows ?? []).length,
     newUsers: (newUserRows ?? []).length,
-    openComplaints: (openComplaintsRows ?? []).length,
+    openComplaints: openList.length,
+    onlineProviders: (onlineProviderRows ?? []).length,
+    onlineClients: (onlineClientRows ?? []).length,
+    sla: { onTime: slaOnTime, warning: slaWarning, critical: slaCritical },
   });
 });
 
@@ -1094,7 +1115,7 @@ app.get("/v1/admin/providers", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const { data, error } = await db(c.env)
     .from("provider_profiles")
-    .select(`user_id, status, average_rating, completed_jobs, blocked_until,
+    .select(`user_id, status, last_seen_at, average_rating, completed_jobs, blocked_until,
       app_users!user_id(full_name, email, city, phone, created_at)`)
     .order("average_rating", { ascending: false })
     .limit(300);
@@ -1133,7 +1154,7 @@ app.get("/v1/admin/complaints", async (c) => {
 
   const [{ data: formalRaw }, { data: lowRated }, { data: cancelled }] = await Promise.all([
     d.from("formal_complaints")
-      .select("id, reason, description, status, created_at, request_id, client_user_id, provider_user_id")
+      .select("id, reason, description, status, admin_note, created_at, request_id, client_user_id, provider_user_id")
       .order("created_at", { ascending: false })
       .limit(100),
     d.from("service_requests")
@@ -1182,12 +1203,60 @@ app.get("/v1/admin/complaints", async (c) => {
 // ── Update complaint status ────────────────────────────────────────────────
 app.patch("/v1/admin/complaints/:id/status", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  const { status } = await c.req.json<{ status: string }>();
-  const { error } = await db(c.env)
+
+  const id = c.req.param("id");
+  const body = await c.req.json<{ status: string; admin_note?: string }>();
+  const { status, admin_note } = body;
+
+  const adminDb = db(c.env);
+
+  // Busca complaint antes de atualizar para pegar client/provider
+  const { data: complaint } = await adminDb
     .from("formal_complaints")
-    .update({ status })
-    .eq("id", c.req.param("id"));
+    .select("client_user_id, provider_user_id, reason")
+    .eq("id", id)
+    .maybeSingle();
+
+  const updatePayload: Record<string, unknown> = { status };
+  if (admin_note !== undefined) updatePayload.admin_note = admin_note;
+
+  const { error } = await adminDb
+    .from("formal_complaints")
+    .update(updatePayload)
+    .eq("id", id);
+
   if (error) return c.json({ message: error.message }, 400);
+
+  // Notificações por status
+  const statusMessages: Record<string, { title: string; body: string }> = {
+    investigating: {
+      title: "🔍 Reclamação em análise",
+      body: "Sua reclamação está sendo analisada pelo administrador da plataforma.",
+    },
+    resolved: {
+      title: "✅ Reclamação resolvida",
+      body: "Sua reclamação foi resolvida. Obrigado pelo contato com a ConstruConnect.",
+    },
+    dismissed: {
+      title: "📁 Reclamação arquivada",
+      body: "Sua reclamação foi arquivada pelo administrador. Entre em contato para mais informações.",
+    },
+    open: {
+      title: "📋 Reclamação reaberta",
+      body: "Sua reclamação foi reaberta e está aguardando análise.",
+    },
+  };
+
+  const msg = statusMessages[status];
+  if (msg && complaint?.client_user_id) {
+    const notifyBody = admin_note ? `${msg.body} Obs: ${admin_note}` : msg.body;
+    await sendPush(c.env, complaint.client_user_id, msg.title, notifyBody);
+    // Notifica prestador também se houver
+    if (complaint.provider_user_id) {
+      await sendPush(c.env, complaint.provider_user_id, msg.title, notifyBody);
+    }
+  }
+
   return c.json({ message: "Status atualizado." });
 });
 

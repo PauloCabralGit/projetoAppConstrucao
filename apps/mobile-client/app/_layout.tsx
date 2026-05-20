@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react';
-import { Platform, Modal, View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
+import { Platform, Modal, View, Text, StyleSheet, TouchableOpacity, Linking, AppState, AppStateStatus } from 'react-native';
 import { Stack, router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
@@ -149,6 +149,13 @@ export default function RootLayout() {
   const [blockedUntil, setBlockedUntil] = useState<string | null>(null);
   const currentUserId = useRef<string | null>(null);
 
+  async function updateLastSeen(userId: string) {
+    await supabase
+      .from('app_users')
+      .update({ last_seen_at: new Date().toISOString() })
+      .eq('id', userId);
+  }
+
   async function checkBlock(userId: string) {
     try {
       const { data } = await supabase
@@ -176,6 +183,7 @@ export default function RootLayout() {
         currentUserId.current = user.id;
         registerPushToken();
         checkBlock(user.id);
+        updateLastSeen(user.id);
       }
     });
 
@@ -184,6 +192,7 @@ export default function RootLayout() {
         currentUserId.current = session.user.id;
         registerPushToken();
         checkBlock(session.user.id);
+        updateLastSeen(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
         currentUserId.current = null;
@@ -191,15 +200,28 @@ export default function RootLayout() {
       }
     });
 
-    // Verifica bloqueio a cada 20 segundos enquanto o app estiver aberto
+    const handleAppState = async (nextState: AppStateStatus) => {
+      if (!currentUserId.current) return;
+      if (nextState === 'active') {
+        await updateLastSeen(currentUserId.current);
+      } else if (nextState === 'background' || nextState === 'inactive') {
+        // Marca offline imediatamente ao sair do app
+        await supabase.from('app_users').update({ last_seen_at: null }).eq('id', currentUserId.current);
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', handleAppState);
+
+    // Verifica bloqueio e atualiza last_seen a cada 20 segundos
     const pollInterval = setInterval(() => {
       if (currentUserId.current) {
         checkBlock(currentUserId.current);
+        updateLastSeen(currentUserId.current);
       }
     }, 20000);
 
     return () => {
       subscription.unsubscribe();
+      appStateSub.remove();
       clearInterval(pollInterval);
     };
   }, []);

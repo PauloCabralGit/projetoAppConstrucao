@@ -173,17 +173,17 @@ export default function RootLayout() {
 
   async function setProviderOnline(userId: string) {
     const isBlocked = await checkBlock(userId);
-    if (isBlocked) return; // não ativa se bloqueado
+    if (isBlocked) return;
     await supabase
       .from('provider_profiles')
-      .update({ status: 'available' })
+      .update({ status: 'available', last_seen_at: new Date().toISOString() })
       .eq('user_id', userId);
   }
 
   async function setProviderOffline(userId: string) {
     await supabase
       .from('provider_profiles')
-      .update({ status: 'offline' })
+      .update({ status: 'offline', last_seen_at: new Date().toISOString() })
       .eq('user_id', userId);
   }
 

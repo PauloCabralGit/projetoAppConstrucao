@@ -14,6 +14,9 @@ interface Overview {
   blockedProviders: number;
   newUsers: number;
   openComplaints: number;
+  onlineProviders: number;
+  onlineClients: number;
+  sla: { onTime: number; warning: number; critical: number };
 }
 
 interface AdminRequest {
@@ -36,6 +39,7 @@ interface AdminProvider {
   verified: boolean;
   blocked_until: string | null;
   status: string;
+  last_seen_at: string | null;
   average_rating: number | null;
   completed_jobs: number;
   app_users?: any;
@@ -68,6 +72,7 @@ interface FormalComplaint {
   reason: string;
   description: string;
   status: string;
+  admin_note?: string | null;
   created_at: string;
   request_id: string;
   client_user_id: string;
@@ -247,21 +252,29 @@ function DashboardPage({ adminKey, onNavigate }: { adminKey: string; onNavigate:
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    setLoading(true);
+  const refresh = useCallback((silent = false) => {
+    if (!silent) setLoading(true);
     apiFetch("/v1/admin/overview", adminKey)
       .then((r) => r.json())
-      .then((d) => { setData(d); setLoading(false); })
-      .catch(() => { setError("Erro ao carregar dados."); setLoading(false); });
+      .then((d: Overview) => { setData(d); setLoading(false); })
+      .catch(() => { if (!silent) { setError("Erro ao carregar dados."); setLoading(false); } });
   }, [adminKey]);
+
+  useEffect(() => {
+    refresh();
+    const poll = setInterval(() => refresh(true), 30000);
+    return () => clearInterval(poll);
+  }, [refresh]);
 
   if (loading) return <div className="loading">Carregando...</div>;
   if (error) return <div className="error-msg">{error}</div>;
   if (!data) return null;
 
   const cards: { label: string; value: string | number; icon: string; color: string; page?: Page }[] = [
+    { label: "Clientes online", value: data.onlineClients ?? 0, icon: "🟢", color: "green", page: "users" },
+    { label: "Prestadores online", value: data.onlineProviders ?? 0, icon: "🟢", color: "green", page: "providers" },
     { label: "Usuários", value: data.totalUsers, icon: "👥", color: "blue", page: "users" },
-    { label: "Prestadores", value: data.totalProviders, icon: "👷", color: "green", page: "providers" },
+    { label: "Prestadores", value: data.totalProviders, icon: "👷", color: "blue", page: "providers" },
     { label: "Chamados ativos", value: data.activeRequests, icon: "📋", color: "orange", page: "requests" },
     { label: "Serviços concluídos", value: data.completedJobs, icon: "✅", color: "green", page: "requests" },
     { label: "Receita total", value: fmt(data.totalRevenue, true), icon: "💰", color: "green", page: "payments" },
@@ -475,6 +488,7 @@ function ProvidersPage({ adminKey }: { adminKey: string }) {
                 <th>Email</th>
                 <th>Cidade</th>
                 <th>Status</th>
+                <th>Último acesso</th>
                 <th>Avaliação</th>
                 <th>Serviços</th>
                 <th>Verificado</th>
@@ -486,6 +500,18 @@ function ProvidersPage({ adminKey }: { adminKey: string }) {
               {rows.map((p) => {
                 const u = getUserInfo(p);
                 const isBlocked = p.blocked_until != null && new Date(p.blocked_until) > new Date();
+                const lastSeenLabel = (() => {
+                  if (!p.last_seen_at) return "—";
+                  const d = new Date(p.last_seen_at);
+                  const diffMin = Math.floor((Date.now() - d.getTime()) / 60000);
+                  if (diffMin < 3) return "Agora";
+                  if (diffMin < 60) return `Há ${diffMin} min`;
+                  const today = new Date();
+                  const isToday = d.toDateString() === today.toDateString();
+                  const time = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+                  return isToday ? `Hoje ${time}` : `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })} ${time}`;
+                })();
+                const isReallyOnline = p.last_seen_at != null && (Date.now() - new Date(p.last_seen_at).getTime()) < 3 * 60 * 1000;
                 return (
                   <tr key={p.user_id}>
                     <td>
@@ -495,10 +521,11 @@ function ProvidersPage({ adminKey }: { adminKey: string }) {
                     <td className="muted-sm">{u.email}</td>
                     <td>{u.city}</td>
                     <td>
-                      <span className={`badge ${PROV_STATUS_COLOR[p.status] ?? "badge-muted"}`}>
-                        {PROV_STATUS_LABEL[p.status] ?? p.status}
+                      <span className={`badge ${isReallyOnline ? "badge-success" : "badge-muted"}`}>
+                        {isReallyOnline ? "Online" : (PROV_STATUS_LABEL[p.status] ?? p.status)}
                       </span>
                     </td>
+                    <td className="muted-sm">{lastSeenLabel}</td>
                     <td>⭐ {p.average_rating != null ? Number(p.average_rating).toFixed(1) : "—"}</td>
                     <td>{p.completed_jobs}</td>
                     <td>
@@ -529,7 +556,7 @@ function ProvidersPage({ adminKey }: { adminKey: string }) {
                 );
               })}
               {rows.length === 0 && (
-                <tr><td colSpan={9} className="empty-row">Nenhum prestador encontrado.</td></tr>
+                <tr><td colSpan={10} className="empty-row">Nenhum prestador encontrado.</td></tr>
               )}
             </tbody>
           </table>
@@ -832,6 +859,7 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
   const [error, setError] = useState("");
   const [selected, setSelected] = useState<FormalComplaint | null>(null);
   const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [adminNote, setAdminNote] = useState("");
   const [actionMsg, setActionMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [actioning, setActioning] = useState(false);
 
@@ -911,13 +939,24 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
 
   async function updateStatus(id: string, status: string) {
     setUpdatingId(id);
-    await apiFetch(`/v1/admin/complaints/${id}/status`, adminKey, {
-      method: "PATCH",
-      body: JSON.stringify({ status }),
-    });
-    setUpdatingId(null);
-    if (selected?.id === id) setSelected((s) => s ? { ...s, status } : s);
-    load();
+    try {
+      const body: Record<string, string> = { status };
+      if (adminNote.trim()) body.admin_note = adminNote.trim();
+      const r = await apiFetch(`/v1/admin/complaints/${id}/status`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao atualizar.");
+      if (selected?.id === id) setSelected((s) => s ? { ...s, status } : s);
+      setAdminNote("");
+      showMsg("Status atualizado. Solicitante notificado por push.", true);
+      load();
+    } catch (e: any) {
+      showMsg(e.message ?? "Erro ao atualizar status.", false);
+    } finally {
+      setUpdatingId(null);
+    }
   }
 
   if (loading) return <div className="loading">Carregando...</div>;
@@ -993,11 +1032,11 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
 
       {/* Detail modal */}
       {selected && (
-        <div className="modal-overlay" onClick={() => setSelected(null)}>
+        <div className="modal-overlay" onClick={() => { setSelected(null); setAdminNote(""); }}>
           <div className="modal-box complaint-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Reclamação — {selected.reason}</h3>
-              <button className="modal-close" onClick={() => setSelected(null)}>✕</button>
+              <button className="modal-close" onClick={() => { setSelected(null); setAdminNote(""); }}>✕</button>
             </div>
 
             {actionMsg && (
@@ -1029,12 +1068,38 @@ function ComplaintsPage({ adminKey }: { adminKey: string }) {
                         disabled={selected.status === s || updatingId === selected.id}
                         onClick={() => updateStatus(selected.id, s)}
                       >
-                        {COMPLAINT_STATUS_LABEL[s]}
+                        {updatingId === selected.id && selected.status !== s ? "..." : COMPLAINT_STATUS_LABEL[s]}
                       </button>
                     ))}
                   </div>
                 </div>
-                <p className="detail-text"><strong>Descrição:</strong> {selected.description}</p>
+                <div style={{ marginTop: 12 }}>
+                  <label style={{ fontSize: 13, fontWeight: 600, color: "var(--text-secondary)", display: "block", marginBottom: 6 }}>
+                    Observação para o solicitante (opcional)
+                  </label>
+                  <textarea
+                    rows={2}
+                    placeholder="Ex: Entramos em contato com o prestador. Aguarde retorno em até 48h."
+                    value={adminNote}
+                    onChange={(e) => setAdminNote(e.target.value)}
+                    style={{
+                      width: "100%", padding: "8px 10px", borderRadius: 8,
+                      border: "1px solid var(--border)", fontSize: 13,
+                      resize: "vertical", fontFamily: "inherit",
+                      background: "var(--bg)", color: "var(--text)",
+                      boxSizing: "border-box",
+                    }}
+                  />
+                  <p style={{ fontSize: 11, color: "var(--text-secondary)", marginTop: 4 }}>
+                    A observação será incluída na notificação enviada ao solicitante.
+                  </p>
+                </div>
+                {selected.admin_note && (
+                  <p className="detail-text" style={{ marginTop: 8, background: "#fffbeb", borderRadius: 6, padding: "8px 10px", borderLeft: "3px solid #f59e0b" }}>
+                    <strong>Observação registrada:</strong> {selected.admin_note}
+                  </p>
+                )}
+                <p className="detail-text" style={{ marginTop: 8 }}><strong>Descrição:</strong> {selected.description}</p>
                 <p className="detail-meta">Aberta em: {new Date(selected.created_at).toLocaleString("pt-BR")}</p>
               </div>
 

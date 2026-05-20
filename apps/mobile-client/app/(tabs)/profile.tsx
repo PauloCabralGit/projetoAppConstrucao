@@ -91,18 +91,11 @@ export default function ProfileScreen() {
     setSaveError('');
 
     try {
-      const res = await fetch(`${API_BASE}/profile`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          fullName: editName.trim(),
-          phone: editPhone.trim(),
-          city: editCity.trim(),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) { setSaveError(json?.message ?? 'Erro ao salvar.'); setSaving(false); return; }
+      const { error } = await supabase
+        .from('app_users')
+        .update({ full_name: editName.trim(), phone: editPhone.trim(), city: editCity.trim() })
+        .eq('id', userId);
+      if (error) { setSaveError(error.message); setSaving(false); return; }
 
       setProfile((prev) => prev
         ? { ...prev, full_name: editName.trim(), phone: editPhone.trim(), city: editCity.trim() }

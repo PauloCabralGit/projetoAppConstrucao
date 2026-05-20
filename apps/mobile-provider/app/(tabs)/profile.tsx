@@ -124,19 +124,11 @@ export default function ProviderProfileScreen() {
 
     // Auto set online when app opens
     if (resolvedStatus !== 'available') {
-      try {
-        await fetch(`${API_BASE}/profile`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            userId: user.id,
-            fullName: userData?.full_name ?? user.user_metadata?.full_name ?? '',
-            phone: userData?.phone ?? '',
-            city: userData?.city ?? '',
-            status: 'available',
-          }),
-        });
-      } catch {}
+      await supabase
+        .from('provider_profiles')
+        .update({ status: 'available' })
+        .eq('user_id', user.id)
+        .then(() => {});
     }
 
     setLoading(false);
@@ -164,22 +156,46 @@ export default function ProviderProfileScreen() {
     setSaveError('');
 
     try {
-      const res = await fetch(`${API_BASE}/profile`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          fullName: editName.trim(),
-          phone: editPhone.trim(),
-          city: editCity.trim(),
-          specialties: editSpecialties.trim(),
-          companyName: editCompany.trim(),
-          acceptsEmergencyJobs: editUrgent,
-          pixKey: editPixKey.trim(),
-        }),
-      });
-      const json = await res.json();
-      if (!res.ok) { setSaveError(json?.message ?? 'Erro ao salvar.'); setSaving(false); return; }
+      // 1. Atualiza dados do usuário diretamente
+      const userPayload: Record<string, any> = {
+        full_name: editName.trim(),
+        phone: editPhone.trim(),
+        city: editCity.trim(),
+      };
+      if (editPixKey.trim()) userPayload.pix_key = editPixKey.trim();
+
+      const { error: userErr } = await supabase
+        .from('app_users')
+        .update(userPayload)
+        .eq('id', userId);
+      if (userErr) { setSaveError(userErr.message); setSaving(false); return; }
+
+      // 2. Atualiza perfil do prestador diretamente
+      const { error: profErr } = await supabase
+        .from('provider_profiles')
+        .update({ company_name: editCompany.trim() || null, accepts_emergency_jobs: editUrgent })
+        .eq('user_id', userId);
+      if (profErr) { setSaveError(profErr.message); setSaving(false); return; }
+
+      // 3. Atualiza especialidades (tabela de join)
+      const labels = editSpecialties.trim().split(',').map((s) => s.trim()).filter(Boolean);
+      await supabase.from('provider_skills').delete().eq('provider_user_id', userId);
+      if (labels.length > 0) {
+        const skillRows = labels.map((label) => ({
+          slug: label.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, ''),
+          label,
+        }));
+        const { data: skills, error: skillErr } = await supabase
+          .from('skills')
+          .upsert(skillRows, { onConflict: 'slug' })
+          .select('id');
+        if (skillErr) { setSaveError(skillErr.message); setSaving(false); return; }
+        const linkRows = (skills ?? []).map((s: any) => ({ provider_user_id: userId, skill_id: s.id }));
+        if (linkRows.length > 0) {
+          const { error: linkErr } = await supabase.from('provider_skills').insert(linkRows);
+          if (linkErr) { setSaveError(linkErr.message); setSaving(false); return; }
+        }
+      }
 
       setProfile((prev) => prev ? {
         ...prev,
@@ -202,20 +218,12 @@ export default function ProviderProfileScreen() {
     if (!userId) return;
     setTogglingAvailability(true);
     const newStatus = value ? 'available' : 'offline';
-
     try {
-      const res = await fetch(`${API_BASE}/profile`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId,
-          fullName: profile?.full_name ?? '',
-          phone: profile?.phone ?? '',
-          city: profile?.city ?? '',
-          status: newStatus,
-        }),
-      });
-      if (res.ok) {
+      const { error } = await supabase
+        .from('provider_profiles')
+        .update({ status: newStatus })
+        .eq('user_id', userId);
+      if (!error) {
         setProfile((prev) => prev ? { ...prev, status: newStatus } : prev);
       } else {
         Alert.alert('Erro', 'Não foi possível atualizar sua disponibilidade.');
