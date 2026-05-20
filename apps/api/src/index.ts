@@ -335,6 +335,21 @@ app.post("/v1/service-requests", async (c) => {
   return c.json({ id: data.id, message: "Pedido criado com sucesso." }, 201);
 });
 
+// ── Notify client about a quote/bid (write already done on device) ────────────
+app.post("/v1/service-requests/:id/notify-client", async (c) => {
+  const body = await c.req.json<{ title: string; body: string }>().catch(() => ({} as any));
+  if (!body.title || !body.body) return c.json({ ok: true });
+  const { data: req } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id")
+    .eq("id", c.req.param("id"))
+    .maybeSingle();
+  if (req?.client_user_id) {
+    await sendPush(c.env, req.client_user_id, body.title, body.body);
+  }
+  return c.json({ ok: true });
+});
+
 // ── Notify providers about a new request (insert already done on client) ──────
 app.post("/v1/service-requests/:id/notify-providers", async (c) => {
   const body = await c.req.json<{

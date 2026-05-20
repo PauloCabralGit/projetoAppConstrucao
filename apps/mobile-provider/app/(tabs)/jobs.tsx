@@ -135,19 +135,31 @@ export default function JobsScreen() {
     if (!userId) return;
     setBiddingJob(jobId);
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${jobId}/bids`, {
+      const { error: bidError } = await supabase
+        .from('bids')
+        .upsert(
+          { request_id: jobId, provider_user_id: userId, amount, status: 'pending' },
+          { onConflict: 'request_id,provider_user_id' }
+        );
+
+      if (bidError) {
+        Alert.alert('Erro', bidError.message);
+        return;
+      }
+
+      const amtStr = `R$ ${amount.toFixed(2).replace('.', ',')}`;
+      fetch(`${API_BASE}/service-requests/${jobId}/notify-client`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_user_id: userId, amount }),
-      });
-      if (res.ok) {
-        setSubmittedBids((prev) => new Set([...prev, jobId]));
-        setBidAmounts((prev) => ({ ...prev, [jobId]: '' }));
-        Alert.alert('Orçamento enviado!', 'O cliente receberá uma notificação.');
-      } else {
-        const json = await res.json().catch(() => ({}));
-        Alert.alert('Erro', (json as any)?.message ?? 'Não foi possível enviar o orçamento.');
-      }
+        body: JSON.stringify({
+          title: '💰 Novo orçamento recebido!',
+          body: `Um profissional enviou um orçamento de ${amtStr}. Toque para comparar.`,
+        }),
+      }).catch(() => {});
+
+      setSubmittedBids((prev) => new Set([...prev, jobId]));
+      setBidAmounts((prev) => ({ ...prev, [jobId]: '' }));
+      Alert.alert('Orçamento enviado!', 'O cliente receberá uma notificação.');
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet.');
     }
