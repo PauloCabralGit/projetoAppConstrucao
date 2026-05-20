@@ -1087,23 +1087,25 @@ app.get("/v1/admin/requests", async (c) => {
 // ── All providers ─────────────────────────────────────────────────────────
 app.get("/v1/admin/providers", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  const { data } = await db(c.env)
+  const { data, error } = await db(c.env)
     .from("provider_profiles")
     .select(`user_id, status, average_rating, completed_jobs, blocked_until,
       app_users!user_id(full_name, email, city, phone, created_at)`)
     .order("average_rating", { ascending: false })
     .limit(300);
+  if (error) console.error("admin/providers error:", JSON.stringify(error));
   return c.json({ data: data ?? [] });
 });
 
 // ── All users ─────────────────────────────────────────────────────────────
 app.get("/v1/admin/users", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
-  const { data } = await db(c.env)
+  const { data, error } = await db(c.env)
     .from("app_users")
     .select("id, full_name, email, phone, city, role, created_at")
     .order("created_at", { ascending: false })
     .limit(300);
+  if (error) console.error("admin/users error:", JSON.stringify(error));
   return c.json({ data: data ?? [] });
 });
 
