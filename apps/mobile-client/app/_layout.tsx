@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Platform, Modal, View, Text, StyleSheet } from 'react-native';
+import { useEffect, useState, useRef } from 'react';
+import { Platform, Modal, View, Text, StyleSheet, TouchableOpacity, Linking } from 'react-native';
 import { Stack, router } from 'expo-router';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
@@ -26,6 +26,10 @@ async function setupNotificationChannel() {
     });
   }
 }
+
+// ── Contato de suporte (altere conforme necessário) ────────────────────────
+const SUPPORT_WHATSAPP = '5511999999999'; // Troque pelo número do suporte
+const SUPPORT_EMAIL = 'suporte@construconnect.com.br'; // Troque pelo email do suporte
 
 async function registerPushToken() {
   try {
@@ -69,8 +73,26 @@ function BlockedOverlay({ blockedUntil }: { blockedUntil: string }) {
         </View>
         <Text style={bs.unlockDate}>Liberação prevista: {unlockDate}</Text>
         <Text style={bs.contact}>
-          Em caso de dúvidas, entre em contato com o suporte da plataforma.
+          Entre em contato com o suporte para mais informações:
         </Text>
+        <View style={bs.contactRow}>
+          <TouchableOpacity
+            style={[bs.contactBtn, bs.whatsappBtn]}
+            onPress={() => Linking.openURL(
+              `https://wa.me/${SUPPORT_WHATSAPP}?text=${encodeURIComponent('Olá, minha conta foi suspensa na plataforma ConstruConnect e gostaria de ajuda.')}`
+            )}
+          >
+            <Text style={bs.contactBtnText}>💬 WhatsApp</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[bs.contactBtn, bs.emailBtn]}
+            onPress={() => Linking.openURL(
+              `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Conta Suspensa - ConstruConnect')}&body=${encodeURIComponent('Olá, minha conta foi suspensa e gostaria de entrar em contato com o suporte.')}`
+            )}
+          >
+            <Text style={bs.contactBtnText}>✉️ Email</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </Modal>
   );
@@ -109,12 +131,23 @@ const bs = StyleSheet.create({
   },
   daysNum: { fontSize: 64, fontWeight: 'bold', color: '#fff' },
   daysLabel: { fontSize: 16, color: '#ffcdd2', marginTop: 4 },
-  unlockDate: { fontSize: 14, color: '#bbb', marginBottom: 20, textAlign: 'center' },
-  contact: { fontSize: 13, color: '#666', textAlign: 'center' },
+  unlockDate: { fontSize: 14, color: '#bbb', marginBottom: 12, textAlign: 'center' },
+  contact: { fontSize: 13, color: '#888', textAlign: 'center', marginBottom: 16 },
+  contactRow: { flexDirection: 'row', gap: 12 },
+  contactBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  whatsappBtn: { backgroundColor: '#25D366' },
+  emailBtn: { backgroundColor: '#4a90e2' },
+  contactBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
 });
 
 export default function RootLayout() {
   const [blockedUntil, setBlockedUntil] = useState<string | null>(null);
+  const currentUserId = useRef<string | null>(null);
 
   async function checkBlock(userId: string) {
     try {
@@ -140,6 +173,7 @@ export default function RootLayout() {
 
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) {
+        currentUserId.current = user.id;
         registerPushToken();
         checkBlock(user.id);
       }
@@ -147,15 +181,27 @@ export default function RootLayout() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
+        currentUserId.current = session.user.id;
         registerPushToken();
         checkBlock(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
+        currentUserId.current = null;
         setBlockedUntil(null);
       }
     });
 
-    return () => subscription.unsubscribe();
+    // Verifica bloqueio a cada 20 segundos enquanto o app estiver aberto
+    const pollInterval = setInterval(() => {
+      if (currentUserId.current) {
+        checkBlock(currentUserId.current);
+      }
+    }, 20000);
+
+    return () => {
+      subscription.unsubscribe();
+      clearInterval(pollInterval);
+    };
   }, []);
 
   return (

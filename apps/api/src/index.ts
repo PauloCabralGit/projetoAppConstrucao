@@ -54,6 +54,7 @@ async function sendPush(env: Bindings, userId: string, title: string, body: stri
 app.get("/v1/providers", async (c) => {
   const role = c.req.query("role");
   const city = c.req.query("city");
+  const now = new Date().toISOString();
 
   let query = db(c.env)
     .from("provider_profiles")
@@ -68,7 +69,8 @@ app.get("/v1/providers", async (c) => {
       accepts_emergency_jobs,
       app_users!inner(id, full_name, role, city),
       provider_skills(skill_id, skills(slug, label))
-    `);
+    `)
+    .or(`blocked_until.is.null,blocked_until.lt.${now}`);
 
   if (role) query = query.eq("app_users.role", role);
   if (city) query = query.ilike("app_users.city", `%${city}%`);
@@ -1105,7 +1107,7 @@ app.get("/v1/admin/users", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const { data, error } = await db(c.env)
     .from("app_users")
-    .select("id, full_name, email, phone, city, role, created_at")
+    .select("id, full_name, email, phone, city, role, created_at, blocked_until")
     .order("created_at", { ascending: false })
     .limit(300);
   if (error) console.error("admin/users error:", JSON.stringify(error));
@@ -1199,6 +1201,7 @@ app.patch("/v1/admin/providers/:id/verify", async (c) => {
 // ── Block provider ────────────────────────────────────────────────────────
 app.patch("/v1/admin/providers/:id/block", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const providerId = c.req.param("id");
   const body = await c.req.json<{ days?: number; until?: string }>().catch(() => ({} as any));
   let blockedUntil: string;
   if (body.until) {
@@ -1207,13 +1210,23 @@ app.patch("/v1/admin/providers/:id/block", async (c) => {
     const days = body.days ?? 30;
     blockedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
   }
+
+  // Penalidade: perde 1 estrela (mínimo 0)
+  const { data: profile } = await db(c.env)
+    .from("provider_profiles")
+    .select("average_rating")
+    .eq("user_id", providerId)
+    .maybeSingle();
+  const currentRating = Number(profile?.average_rating ?? 0);
+  const newRating = Math.max(0, Math.round((currentRating - 1) * 10) / 10);
+
   const { error } = await db(c.env)
     .from("provider_profiles")
-    .update({ blocked_until: blockedUntil, status: "offline" })
-    .eq("user_id", c.req.param("id"));
+    .update({ blocked_until: blockedUntil, status: "offline", average_rating: newRating })
+    .eq("user_id", providerId);
   if (error) return c.json({ message: error.message }, 400);
-  await sendPush(c.env, c.req.param("id"), "⛔ Conta suspensa", "Sua conta foi suspensa pelo administrador da plataforma.");
-  return c.json({ message: "Prestador bloqueado." });
+  await sendPush(c.env, providerId, "⛔ Conta suspensa", "Sua conta foi suspensa pelo administrador da plataforma.");
+  return c.json({ message: "Prestador bloqueado.", new_rating: newRating });
 });
 
 // ── Unblock provider ──────────────────────────────────────────────────────
@@ -1232,7 +1245,14 @@ app.patch("/v1/admin/providers/:id/unblock", async (c) => {
 app.patch("/v1/admin/users/:id/block", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const id = c.req.param("id");
-  const blockedUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+  const body = await c.req.json<{ until?: string; days?: number }>().catch(() => ({} as any));
+  let blockedUntil: string;
+  if (body.until) {
+    blockedUntil = new Date(body.until).toISOString();
+  } else {
+    const days = body.days ?? 30;
+    blockedUntil = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+  }
   const { error } = await db(c.env).from("app_users").update({ blocked_until: blockedUntil }).eq("id", id);
   if (error) return c.json({ message: error.message }, 400);
   await sendPush(c.env, id, "⛔ Conta suspensa", "Sua conta foi suspensa pelo administrador da plataforma.");

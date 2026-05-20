@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Platform, View, ActivityIndicator, StyleSheet, Modal, Text } from 'react-native';
+import { useEffect, useState, useRef } from 'react';
+import { Platform, View, ActivityIndicator, StyleSheet, Modal, Text, TouchableOpacity, Linking, AppState, AppStateStatus } from 'react-native';
 import { Stack, router } from 'expo-router';
 import { Session } from '@supabase/supabase-js';
 import * as Notifications from 'expo-notifications';
@@ -28,6 +28,10 @@ async function setupNotificationChannel() {
     });
   }
 }
+
+// ── Contato de suporte (altere conforme necessário) ────────────────────────
+const SUPPORT_WHATSAPP = '5511999999999'; // Troque pelo número do suporte
+const SUPPORT_EMAIL = 'suporte@construconnect.com.br'; // Troque pelo email do suporte
 
 async function registerPushToken() {
   try {
@@ -71,8 +75,26 @@ function BlockedOverlay({ blockedUntil }: { blockedUntil: string }) {
         </View>
         <Text style={bs.unlockDate}>Liberação prevista: {unlockDate}</Text>
         <Text style={bs.contact}>
-          Em caso de dúvidas, entre em contato com o suporte da plataforma.
+          Entre em contato com o suporte para mais informações:
         </Text>
+        <View style={bs.contactRow}>
+          <TouchableOpacity
+            style={[bs.contactBtn, bs.whatsappBtn]}
+            onPress={() => Linking.openURL(
+              `https://wa.me/${SUPPORT_WHATSAPP}?text=${encodeURIComponent('Olá, minha conta de prestador foi suspensa na plataforma ConstruConnect e gostaria de ajuda.')}`
+            )}
+          >
+            <Text style={bs.contactBtnText}>💬 WhatsApp</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[bs.contactBtn, bs.emailBtn]}
+            onPress={() => Linking.openURL(
+              `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('Conta Suspensa - ConstruConnect Prestador')}&body=${encodeURIComponent('Olá, minha conta de prestador foi suspensa e gostaria de entrar em contato com o suporte.')}`
+            )}
+          >
+            <Text style={bs.contactBtnText}>✉️ Email</Text>
+          </TouchableOpacity>
+        </View>
       </View>
     </Modal>
   );
@@ -111,8 +133,18 @@ const bs = StyleSheet.create({
   },
   daysNum: { fontSize: 64, fontWeight: 'bold', color: '#fff' },
   daysLabel: { fontSize: 16, color: '#ffcdd2', marginTop: 4 },
-  unlockDate: { fontSize: 14, color: '#8da4be', marginBottom: 20, textAlign: 'center' },
-  contact: { fontSize: 13, color: '#4a6070', textAlign: 'center' },
+  unlockDate: { fontSize: 14, color: '#8da4be', marginBottom: 12, textAlign: 'center' },
+  contact: { fontSize: 13, color: '#4a6070', textAlign: 'center', marginBottom: 16 },
+  contactRow: { flexDirection: 'row', gap: 12 },
+  contactBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  whatsappBtn: { backgroundColor: '#25D366' },
+  emailBtn: { backgroundColor: '#4a90e2' },
+  contactBtnText: { color: '#fff', fontWeight: 'bold', fontSize: 14 },
 });
 
 export default function RootLayout() {
@@ -120,6 +152,7 @@ export default function RootLayout() {
   const [loading, setLoading] = useState(true);
   const [onboardingDone, setOnboardingDone] = useState(true);
   const [blockedUntil, setBlockedUntil] = useState<string | null>(null);
+  const currentUserId = useRef<string | null>(null);
 
   async function checkBlock(userId: string) {
     try {
@@ -130,10 +163,28 @@ export default function RootLayout() {
         .maybeSingle();
       if (data?.blocked_until && new Date(data.blocked_until) > new Date()) {
         setBlockedUntil(data.blocked_until);
+        return true; // está bloqueado
       } else {
         setBlockedUntil(null);
+        return false;
       }
-    } catch {}
+    } catch { return false; }
+  }
+
+  async function setProviderOnline(userId: string) {
+    const isBlocked = await checkBlock(userId);
+    if (isBlocked) return; // não ativa se bloqueado
+    await supabase
+      .from('provider_profiles')
+      .update({ status: 'available' })
+      .eq('user_id', userId);
+  }
+
+  async function setProviderOffline(userId: string) {
+    await supabase
+      .from('provider_profiles')
+      .update({ status: 'offline' })
+      .eq('user_id', userId);
   }
 
   useEffect(() => {
@@ -150,8 +201,9 @@ export default function RootLayout() {
         setSession(s);
         setLoading(false);
         if (s) {
+          currentUserId.current = s.user.id;
           registerPushToken();
-          checkBlock(s.user.id);
+          setProviderOnline(s.user.id);
         }
       });
     }).catch(() => {
@@ -159,8 +211,9 @@ export default function RootLayout() {
         setSession(s);
         setLoading(false);
         if (s) {
+          currentUserId.current = s.user.id;
           registerPushToken();
-          checkBlock(s.user.id);
+          setProviderOnline(s.user.id);
         }
       });
     });
@@ -168,15 +221,40 @@ export default function RootLayout() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
       if (_event === 'SIGNED_IN' && s) {
+        currentUserId.current = s.user.id;
         registerPushToken();
-        checkBlock(s.user.id);
+        setProviderOnline(s.user.id);
       }
       if (_event === 'SIGNED_OUT') {
+        if (currentUserId.current) setProviderOffline(currentUserId.current);
+        currentUserId.current = null;
         setBlockedUntil(null);
       }
     });
 
-    return () => subscription.unsubscribe();
+    // Atualiza status online/offline quando app vai para background ou volta
+    const handleAppState = async (nextState: AppStateStatus) => {
+      if (!currentUserId.current) return;
+      if (nextState === 'active') {
+        setProviderOnline(currentUserId.current);
+      } else if (nextState === 'background' || nextState === 'inactive') {
+        setProviderOffline(currentUserId.current);
+      }
+    };
+    const appStateSub = AppState.addEventListener('change', handleAppState);
+
+    // Verifica bloqueio a cada 20 segundos enquanto o app estiver aberto
+    const pollInterval = setInterval(() => {
+      if (currentUserId.current) {
+        checkBlock(currentUserId.current);
+      }
+    }, 20000);
+
+    return () => {
+      subscription.unsubscribe();
+      appStateSub.remove();
+      clearInterval(pollInterval);
+    };
   }, []);
 
   useEffect(() => {

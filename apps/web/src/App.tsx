@@ -49,6 +49,7 @@ interface AdminUser {
   city: string;
   role: string;
   created_at: string;
+  blocked_until: string | null;
 }
 
 interface AdminPayment {
@@ -567,14 +568,47 @@ function UsersPage({ adminKey }: { adminKey: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
+  const [blockTarget, setBlockTarget] = useState<string | null>(null);
+  const [blockDate, setBlockDate] = useState("");
+  const [actionMsg, setActionMsg] = useState("");
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
     apiFetch("/v1/admin/users", adminKey)
       .then((r) => r.json())
       .then((d) => { setRows(d.data ?? []); setLoading(false); })
       .catch(() => { setError("Erro ao carregar usuários."); setLoading(false); });
   }, [adminKey]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function block(id: string) {
+    if (!blockDate) return;
+    try {
+      const r = await apiFetch(`/v1/admin/users/${id}/block`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify({ until: blockDate }),
+      });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao bloquear.");
+      setBlockTarget(null);
+      setBlockDate("");
+      setActionMsg("Usuário bloqueado com sucesso.");
+      load();
+    } catch (e: any) { setActionMsg(`Erro: ${e.message}`); }
+  }
+
+  async function unblock(id: string) {
+    try {
+      const r = await apiFetch(`/v1/admin/users/${id}/unblock`, adminKey, { method: "PATCH" });
+      const json = await r.json() as any;
+      if (!r.ok) throw new Error(json?.message ?? "Erro ao desbloquear.");
+      setActionMsg("Usuário desbloqueado com sucesso.");
+      load();
+    } catch (e: any) { setActionMsg(`Erro: ${e.message}`); }
+  }
+
+  const todayStr = new Date().toISOString().split("T")[0];
 
   const filtered = rows.filter((u) => {
     if (!search) return true;
@@ -585,6 +619,11 @@ function UsersPage({ adminKey }: { adminKey: string }) {
   return (
     <div>
       <h2 className="page-title">Usuários</h2>
+      {actionMsg && (
+        <div className="toast" onClick={() => setActionMsg("")}>
+          {actionMsg} <span style={{ marginLeft: 8, opacity: 0.6 }}>✕</span>
+        </div>
+      )}
       <div className="filter-bar">
         <input
           className="search-input"
@@ -608,28 +647,73 @@ function UsersPage({ adminKey }: { adminKey: string }) {
                 <th>Cidade</th>
                 <th>Perfil</th>
                 <th>Cadastrado em</th>
+                <th>Bloqueado até</th>
+                <th>Ações</th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((u) => (
-                <tr key={u.id}>
-                  <td><strong>{u.full_name}</strong></td>
-                  <td className="muted-sm">{u.email}</td>
-                  <td>{u.phone}</td>
-                  <td>{u.city}</td>
-                  <td>
-                    <span className={`badge ${u.role === "client" ? "badge-info" : "badge-warning"}`}>
-                      {ROLE_LABEL[u.role] ?? u.role}
-                    </span>
-                  </td>
-                  <td>{fmtDate(u.created_at)}</td>
-                </tr>
-              ))}
+              {filtered.map((u) => {
+                const isBlocked = u.blocked_until != null && new Date(u.blocked_until) > new Date();
+                return (
+                  <tr key={u.id}>
+                    <td><strong>{u.full_name}</strong></td>
+                    <td className="muted-sm">{u.email}</td>
+                    <td>{u.phone}</td>
+                    <td>{u.city}</td>
+                    <td>
+                      <span className={`badge ${u.role === "client" ? "badge-info" : "badge-warning"}`}>
+                        {ROLE_LABEL[u.role] ?? u.role}
+                      </span>
+                    </td>
+                    <td>{fmtDate(u.created_at)}</td>
+                    <td>
+                      {isBlocked
+                        ? <span className="badge badge-danger">{fmtDate(u.blocked_until!)}</span>
+                        : <span className="muted-sm">—</span>}
+                    </td>
+                    <td>
+                      <div className="action-row">
+                        <button className="btn-sm btn-danger" onClick={() => setBlockTarget(u.id)}>
+                          Bloquear
+                        </button>
+                        {isBlocked && (
+                          <button className="btn-sm btn-green" onClick={() => unblock(u.id)}>
+                            Desbloquear
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {filtered.length === 0 && (
-                <tr><td colSpan={6} className="empty-row">Nenhum usuário encontrado.</td></tr>
+                <tr><td colSpan={8} className="empty-row">Nenhum usuário encontrado.</td></tr>
               )}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {blockTarget && (
+        <div className="modal-overlay" onClick={() => setBlockTarget(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Bloquear usuário</h3>
+            <p>Selecione até quando o usuário ficará bloqueado:</p>
+            <input
+              type="date"
+              value={blockDate}
+              min={todayStr}
+              onChange={(e) => setBlockDate(e.target.value)}
+            />
+            <div className="modal-actions">
+              <button className="btn-sm btn-muted" onClick={() => setBlockTarget(null)}>
+                Cancelar
+              </button>
+              <button className="btn-sm btn-danger" onClick={() => block(blockTarget)}>
+                Confirmar bloqueio
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
