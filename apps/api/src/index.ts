@@ -1803,6 +1803,7 @@ app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
       provider_user_id: bid.provider_user_id,
       quote_amount: bid.amount,
       status: "accepted",
+      quote_status: "accepted",
     })
     .eq("id", requestId);
 

@@ -379,23 +379,22 @@ export default function TrackingScreen() {
           style: 'destructive',
           onPress: async () => {
             setCancelling(true);
-            const { data: { user } } = await supabase.auth.getUser();
             try {
-              const res = await fetch(`${API_BASE}/service-requests/${id}/cancel`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ client_user_id: user?.id }),
-              });
-              setCancelling(false);
-              if (res.ok) {
-                router.back();
-              } else {
+              const { data: { user } } = await supabase.auth.getUser();
+              const { error } = await supabase
+                .from('service_requests')
+                .update({ status: 'cancelled' })
+                .eq('id', id)
+                .eq('client_user_id', user?.id);
+              if (error) {
                 Alert.alert('Erro', 'Não foi possível cancelar o pedido.');
+              } else {
+                router.back();
               }
             } catch {
-              setCancelling(false);
               Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
             }
+            setCancelling(false);
           },
         },
       ]
@@ -1043,6 +1042,20 @@ export default function TrackingScreen() {
           </View>
         )}
 
+        {/* Accepted bid — show agreed price while provider is on the way */}
+        {request?.status === 'accepted' && request?.quote_amount != null && (
+          <View style={styles.acceptedBidCard}>
+            <View style={styles.acceptedBidHeader}>
+              <Ionicons name="checkmark-circle" size={18} color={Colors.successGreen} />
+              <Text style={styles.acceptedBidTitle}>Orçamento aceito</Text>
+            </View>
+            <Text style={styles.acceptedBidAmount}>
+              R$ {Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+            </Text>
+            <Text style={styles.acceptedBidNote}>O profissional está a caminho</Text>
+          </View>
+        )}
+
         {/* Provider row */}
         <View style={styles.providerRow}>
           <View style={styles.providerAvatar}>
@@ -1555,6 +1568,18 @@ function calcDistance(
 }
 
 const styles = StyleSheet.create({
+  acceptedBidCard: {
+    backgroundColor: '#ECFDF5',
+    borderRadius: 16,
+    padding: 16,
+    gap: 6,
+    borderWidth: 1.5,
+    borderColor: Colors.successGreen,
+  },
+  acceptedBidHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  acceptedBidTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  acceptedBidAmount: { fontSize: 28, fontWeight: '800', color: Colors.textPrimary },
+  acceptedBidNote: { fontSize: 13, color: Colors.textSecondary },
   reopenBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: Colors.primary, borderRadius: 12, height: 48,

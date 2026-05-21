@@ -235,35 +235,20 @@ export default function JobDetailScreen() {
     }
     setSubmittingQuote(true);
     try {
-      const { data: updated, error: quoteError } = await supabase
-        .from('service_requests')
-        .update({
+      const res = await fetch(`${API_BASE}/service-requests/${job!.id}/quote`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           provider_user_id: userIdRef.current,
           quote_amount: amount,
-          quote_notes: quoteNotes.trim() || null,
-          quote_status: 'quoted',
-        })
-        .eq('id', job!.id)
-        .eq('status', 'requested')
-        .is('quote_status', null)
-        .select('id')
-        .maybeSingle();
-
-      if (quoteError) {
-        Alert.alert('Erro', quoteError.message);
-      } else if (!updated) {
-        Alert.alert('Indisponível', 'Este chamado já possui um orçamento ou não está mais disponível.');
-      } else {
-        const amtStr = `R$ ${amount.toFixed(2).replace('.', ',')}`;
-        fetch(`${API_BASE}/service-requests/${job!.id}/notify-client`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            title: '💰 Orçamento recebido!',
-            body: `Um profissional enviou um orçamento de ${amtStr}. Toque para ver.`,
-          }),
-        }).catch(() => {});
+          quote_notes: quoteNotes.trim() || undefined,
+        }),
+      });
+      const data = await res.json() as any;
+      if (res.ok) {
         setJob(prev => prev ? { ...prev, quote_status: 'quoted', quote_amount: amount, quote_notes: quoteNotes.trim() } : null);
+      } else {
+        Alert.alert('Indisponível', data.message ?? 'Este chamado já possui um orçamento ou não está mais disponível.');
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
