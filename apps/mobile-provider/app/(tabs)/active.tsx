@@ -141,6 +141,21 @@ export default function ActiveScreen() {
     return () => { supabase.removeChannel(channel); };
   }, [activeJob?.id]);
 
+  // Poll every 5s while job is completed and payment not yet confirmed
+  useEffect(() => {
+    if (!activeJob?.id || activeJob.status !== 'completed' || activeJob.payment_status === 'confirmed') return;
+    const interval = setInterval(async () => {
+      if (!userIdRef.current) return;
+      const { data } = await supabase
+        .from('service_requests')
+        .select('id, category, description, status, client_user_id, latitude, longitude, payment_status, quote_amount')
+        .eq('id', activeJob.id)
+        .single();
+      if (data) setActiveJob(data as ActiveJob);
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [activeJob?.id, activeJob?.status, activeJob?.payment_status]);
+
   // Animate map whenever providerCoord or activeJob updates
   useEffect(() => {
     if (!providerCoord || !mapReadyRef.current) return;
@@ -187,12 +202,13 @@ export default function ActiveScreen() {
       setActiveJob(activeData as ActiveJob);
       loadClientProfile(activeData.client_user_id);
     } else {
-      // Check for most recent completed job with unconfirmed payment
+      // Show completed job only while payment is not yet confirmed
       const { data: completedData } = await supabase
         .from('service_requests')
         .select(SELECT)
         .eq('provider_user_id', user.id)
         .eq('status', 'completed')
+        .neq('payment_status', 'confirmed')
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle();
@@ -200,6 +216,9 @@ export default function ActiveScreen() {
       if (completedData) {
         setActiveJob(completedData as ActiveJob);
         loadClientProfile(completedData.client_user_id);
+      } else {
+        setActiveJob(null);
+        setClientProfile(null);
       }
     }
     setLoading(false);
@@ -277,17 +296,24 @@ export default function ActiveScreen() {
     }
 
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_user_id: userIdRef.current }),
-      });
-      if (res.ok) {
+      const { error } = await supabase
+        .from('service_requests')
+        .update({ status: 'in_progress' })
+        .eq('id', activeJob.id)
+        .eq('provider_user_id', userIdRef.current)
+        .eq('status', 'accepted');
+
+      if (!error) {
         setActiveJob((prev) => (prev ? { ...prev, status: 'in_progress' } : null));
+        // Push notification via API (fire and forget)
+        fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ provider_user_id: userIdRef.current }),
+        }).catch(() => {});
         Alert.alert('Serviço iniciado!', 'O cliente foi notificado. Bom trabalho!');
       } else {
-        const json = await res.json().catch(() => ({}));
-        Alert.alert('Erro', (json as any)?.message ?? 'Não foi possível iniciar o serviço.');
+        Alert.alert('Erro', 'Não foi possível iniciar o serviço.');
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
@@ -318,14 +344,21 @@ export default function ActiveScreen() {
             }
 
             try {
-              const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
-                method: 'PATCH',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ provider_user_id: userIdRef.current }),
-              });
+              const { error } = await supabase
+                .from('service_requests')
+                .update({ status: 'completed' })
+                .eq('id', activeJob.id)
+                .eq('provider_user_id', userIdRef.current);
+
               setCompleting(false);
-              if (res.ok) {
-                setActiveJob((prev) => (prev ? { ...prev, status: 'completed', payment_status: 'pending' } : null));
+              if (!error) {
+                setActiveJob((prev) => (prev ? { ...prev, status: 'completed' } : null));
+                // Push notification via API (fire and forget)
+                fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ provider_user_id: userIdRef.current }),
+                }).catch(() => {});
                 Alert.alert('Serviço concluído!', 'Parabéns! Aguarde o pagamento do cliente.');
               } else {
                 Alert.alert('Erro', 'Não foi possível concluir o serviço.');
@@ -344,19 +377,21 @@ export default function ActiveScreen() {
     if (!activeJob || !userIdRef.current) return;
     setConfirmingPayment(true);
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/payment-confirm`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ provider_user_id: userIdRef.current }),
-      });
-      if (res.ok) {
+      const { error, data: updated } = await supabase
+        .from('service_requests')
+        .update({ payment_status: 'confirmed' })
+        .eq('id', activeJob.id)
+        .eq('provider_user_id', userIdRef.current)
+        .eq('payment_status', 'client_paid')
+        .select('id');
+      if (!error && updated && updated.length > 0) {
         locationSubRef.current?.remove();
         locationSubRef.current = null;
         setActiveJob(null);
         setClientProfile(null);
         Alert.alert('Pagamento confirmado!', 'O pagamento foi recebido. Obrigado!');
       } else {
-        Alert.alert('Erro', 'Não foi possível confirmar o pagamento.');
+        Alert.alert('Erro', 'Não foi possível confirmar o pagamento. Verifique se o pagamento do cliente foi registrado.');
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');

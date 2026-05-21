@@ -160,9 +160,10 @@ export default function TrackingScreen() {
     }, [id])
   );
 
-  // Poll every 5s while waiting so quote/bid updates are visible even if real-time is down
+  // Poll every 5s while job is not yet finished (covers requested, accepted, in_progress)
   useEffect(() => {
-    if (!id || request?.status !== 'requested') return;
+    const activeStatuses = ['requested', 'accepted', 'in_progress'];
+    if (!id || !request?.status || !activeStatuses.includes(request.status)) return;
     const interval = setInterval(() => {
       fetchRequest();
       loadBids();
@@ -305,12 +306,14 @@ export default function TrackingScreen() {
     setAcceptingQuote(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      const res = await fetch(`${API_BASE}/service-requests/${id}/accept-quote`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_user_id: user?.id }),
-      });
-      if (res.ok) {
+      const { error, data: updated } = await supabase
+        .from('service_requests')
+        .update({ status: 'accepted', quote_status: 'accepted' })
+        .eq('id', id)
+        .eq('client_user_id', user?.id)
+        .eq('quote_status', 'quoted')
+        .select('id');
+      if (!error && updated && updated.length > 0) {
         setRequest(prev => prev ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted' } : null);
       } else {
         Alert.alert('Erro', 'Não foi possível aceitar o orçamento. Tente novamente.');
@@ -375,12 +378,13 @@ export default function TrackingScreen() {
     setSendingPayment(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      const res = await fetch(`${API_BASE}/service-requests/${id}/payment-send`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_user_id: user?.id, payment_method: paymentMethod }),
-      });
-      if (res.ok) {
+      const { error } = await supabase
+        .from('service_requests')
+        .update({ payment_status: 'client_paid', payment_method: paymentMethod })
+        .eq('id', id)
+        .eq('client_user_id', user?.id)
+        .eq('status', 'completed');
+      if (!error) {
         setRequest(prev => prev ? { ...prev, payment_status: 'client_paid', payment_method: paymentMethod } : null);
       } else {
         Alert.alert('Erro', 'Não foi possível registrar o pagamento. Tente novamente.');
@@ -486,29 +490,55 @@ export default function TrackingScreen() {
   }
 
   async function loadBids() {
-    try {
-      const { data } = await supabase
-        .from('bids')
-        .select(`
-          id, amount, notes, status, created_at, provider_user_id,
-          app_users!provider_user_id(full_name, city),
-          provider_profiles!provider_user_id(average_rating, completed_jobs, description)
-        `)
-        .eq('request_id', id)
-        .order('amount', { ascending: true });
-      setBids(data ?? []);
-    } catch {}
+    const { data } = await supabase
+      .from('bids')
+      .select('id, amount, notes, status, created_at, provider_user_id')
+      .eq('request_id', id)
+      .order('amount', { ascending: true });
+    setBids(data ?? []);
   }
 
   async function handleAcceptBid(bidId: string) {
     setAcceptingBidId(bidId);
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH' });
-      if (res.ok) {
-        await loadRequest();
-        await loadBids();
-      } else {
+      const { data: bid, error: bidErr } = await supabase
+        .from('bids')
+        .select('provider_user_id, amount')
+        .eq('id', bidId)
+        .eq('request_id', id)
+        .single();
+
+      if (bidErr || !bid) {
+        Alert.alert('Erro', 'Orçamento não encontrado.');
+        setAcceptingBidId(null);
+        return;
+      }
+
+      await supabase.from('bids').update({ status: 'accepted' }).eq('id', bidId);
+      await supabase.from('bids').update({ status: 'rejected' }).eq('request_id', id).neq('id', bidId);
+
+      const { error, data: updated } = await supabase
+        .from('service_requests')
+        .update({
+          provider_user_id: bid.provider_user_id,
+          quote_amount: bid.amount,
+          status: 'accepted',
+          quote_status: 'accepted',
+        })
+        .eq('id', id)
+        .select('id');
+
+      if (error || !updated || updated.length === 0) {
         Alert.alert('Erro', 'Não foi possível aceitar o orçamento.');
+      } else {
+        setRequest(prev =>
+          prev
+            ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted', quote_amount: bid.amount, provider_user_id: bid.provider_user_id }
+            : null
+        );
+        await loadBids();
+        // Notifica o prestador via API (sem bloquear o fluxo)
+        fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH' }).catch(() => {});
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet.');

@@ -17,6 +17,7 @@ import * as Location from 'expo-location';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { useLocalSearchParams, router } from 'expo-router';
+import { rejectedJobIds } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -235,20 +236,24 @@ export default function JobDetailScreen() {
     }
     setSubmittingQuote(true);
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${job!.id}/quote`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const { error, data: updated } = await supabase
+        .from('service_requests')
+        .update({
           provider_user_id: userIdRef.current,
           quote_amount: amount,
-          quote_notes: quoteNotes.trim() || undefined,
-        }),
-      });
-      const data = await res.json() as any;
-      if (res.ok) {
-        setJob(prev => prev ? { ...prev, quote_status: 'quoted', quote_amount: amount, quote_notes: quoteNotes.trim() } : null);
+          quote_notes: quoteNotes.trim() || null,
+          quote_status: 'quoted',
+        })
+        .eq('id', job!.id)
+        .eq('status', 'requested')
+        .is('quote_status', null)
+        .is('provider_user_id', null)
+        .select('id');
+
+      if (error || !updated || updated.length === 0) {
+        Alert.alert('Indisponível', 'Este chamado já possui um orçamento ou não está mais disponível.');
       } else {
-        Alert.alert('Indisponível', data.message ?? 'Este chamado já possui um orçamento ou não está mais disponível.');
+        setJob(prev => prev ? { ...prev, quote_status: 'quoted', quote_amount: amount, quote_notes: quoteNotes.trim() } : null);
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
@@ -299,6 +304,7 @@ export default function JobDetailScreen() {
     } finally {
       setRejecting(false);
       setRejectModalOpen(false);
+      rejectedJobIds.add(id);
       router.back();
     }
   }

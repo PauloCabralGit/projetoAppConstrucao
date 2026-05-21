@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useFocusEffect } from 'expo-router';
 import {
   View,
   Text,
@@ -13,6 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
+import { rejectedJobIds } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -90,7 +92,7 @@ export default function JobsScreen() {
       .limit(50);
 
     if (!error && data) {
-      setJobs(data as ServiceRequest[]);
+      setJobs((data as ServiceRequest[]).filter(j => !rejectedJobIds.has(j.id)));
     }
   }, []);
 
@@ -104,6 +106,13 @@ export default function JobsScreen() {
       }
     };
   }, [fetchJobs]);
+
+  // Re-fetch when screen regains focus (e.g. coming back from job detail after rejecting)
+  useFocusEffect(
+    useCallback(() => {
+      fetchJobs();
+    }, [fetchJobs])
+  );
 
   useEffect(() => {
     if (online) {
