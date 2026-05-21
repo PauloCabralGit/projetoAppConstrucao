@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -18,7 +18,7 @@ import {
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
-import { useLocalSearchParams, router } from 'expo-router';
+import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -142,12 +142,33 @@ export default function TrackingScreen() {
     const cleanupRequest = subscribeToRequest();
     const bidsChannel = supabase
       .channel(`bids-${id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'bids', filter: `request_id=eq.${id}` }, () => {
-        loadBids();
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'bids' }, (payload) => {
+        if ((payload.new as any)?.request_id === id || (payload.old as any)?.request_id === id) {
+          loadBids();
+        }
       })
       .subscribe();
     return () => { cleanupRequest(); supabase.removeChannel(bidsChannel); };
   }, [id]);
+
+  // Reload when screen regains focus (user navigates back to this screen)
+  useFocusEffect(
+    useCallback(() => {
+      if (!id) return;
+      fetchRequest();
+      loadBids();
+    }, [id])
+  );
+
+  // Poll every 5s while waiting so quote/bid updates are visible even if real-time is down
+  useEffect(() => {
+    if (!id || request?.status !== 'requested') return;
+    const interval = setInterval(() => {
+      fetchRequest();
+      loadBids();
+    }, 5000);
+    return () => clearInterval(interval);
+  }, [id, request?.status]);
 
   useEffect(() => {
     if (!request?.provider_user_id) return;
@@ -189,8 +210,7 @@ export default function TrackingScreen() {
     ]).start();
   }
 
-  async function loadRequest() {
-    setLoading(true);
+  async function fetchRequest() {
     const { data, error } = await supabase
       .from('service_requests')
       .select(
@@ -198,10 +218,12 @@ export default function TrackingScreen() {
       )
       .eq('id', id)
       .single();
+    if (!error && data) setRequest(data as ServiceRequest);
+  }
 
-    if (!error && data) {
-      setRequest(data as ServiceRequest);
-    }
+  async function loadRequest() {
+    setLoading(true);
+    await fetchRequest();
     setLoading(false);
   }
 
@@ -238,8 +260,9 @@ export default function TrackingScreen() {
       .channel(`service_request_${id}`)
       .on(
         'postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'service_requests', filter: `id=eq.${id}` },
+        { event: 'UPDATE', schema: 'public', table: 'service_requests' },
         (payload) => {
+          if ((payload.new as any)?.id !== id) return;
           const updated = payload.new as ServiceRequest;
           setRequest(updated);
           if (updated.status === 'completed' && updated.client_rating == null) {
@@ -464,11 +487,16 @@ export default function TrackingScreen() {
 
   async function loadBids() {
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${id}/bids`);
-      if (res.ok) {
-        const data = await res.json();
-        setBids(data.bids ?? []);
-      }
+      const { data } = await supabase
+        .from('bids')
+        .select(`
+          id, amount, notes, status, created_at, provider_user_id,
+          app_users!provider_user_id(full_name, city),
+          provider_profiles!provider_user_id(average_rating, completed_jobs, description)
+        `)
+        .eq('request_id', id)
+        .order('amount', { ascending: true });
+      setBids(data ?? []);
     } catch {}
   }
 
@@ -985,6 +1013,13 @@ export default function TrackingScreen() {
 
       <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
         <Ionicons name="arrow-back" size={22} color={Colors.textPrimary} />
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={styles.refreshButton}
+        onPress={() => { fetchRequest(); loadBids(); }}
+      >
+        <Ionicons name="refresh-outline" size={20} color={Colors.textPrimary} />
       </TouchableOpacity>
 
       <ScrollView
@@ -1616,6 +1651,22 @@ const styles = StyleSheet.create({
     borderWidth: 2.5,
     borderColor: Colors.cardWhite,
     elevation: 6,
+  },
+  refreshButton: {
+    position: 'absolute',
+    top: Platform.OS === 'ios' ? 56 : 32,
+    right: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: Colors.cardWhite,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
   },
   backButton: {
     position: 'absolute',
