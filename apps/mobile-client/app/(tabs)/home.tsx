@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -21,6 +21,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { useTheme } from '@/contexts/ThemeContext';
+import {
+  ExpoSpeechRecognitionModule,
+  useSpeechRecognitionEvent,
+} from 'expo-speech-recognition';
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -33,6 +37,7 @@ const CATEGORIES = [
   { key: 'pintura', label: 'Pintura', icon: 'color-palette-outline' },
   { key: 'piso', label: 'Piso', icon: 'grid-outline' },
   { key: 'acabamento', label: 'Acabamento', icon: 'hammer-outline' },
+  { key: 'acessibilidade', label: 'Acessibilidade', icon: 'accessibility-outline' },
 ];
 
 interface ProviderMarker {
@@ -42,6 +47,7 @@ interface ProviderMarker {
   full_name: string;
   specialties: string;
   city?: string;
+  accessibility_specialist?: boolean;
 }
 
 const DEFAULT_REGION: Region = {
@@ -71,6 +77,7 @@ export default function HomeScreen() {
   const [showScheduler, setShowScheduler] = useState(false);
   const [pickerDay, setPickerDay] = useState<number>(0);
   const [pickerTime, setPickerTime] = useState<string>('');
+  const [listening, setListening] = useState(false);
 
   useEffect(() => {
     requestLocation();
@@ -82,6 +89,39 @@ export default function HomeScreen() {
   useEffect(() => {
     if (preCategory) setSelectedCategory(preCategory);
   }, [preCategory]);
+
+  useSpeechRecognitionEvent('result', useCallback((event: any) => {
+    const transcript: string = event.results?.[0]?.transcript ?? '';
+    if (transcript) {
+      setDescription((prev) => {
+        const separator = prev.trim() ? ' ' : '';
+        return (prev + separator + transcript).slice(0, 500);
+      });
+    }
+  }, []));
+
+  useSpeechRecognitionEvent('end', useCallback(() => {
+    setListening(false);
+  }, []));
+
+  useSpeechRecognitionEvent('error', useCallback(() => {
+    setListening(false);
+  }, []));
+
+  async function handleVoiceInput() {
+    if (listening) {
+      ExpoSpeechRecognitionModule.stop();
+      setListening(false);
+      return;
+    }
+    const { granted } = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
+    if (!granted) {
+      Alert.alert('Permissão necessária', 'Ative o microfone nas configurações para usar a entrada por voz.');
+      return;
+    }
+    setListening(true);
+    ExpoSpeechRecognitionModule.start({ lang: 'pt-BR', interimResults: false, maxAlternatives: 1 });
+  }
 
   function goToRegion(newRegion: Region) {
     setRegion(newRegion);
@@ -340,10 +380,14 @@ export default function HomeScreen() {
             key={p.id}
             coordinate={{ latitude: p.latitude!, longitude: p.longitude! }}
             title={p.full_name}
-            description={p.specialties}
+            description={p.accessibility_specialist ? `♿ Especialista em Acessibilidade • ${p.specialties}` : p.specialties}
           >
-            <View style={styles.providerMarker}>
-              <Ionicons name="construct" size={16} color={Colors.cardWhite} />
+            <View style={[styles.providerMarker, p.accessibility_specialist && styles.providerMarkerAccessibility]}>
+              <Ionicons
+                name={p.accessibility_specialist ? 'accessibility' : 'construct'}
+                size={16}
+                color={Colors.cardWhite}
+              />
             </View>
           </Marker>
         ))}
@@ -380,6 +424,9 @@ export default function HomeScreen() {
                 selectedCategory === cat.key && styles.categoryChipActive,
               ]}
               onPress={() => setSelectedCategory(cat.key)}
+              accessibilityRole="radio"
+              accessibilityLabel={cat.label}
+              accessibilityState={{ selected: selectedCategory === cat.key }}
             >
               <Ionicons
                 name={cat.icon as 'layers-outline'}
@@ -425,8 +472,25 @@ export default function HomeScreen() {
             numberOfLines={3}
             maxLength={500}
             textAlignVertical="top"
+            accessibilityLabel="Descrição do serviço"
+            accessibilityHint="Descreva com detalhes o serviço que você precisa. Você pode usar o botão de microfone para ditar."
           />
-          <Text style={[styles.charCount, { color: colors.textSecondary }]}>{description.length}/500</Text>
+          <View style={styles.descriptionFooter}>
+            <Text style={[styles.charCount, { color: colors.textSecondary }]}>{description.length}/500</Text>
+            <TouchableOpacity
+              onPress={handleVoiceInput}
+              style={[styles.micBtn, listening && styles.micBtnActive]}
+              accessibilityRole="button"
+              accessibilityLabel={listening ? 'Parar gravação de voz' : 'Iniciar ditado por voz'}
+              accessibilityHint="Dita a descrição do serviço usando o microfone"
+            >
+              <Ionicons
+                name={listening ? 'stop-circle' : 'mic-outline'}
+                size={22}
+                color={listening ? Colors.dangerRed : Colors.primary}
+              />
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.photosSection}>
@@ -476,6 +540,10 @@ export default function HomeScreen() {
           style={[styles.searchButton, submitting && styles.searchButtonDisabled]}
           onPress={handleRequestService}
           disabled={submitting}
+          accessibilityRole="button"
+          accessibilityLabel="Buscar profissional"
+          accessibilityHint="Envia sua solicitação e busca profissionais disponíveis"
+          accessibilityState={{ disabled: submitting, busy: submitting }}
         >
           {submitting ? (
             <ActivityIndicator color={Colors.cardWhite} />
@@ -585,6 +653,9 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.2,
     shadowRadius: 4,
     elevation: 4,
+  },
+  providerMarkerAccessibility: {
+    backgroundColor: '#1D4ED8',
   },
   myLocationButton: {
     position: 'absolute',
@@ -696,11 +767,27 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.background,
     minHeight: 80,
   },
+  descriptionFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 4,
+    paddingHorizontal: 2,
+  },
   charCount: {
     fontSize: 11,
     color: Colors.textSecondary,
-    textAlign: 'right',
-    marginTop: 4,
+  },
+  micBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFF4EE',
+  },
+  micBtnActive: {
+    backgroundColor: '#FEF2F2',
   },
   searchButton: {
     backgroundColor: Colors.primary,

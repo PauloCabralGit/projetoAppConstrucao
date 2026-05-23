@@ -35,6 +35,7 @@ interface ProviderProfile {
   phone: string;
   company_name: string;
   accepts_emergency_jobs: boolean;
+  accessibility_specialist: boolean;
   status: 'available' | 'busy' | 'offline';
   specialties: string;
   pix_key: string;
@@ -61,6 +62,7 @@ export default function ProviderProfileScreen() {
   const [editSpecialties, setEditSpecialties] = useState('');
   const [editCompany, setEditCompany] = useState('');
   const [editUrgent, setEditUrgent] = useState(false);
+  const [editAccessibility, setEditAccessibility] = useState(false);
   const [editPixKey, setEditPixKey] = useState('');
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -96,7 +98,7 @@ export default function ProviderProfileScreen() {
       supabase.from('app_users').select('full_name, email, city, phone, pix_key').eq('id', user.id).single(),
       supabase
         .from('provider_profiles')
-        .select('company_name, accepts_emergency_jobs, status, provider_skills(skills(label))')
+        .select('company_name, accepts_emergency_jobs, accessibility_specialist, status, provider_skills(skills(label))')
         .eq('user_id', user.id)
         .single(),
     ]);
@@ -117,6 +119,7 @@ export default function ProviderProfileScreen() {
       phone: userData?.phone ?? '',
       company_name: providerData?.company_name ?? '',
       accepts_emergency_jobs: providerData?.accepts_emergency_jobs ?? false,
+      accessibility_specialist: providerData?.accessibility_specialist ?? false,
       status: 'available',
       specialties,
       pix_key: userData?.pix_key ?? '',
@@ -141,6 +144,7 @@ export default function ProviderProfileScreen() {
     setEditSpecialties(profile?.specialties ?? '');
     setEditCompany(profile?.company_name ?? '');
     setEditUrgent(profile?.accepts_emergency_jobs ?? false);
+    setEditAccessibility(profile?.accessibility_specialist ?? false);
     setEditPixKey(profile?.pix_key ?? '');
     setSaveError('');
     setEditVisible(true);
@@ -173,7 +177,11 @@ export default function ProviderProfileScreen() {
       // 2. Atualiza perfil do prestador diretamente
       const { error: profErr } = await supabase
         .from('provider_profiles')
-        .update({ company_name: editCompany.trim() || null, accepts_emergency_jobs: editUrgent })
+        .update({
+          company_name: editCompany.trim() || null,
+          accepts_emergency_jobs: editUrgent,
+          accessibility_specialist: editAccessibility,
+        })
         .eq('user_id', userId);
       if (profErr) { setSaveError(profErr.message); setSaving(false); return; }
 
@@ -205,6 +213,7 @@ export default function ProviderProfileScreen() {
         specialties: editSpecialties.trim(),
         company_name: editCompany.trim(),
         accepts_emergency_jobs: editUrgent,
+        accessibility_specialist: editAccessibility,
         pix_key: editPixKey.trim(),
       } : prev);
       setEditVisible(false);
@@ -410,6 +419,12 @@ export default function ProviderProfileScreen() {
             <View style={styles.specialtiesBadge}>
               <Ionicons name="construct-outline" size={14} color={Colors.darkNavy} />
               <Text style={styles.specialtiesText} numberOfLines={2}>{profile.specialties}</Text>
+            </View>
+          ) : null}
+          {profile?.accessibility_specialist ? (
+            <View style={styles.accessibilityBadge}>
+              <Ionicons name="accessibility-outline" size={14} color="#1D4ED8" />
+              <Text style={styles.accessibilityBadgeText}>Especialista em Acessibilidade</Text>
             </View>
           ) : null}
         </View>
@@ -669,6 +684,22 @@ export default function ProviderProfileScreen() {
                 />
               </View>
 
+              <View style={styles.switchRow}>
+                <View style={styles.switchLeft}>
+                  <Ionicons name="accessibility-outline" size={20} color="#1D4ED8" />
+                  <View>
+                    <Text style={styles.switchLabel}>Especialista em Acessibilidade</Text>
+                    <Text style={styles.switchDesc}>Rampas, barras de apoio, adaptações para PcD</Text>
+                  </View>
+                </View>
+                <Switch
+                  value={editAccessibility}
+                  onValueChange={setEditAccessibility}
+                  trackColor={{ false: Colors.border, true: '#3B82F6' }}
+                  thumbColor={Colors.cardWhite}
+                />
+              </View>
+
               {saveError !== '' && (
                 <View style={styles.errorBox}>
                   <Ionicons name="alert-circle-outline" size={16} color={Colors.dangerRed} />
@@ -764,6 +795,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: Colors.border, maxWidth: '90%',
   },
   specialtiesText: { fontSize: 13, fontWeight: '500', color: Colors.darkNavy, flex: 1 },
+  accessibilityBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#EFF6FF',
+    borderRadius: 20, paddingHorizontal: 12, paddingVertical: 6,
+    borderWidth: 1, borderColor: '#BFDBFE', maxWidth: '90%',
+  },
+  accessibilityBadgeText: { fontSize: 13, fontWeight: '600', color: '#1D4ED8' },
   availabilityCard: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: Colors.cardWhite, borderRadius: 14, padding: 16,

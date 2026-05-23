@@ -46,6 +46,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   pintura: 'Pintura',
   piso: 'Piso',
   acabamento: 'Acabamento',
+  acessibilidade: 'Adaptações de Acessibilidade',
 };
 
 function formatBudget(min: number | null, max: number | null): string {

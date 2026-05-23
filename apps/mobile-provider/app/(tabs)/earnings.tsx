@@ -40,6 +40,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   pintura: 'Pintura',
   piso: 'Piso',
   acabamento: 'Acabamento',
+  acessibilidade: 'Adaptações de Acessibilidade',
 };
 
 const MONTH_NAMES = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];

@@ -63,6 +63,13 @@
           "photosPermission": "Acesse suas fotos para enviar evidências do serviço.",
           "cameraPermission": "Use a câmera para tirar fotos das obras."
         }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "O app usa o microfone para transcrever a descrição do serviço por voz.",
+          "speechRecognitionPermission": "O app usa reconhecimento de voz para facilitar a descrição do serviço."
+        }
       ]
     ],
     "extra": {

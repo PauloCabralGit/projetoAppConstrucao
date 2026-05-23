@@ -84,6 +84,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   pintura: 'Pintura',
   piso: 'Piso',
   acabamento: 'Acabamento',
+  acessibilidade: 'Adaptações de Acessibilidade',
 };
 
 const DEFAULT_REGION: Region = {

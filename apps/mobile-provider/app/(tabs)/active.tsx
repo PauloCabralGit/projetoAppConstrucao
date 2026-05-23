@@ -22,6 +22,9 @@ import { Colors } from '@/constants/colors';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
+// Jobs confirmed or dismissed by the provider this session — won't reappear on focus.
+const dismissedJobIds = new Set<string>();
+
 interface ActiveJob {
   id: string;
   category: string;
@@ -45,6 +48,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   pintura: 'Pintura',
   piso: 'Piso',
   acabamento: 'Acabamento',
+  acessibilidade: 'Adaptações de Acessibilidade',
 };
 
 function calcDistKm(
@@ -151,7 +155,14 @@ export default function ActiveScreen() {
         .select('id, category, description, status, client_user_id, latitude, longitude, payment_status, quote_amount')
         .eq('id', activeJob.id)
         .single();
-      if (data) setActiveJob(data as ActiveJob);
+      if (data) {
+        if (data.payment_status === 'confirmed') {
+          setActiveJob(null);
+          setClientProfile(null);
+        } else {
+          setActiveJob(data as ActiveJob);
+        }
+      }
     }, 5000);
     return () => clearInterval(interval);
   }, [activeJob?.id, activeJob?.status, activeJob?.payment_status]);
@@ -213,7 +224,7 @@ export default function ActiveScreen() {
         .limit(1)
         .maybeSingle();
 
-      if (completedData) {
+      if (completedData && completedData.payment_status !== 'confirmed' && !dismissedJobIds.has(completedData.id)) {
         setActiveJob(completedData as ActiveJob);
         loadClientProfile(completedData.client_user_id);
       } else {
@@ -374,19 +385,24 @@ export default function ActiveScreen() {
   }
 
   async function handleConfirmPayment() {
-    if (!activeJob || !userIdRef.current) return;
+    if (!activeJob) return;
     setConfirmingPayment(true);
     try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setConfirmingPayment(false); return; }
+
       const { error, data: updated } = await supabase
         .from('service_requests')
         .update({ payment_status: 'confirmed' })
         .eq('id', activeJob.id)
-        .eq('provider_user_id', userIdRef.current)
-        .eq('payment_status', 'client_paid')
+        .eq('provider_user_id', user.id)
+        .in('payment_status', ['client_paid', 'confirmed'])
         .select('id');
+
       if (!error && updated && updated.length > 0) {
         locationSubRef.current?.remove();
         locationSubRef.current = null;
+        dismissedJobIds.add(activeJob.id);
         setActiveJob(null);
         setClientProfile(null);
         Alert.alert('Pagamento confirmado!', 'O pagamento foi recebido. Obrigado!');
@@ -553,10 +569,26 @@ export default function ActiveScreen() {
         {paymentConfirmed && (
           <TouchableOpacity
             style={styles.confirmPaymentBtn}
-            onPress={() => { setActiveJob(null); router.push('/(tabs)/history'); }}
+            onPress={() => {
+              dismissedJobIds.add(activeJob.id);
+              setActiveJob(null);
+              router.push('/(tabs)/history');
+            }}
           >
             <Ionicons name="time-outline" size={18} color={Colors.cardWhite} />
             <Text style={styles.confirmPaymentBtnText}>Ir para histórico</Text>
+          </TouchableOpacity>
+        )}
+
+        {!paymentClientPaid && !paymentConfirmed && (
+          <TouchableOpacity
+            style={styles.dismissBtn}
+            onPress={() => {
+              dismissedJobIds.add(activeJob.id);
+              setActiveJob(null);
+            }}
+          >
+            <Text style={styles.dismissBtnText}>Dispensar card</Text>
           </TouchableOpacity>
         )}
 
@@ -875,6 +907,8 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   confirmPaymentBtnText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  dismissBtn: { alignSelf: 'center', paddingVertical: 8, paddingHorizontal: 16 },
+  dismissBtnText: { fontSize: 13, color: Colors.textSecondary, textDecorationLine: 'underline' },
   // Completed card screen
   completedScreen: {
     flex: 1,
