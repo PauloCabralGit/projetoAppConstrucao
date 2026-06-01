@@ -78,6 +78,7 @@ export default function JobsScreen() {
   const [providerName, setProviderName] = useState('Prestador');
   const [userId, setUserId] = useState<string>('');
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
+  const onlineRef = useRef(false);
   const [bidAmounts, setBidAmounts] = useState<Record<string, string>>({});
   const [biddingJob, setBiddingJob] = useState<string | null>(null);
   const [submittedBids, setSubmittedBids] = useState<Set<string>>(new Set());
@@ -101,9 +102,11 @@ export default function JobsScreen() {
     loadProvider();
     setLoading(true);
     fetchJobs().finally(() => setLoading(false));
+    startListening();
     return () => {
       if (channelRef.current) {
         supabase.removeChannel(channelRef.current);
+        channelRef.current = null;
       }
     };
   }, [fetchJobs]);
@@ -116,11 +119,7 @@ export default function JobsScreen() {
   );
 
   useEffect(() => {
-    if (online) {
-      startListening();
-    } else {
-      stopListening();
-    }
+    onlineRef.current = online;
   }, [online]);
 
   async function loadProvider() {
@@ -192,30 +191,26 @@ export default function JobsScreen() {
         },
         (payload) => {
           const newJob = payload.new as ServiceRequest;
+          if (rejectedJobIds.has(newJob.id)) return;
           setJobs((prev) => {
             const exists = prev.some((j) => j.id === newJob.id);
             if (exists) return prev;
             return [newJob, ...prev];
           });
-          Alert.alert(
-            'Novo chamado!',
-            `${CATEGORY_LABELS[newJob.category] ?? newJob.category} em ${newJob.city}`,
-            [
-              { text: 'Ver depois', style: 'cancel' },
-              { text: 'Ver agora', onPress: () => router.push(`/job/${newJob.id}`) },
-            ]
-          );
+          if (onlineRef.current) {
+            Alert.alert(
+              'Novo chamado!',
+              `${CATEGORY_LABELS[newJob.category] ?? newJob.category} em ${newJob.city}`,
+              [
+                { text: 'Ver depois', style: 'cancel' },
+                { text: 'Ver agora', onPress: () => router.push(`/job/${newJob.id}`) },
+              ]
+            );
+          }
         }
       )
       .subscribe();
     channelRef.current = channel;
-  }
-
-  function stopListening() {
-    if (channelRef.current) {
-      supabase.removeChannel(channelRef.current);
-      channelRef.current = null;
-    }
   }
 
   async function handleRefresh() {

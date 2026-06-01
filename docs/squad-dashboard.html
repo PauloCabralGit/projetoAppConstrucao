@@ -1,0 +1,1010 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ConstruConnect · Squad HQ</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+
+    :root{
+      --bg:#0D0F1A;
+      --surface:#141622;
+      --surface2:#1C1F30;
+      --surface3:#232638;
+      --border:#2A2D45;
+      --text:#E2E8F0;
+      --muted:#6B728E;
+      --accent:#7C6FFF;
+      --accent2:#A78BFA;
+    }
+
+    body{
+      font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+      background:var(--bg);
+      color:var(--text);
+      height:100vh;
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+    }
+
+    /* ── Header ── */
+    header{
+      background:var(--surface);
+      border-bottom:1px solid var(--border);
+      padding:10px 20px;
+      display:flex;
+      align-items:center;
+      gap:16px;
+      flex-shrink:0;
+    }
+    .logo{font-size:16px;font-weight:700;display:flex;align-items:center;gap:8px;white-space:nowrap}
+    .logo span{color:var(--accent2)}
+
+    .api-wrap{
+      display:flex;
+      align-items:center;
+      gap:8px;
+      margin-left:auto;
+    }
+    .api-wrap label{font-size:11px;color:var(--muted);white-space:nowrap}
+    .api-wrap input{
+      background:var(--bg);
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:5px 10px;
+      color:var(--text);
+      font-size:12px;
+      width:240px;
+    }
+    .api-wrap input:focus{outline:none;border-color:var(--accent)}
+    .btn{
+      background:var(--accent);
+      border:none;
+      border-radius:8px;
+      padding:6px 14px;
+      color:#fff;
+      font-size:12px;
+      font-weight:600;
+      cursor:pointer;
+      transition:opacity .15s;
+      white-space:nowrap;
+    }
+    .btn:hover{opacity:.85}
+    .btn:disabled{opacity:.35;cursor:not-allowed}
+    .btn-ghost{
+      background:transparent;
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:5px 12px;
+      color:var(--muted);
+      font-size:12px;
+      cursor:pointer;
+      transition:all .15s;
+    }
+    .btn-ghost:hover{border-color:var(--accent);color:var(--accent2)}
+    #apiStatus{font-size:11px;color:#4ade80;white-space:nowrap}
+
+    /* ── Layout ── */
+    .layout{
+      display:flex;
+      flex:1;
+      overflow:hidden;
+    }
+
+    /* ── Squad floor ── */
+    .floor{
+      flex:1;
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+      padding:20px;
+      gap:20px;
+    }
+
+    .section-label{
+      font-size:10px;
+      font-weight:700;
+      letter-spacing:.1em;
+      text-transform:uppercase;
+      color:var(--muted);
+      margin-bottom:10px;
+    }
+
+    /* ── Agents grid ── */
+    .agents-grid{
+      display:grid;
+      grid-template-columns:repeat(4,1fr);
+      gap:14px;
+    }
+
+    .agent-card{
+      background:var(--surface);
+      border:1.5px solid var(--border);
+      border-radius:18px;
+      padding:18px 12px 14px;
+      cursor:pointer;
+      transition:all .2s;
+      position:relative;
+      text-align:center;
+      user-select:none;
+    }
+    .agent-card:hover{
+      border-color:var(--card-color);
+      transform:translateY(-3px);
+      box-shadow:0 10px 28px rgba(0,0,0,.4);
+    }
+    .agent-card.selected{
+      border-color:var(--card-color);
+      box-shadow:0 0 0 2px var(--card-color),0 10px 28px rgba(0,0,0,.4);
+    }
+
+    /* bonequinho */
+    .boneco{
+      display:inline-flex;
+      flex-direction:column;
+      align-items:center;
+      margin-bottom:10px;
+      position:relative;
+    }
+
+    .bubble{
+      position:absolute;
+      top:-42px;
+      left:50%;
+      transform:translateX(-50%);
+      background:var(--surface3);
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:3px 8px;
+      font-size:10px;
+      color:var(--muted);
+      white-space:nowrap;
+      max-width:130px;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      pointer-events:none;
+      opacity:0;
+      transition:opacity .2s;
+    }
+    .bubble::after{
+      content:'';
+      position:absolute;
+      bottom:-5px;
+      left:50%;
+      transform:translateX(-50%);
+      border:4px solid transparent;
+      border-top-color:var(--surface3);
+      border-bottom:none;
+    }
+    .boneco.has-task .bubble{opacity:1}
+
+    .head{
+      width:48px;
+      height:48px;
+      border-radius:50%;
+      background:var(--card-color);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      font-size:22px;
+      position:relative;
+      animation:bob 2.4s ease-in-out infinite;
+      box-shadow:0 4px 16px color-mix(in srgb, var(--card-color) 35%, transparent);
+    }
+    .head::after{
+      content:'';
+      position:absolute;
+      inset:-4px;
+      border-radius:50%;
+      border:2.5px solid var(--status-ring,#4ade80);
+    }
+    .status-dot{
+      position:absolute;
+      top:1px;right:1px;
+      width:11px;height:11px;
+      border-radius:50%;
+      background:var(--status-ring,#4ade80);
+      border:2px solid var(--surface);
+    }
+
+    .torso{
+      width:28px;height:30px;
+      background:var(--card-color);
+      border-radius:5px 5px 3px 3px;
+      margin-top:3px;
+      opacity:.65;
+      animation:bob 2.4s ease-in-out infinite;
+      animation-delay:.08s;
+    }
+
+    .legs{
+      display:flex;
+      gap:5px;
+      margin-top:2px;
+    }
+    .leg{
+      width:10px;height:18px;
+      background:var(--card-color);
+      border-radius:0 0 5px 5px;
+      opacity:.4;
+    }
+    .leg.l{animation:legL 2.4s ease-in-out infinite}
+    .leg.r{animation:legR 2.4s ease-in-out infinite}
+
+    @keyframes bob{
+      0%,100%{transform:translateY(0)}
+      50%{transform:translateY(-5px)}
+    }
+    @keyframes legL{
+      0%,100%{transform:rotate(0)}
+      30%{transform:rotate(8deg)}
+      70%{transform:rotate(-8deg)}
+    }
+    @keyframes legR{
+      0%,100%{transform:rotate(0)}
+      30%{transform:rotate(-8deg)}
+      70%{transform:rotate(8deg)}
+    }
+
+    /* working animation */
+    .agent-card[data-status=working] .head,
+    .agent-card[data-status=working] .torso{
+      animation:work .55s ease-in-out infinite;
+    }
+    @keyframes work{
+      0%,100%{transform:translateY(0) rotate(-3deg)}
+      50%{transform:translateY(-7px) rotate(3deg)}
+    }
+
+    /* thinking animation */
+    .agent-card[data-status=thinking] .head{
+      animation:pulse 1s ease-in-out infinite;
+    }
+    @keyframes pulse{
+      0%,100%{opacity:1;transform:scale(1)}
+      50%{opacity:.6;transform:scale(.95)}
+    }
+
+    .agent-name{font-size:12px;font-weight:700;margin-bottom:2px}
+    .agent-role{font-size:10px;color:var(--muted);margin-bottom:8px}
+
+    .task-pill{
+      display:inline-flex;
+      align-items:center;
+      gap:5px;
+      background:var(--surface2);
+      border:1px solid var(--border);
+      border-radius:20px;
+      padding:3px 9px;
+      font-size:10px;
+      color:var(--muted);
+    }
+    .task-pill-dot{
+      width:6px;height:6px;
+      border-radius:50%;
+      background:var(--card-color);
+    }
+
+    /* ── New project bar ── */
+    .project-bar{
+      background:var(--surface);
+      border:1.5px solid var(--accent);
+      border-radius:14px;
+      padding:14px 16px;
+      display:flex;
+      gap:12px;
+      align-items:center;
+      flex-shrink:0;
+    }
+    .project-bar-label{
+      display:flex;
+      flex-direction:column;
+      gap:3px;
+      min-width:110px;
+    }
+    .project-bar-label .tag{
+      font-size:10px;font-weight:700;
+      letter-spacing:.06em;
+      text-transform:uppercase;
+      color:var(--accent2);
+    }
+    .project-bar-label .sub{font-size:10px;color:var(--muted)}
+    .project-bar textarea{
+      flex:1;
+      background:var(--bg);
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:8px 12px;
+      color:var(--text);
+      font-size:13px;
+      resize:none;
+      height:54px;
+      font-family:inherit;
+      line-height:1.5;
+    }
+    .project-bar textarea:focus{outline:none;border-color:var(--accent)}
+    .project-bar textarea::placeholder{color:var(--muted)}
+
+    /* ── Task sidebar ── */
+    .sidebar{
+      width:280px;
+      background:var(--surface);
+      border-left:1px solid var(--border);
+      display:flex;
+      flex-direction:column;
+      overflow:hidden;
+      flex-shrink:0;
+    }
+    .sidebar-header{
+      padding:14px 16px;
+      border-bottom:1px solid var(--border);
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+    }
+    .sidebar-header-title{font-size:13px;font-weight:700}
+    .sidebar-header-count{font-size:11px;color:var(--muted)}
+
+    .task-list{
+      flex:1;
+      overflow-y:auto;
+      padding:10px;
+      display:flex;
+      flex-direction:column;
+      gap:7px;
+    }
+    .task-empty{
+      color:var(--muted);font-size:12px;
+      text-align:center;padding:28px 16px;
+      line-height:1.6;
+    }
+
+    .task-item{
+      background:var(--surface2);
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:10px 11px;
+      display:flex;
+      flex-direction:column;
+      gap:6px;
+    }
+    .task-row{
+      display:flex;
+      align-items:flex-start;
+      gap:8px;
+    }
+    .task-title{
+      flex:1;
+      font-size:12px;
+      font-weight:500;
+      line-height:1.45;
+    }
+    .task-del{
+      background:none;border:none;
+      color:var(--muted);font-size:13px;
+      cursor:pointer;padding:0;line-height:1;
+      flex-shrink:0;
+    }
+    .task-del:hover{color:#f87171}
+    .task-play{
+      background:none;border:none;
+      color:var(--accent2);font-size:13px;
+      cursor:pointer;padding:0;line-height:1;
+      flex-shrink:0;
+      transition:all .2s;
+    }
+    .task-play:hover{transform:scale(1.15);color:var(--accent)}
+    .task-play:disabled{opacity:.35;cursor:not-allowed}
+
+    .status-tag{
+      font-size:9px;font-weight:700;
+      padding:2px 7px;border-radius:4px;
+      text-transform:uppercase;letter-spacing:.04em;
+      cursor:pointer;white-space:nowrap;
+      border:none;
+    }
+    .st-todo{background:rgba(110,110,130,.15);color:#888}
+    .st-doing{background:rgba(124,111,255,.2);color:#a78bfa}
+    .st-done{background:rgba(74,222,128,.12);color:#4ade80}
+    .st-blocked{background:rgba(248,113,113,.12);color:#f87171}
+
+    .task-meta{
+      display:flex;
+      align-items:center;
+      gap:6px;
+      font-size:10px;
+      color:var(--muted);
+    }
+    .task-meta-dot{width:6px;height:6px;border-radius:50%}
+
+    .add-task-area{
+      padding:10px;
+      border-top:1px solid var(--border);
+      display:flex;
+      gap:6px;
+    }
+    .add-task-area input{
+      flex:1;
+      background:var(--bg);
+      border:1px solid var(--border);
+      border-radius:8px;
+      padding:6px 10px;
+      color:var(--text);
+      font-size:12px;
+      font-family:inherit;
+    }
+    .add-task-area input:focus{outline:none;border-color:var(--accent)}
+
+    /* ── Chat panel ── */
+    .chat-panel{
+      position:fixed;
+      bottom:0;right:20px;
+      width:400px;height:500px;
+      background:var(--surface);
+      border:1.5px solid var(--border);
+      border-radius:16px 16px 0 0;
+      display:flex;
+      flex-direction:column;
+      transform:translateY(110%);
+      transition:transform .3s cubic-bezier(.4,0,.2,1);
+      z-index:200;
+      box-shadow:0 -12px 40px rgba(0,0,0,.5);
+    }
+    .chat-panel.open{transform:translateY(0)}
+
+    .chat-head{
+      padding:12px 14px;
+      border-bottom:1px solid var(--border);
+      display:flex;
+      align-items:center;
+      gap:10px;
+    }
+    .chat-avatar{
+      width:36px;height:36px;
+      border-radius:50%;
+      display:flex;align-items:center;justify-content:center;
+      font-size:18px;flex-shrink:0;
+    }
+    .chat-info{flex:1}
+    .chat-info-name{font-size:13px;font-weight:700}
+    .chat-info-status{font-size:10px;color:var(--muted)}
+
+    .chat-close{
+      background:none;border:none;
+      color:var(--muted);font-size:18px;
+      cursor:pointer;line-height:1;padding:2px 4px;
+    }
+    .chat-close:hover{color:var(--text)}
+
+    .api-warn{
+      margin:8px 14px;
+      background:rgba(250,200,80,.07);
+      border:1px solid rgba(250,200,80,.25);
+      border-radius:8px;
+      padding:7px 10px;
+      font-size:11px;
+      color:#fbbf24;
+    }
+
+    .chat-msgs{
+      flex:1;
+      overflow-y:auto;
+      padding:14px;
+      display:flex;
+      flex-direction:column;
+      gap:10px;
+    }
+
+    .msg{display:flex;gap:8px;align-items:flex-start}
+    .msg.user{flex-direction:row-reverse}
+
+    .msg-av{
+      width:26px;height:26px;
+      border-radius:50%;
+      display:flex;align-items:center;justify-content:center;
+      font-size:13px;flex-shrink:0;
+    }
+    .msg-body{display:flex;flex-direction:column;gap:2px}
+    .msg.user .msg-body{align-items:flex-end}
+
+    .msg-bubble{
+      max-width:260px;
+      padding:8px 11px;
+      border-radius:12px;
+      font-size:12px;
+      line-height:1.55;
+      word-break:break-word;
+    }
+    .msg.agent .msg-bubble{
+      background:var(--surface2);
+      border:1px solid var(--border);
+      border-radius:4px 12px 12px 12px;
+    }
+    .msg.user .msg-bubble{
+      background:var(--accent);
+      border-radius:12px 4px 12px 12px;
+    }
+    .msg-time{font-size:9px;color:var(--muted)}
+
+    .typing{
+      display:flex;gap:4px;
+      padding:10px 14px;
+      align-items:center;
+    }
+    .typing-dot{
+      width:6px;height:6px;
+      border-radius:50%;
+      background:var(--muted);
+      animation:td 1s ease-in-out infinite;
+    }
+    .typing-dot:nth-child(2){animation-delay:.18s}
+    .typing-dot:nth-child(3){animation-delay:.36s}
+    @keyframes td{
+      0%,100%{opacity:.3;transform:scale(1)}
+      50%{opacity:1;transform:scale(1.25)}
+    }
+
+    .chat-input-row{
+      padding:10px 12px;
+      border-top:1px solid var(--border);
+      display:flex;
+      gap:8px;
+    }
+    .chat-input-row input{
+      flex:1;
+      background:var(--bg);
+      border:1px solid var(--border);
+      border-radius:10px;
+      padding:8px 12px;
+      color:var(--text);
+      font-size:13px;
+      font-family:inherit;
+    }
+    .chat-input-row input:focus{outline:none;border-color:var(--accent)}
+    .chat-input-row input::placeholder{color:var(--muted)}
+
+    /* ── scrollbar ── */
+    ::-webkit-scrollbar{width:4px}
+    ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+
+    /* ── code inline ── */
+    code{
+      background:var(--surface3);
+      padding:1px 5px;
+      border-radius:4px;
+      font-family:monospace;
+      font-size:11px;
+    }
+    strong{font-weight:700}
+  </style>
+</head>
+<body>
+
+<!-- ─── Header ──────────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">🏗️ ConstruConnect · <span>Squad HQ</span></div>
+  <div style="margin-left: auto; font-size: 12px; color: #888;">
+    💡 Chat integrado desativado. Use <code style="background: #2a2d45; padding: 2px 6px; border-radius: 4px;">/planning</code> no Claude Code.
+  </div>
+</header>
+
+<!-- ─── Layout ──────────────────────────────────────────────────────────── -->
+<div class="layout">
+
+  <!-- Squad floor -->
+  <div class="floor">
+
+    <div>
+      <div class="section-label">Equipe</div>
+      <div class="agents-grid" id="agentsGrid"></div>
+    </div>
+
+    <div>
+      <div class="section-label">📝 Novo projeto / feature</div>
+      <div class="project-bar">
+        <div class="project-bar-label">
+          <span class="tag">👔 PO</span>
+          <span class="sub">Use /planning aqui →</span>
+        </div>
+        <textarea id="projectInput" placeholder="Copie sua ideia e use /planning no Claude Code (no terminal, não aqui). Ex: /planning quero adicionar avaliação por estrelas" readonly style="opacity: 0.6;"></textarea>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Task sidebar -->
+  <div class="sidebar">
+    <div class="sidebar-header">
+      <span class="sidebar-header-title">📋 Tarefas</span>
+      <span class="sidebar-header-count" id="taskCount">0 tarefas</span>
+    </div>
+    <div class="task-list" id="taskList">
+      <div class="task-empty">Nenhuma tarefa ainda.<br>Envie um projeto ao PO<br>para começar.</div>
+    </div>
+    <div class="add-task-area" style="justify-content: center; color: #888; font-size: 11px;">
+      💡 Tarefas sincronizam via <code style="background: #2a2d45; padding: 1px 4px; border-radius: 3px;">/planning</code>
+    </div>
+  </div>
+
+</div><!-- /layout -->
+
+
+<!-- ─── Script ──────────────────────────────────────────────────────────── -->
+<script>
+// ════════════════════════════════════════════════════════════════════
+// AGENTS CONFIG
+// ════════════════════════════════════════════════════════════════════
+const AGENTS = {
+  po:{
+    id:'po', name:'Product Owner', emoji:'👔', color:'#7C6FFF',
+    greeting:'Olá! Sou o PO da squad. Me conte o que quer desenvolver e vou estruturar o discovery, as stories e os critérios de aceite para a equipe.',
+    system:`Você é o Product Owner (PO) sênior da squad ConstruConnect — app estilo 99/Uber para contratação de serviços de construção (clientes ↔ pedreiros/empreiteiros). Stack: React+Vite (web), Hono+Cloudflare Workers (API), Expo/React Native (mobile-client, mobile-provider), Supabase/Postgres. Responda SEMPRE em português do Brasil.
+
+Quando receber uma demanda, estruture SEMPRE:
+1. **Problema** sendo resolvido (não a solução pedida)
+2. **Persona** afetada (cliente, prestador, admin)
+3. **Hipótese e métrica de sucesso** (baseline → meta → janela)
+4. **MVP** — menor fatia end-to-end que entrega valor
+5. **User Stories** com critérios de aceite em Gherkin (Dado/Quando/Então)
+6. **Riscos de negócio**
+7. **Fora de escopo** (explícito)
+8. **❓ Perguntas** se faltar informação para decidir
+
+Nunca escreva solução técnica. Seja assertivo e direto.`,
+    tasks:[], status:'idle'
+  },
+  ux:{
+    id:'ux', name:'UI/UX Designer', emoji:'🎨', color:'#F472B6',
+    greeting:'Oi! Sou a Designer UX. Me passe uma feature ou tela e vou desenhar o fluxo, os wireframes e especificar todos os estados antes de codar.',
+    system:`Você é a Designer de UI/UX sênior da squad ConstruConnect. Stack: Expo/React Native (mobile) e React+Vite (web). Responda em português do Brasil.
+
+Trabalhe em 2 fases:
+**Fase 1 — Desenhar (sempre primeiro):**
+1. Fluxo de navegação (telas + transições, pode usar Mermaid)
+2. Wireframes ASCII de cada tela — use caixas como estas:
+   ┌─────────────────────┐
+   │ ← Título da tela    │
+   ├─────────────────────┤
+   │ conteúdo            │
+   └─────────────────────┘
+3. Estados obrigatórios: loading, vazio, erro, sucesso, sem permissão
+4. Design tokens: cores, espaçamento, tipografia, raios
+5. Acessibilidade: contraste, área de toque ≥44px, labels
+Termine com "✅ Aprova este desenho ou quer ajustes?"
+
+**Fase 2 — Codificar** (só após aprovação explícita): implemente em Expo/RN ou React, tipado, com todos os estados.`,
+    tasks:[], status:'idle'
+  },
+  techlead:{
+    id:'techlead', name:'Tech Lead', emoji:'⚙️', color:'#34D399',
+    greeting:'Olá! Sou o Tech Lead. Me traga uma decisão técnica, feature para especificar (SDD/ADR) ou dúvida de arquitetura.',
+    system:`Você é o Tech Lead sênior da squad ConstruConnect. Stack: React+Vite (web), Hono+Cloudflare Workers (apps/api), Expo/React Native (mobile-client, mobile-provider), packages/shared (tipos compartilhados), Supabase/Postgres (banco), WebAuthn/Passkeys (auth). Deploy: Cloudflare Pages + Workers. Responda em português do Brasil.
+
+Ao responder, estruture SEMPRE:
+1. **Contexto e restrições** assumidas
+2. **Pelo menos 2 opções** com trade-offs explícitos
+3. **Recomendação** justificada
+4. **Riscos** da recomendação
+5. **O que vira ADR** vs detalhe de implementação
+6. **Próximos passos concretos**
+
+Para mudanças de código mostre antes/depois ou patch mínimo — nunca descrição vaga. Nunca hype-driven development.`,
+    tasks:[], status:'idle'
+  },
+  pm:{
+    id:'pm', name:'Project Manager', emoji:'📋', color:'#FBBF24',
+    greeting:'Oi! Sou o PM. Me passe as stories ou tarefas e vou montar o plano de execução em fatias incrementais com dependências e riscos.',
+    system:`Você é o Project Manager (PM) da squad ConstruConnect, fluxo Kanban (sem sprints). Cuida do fluxo, riscos, dependências e métricas. Responda em português do Brasil.
+
+Ao receber stories ou tarefas, produza:
+1. **Sequência de entrega** em fatias finas que entregam valor cedo
+2. **Dependências** entre itens (o que bloqueia o quê)
+3. **Riscos** e mitigação
+4. **Marcos** verificáveis (o que estará pronto e como saber)
+5. **Sinais de alerta** a observar (aging WIP, gargalos)
+
+Seja pragmático. Não trate estimativa como compromisso. Não encha WIP porque "tem gente livre".`,
+    tasks:[], status:'idle'
+  },
+  frontend:{
+    id:'frontend', name:'Dev Frontend', emoji:'⚛️', color:'#60A5FA',
+    greeting:'Oi! Sou o Dev Frontend. Me passe uma spec, componente ou bug e vou propor a implementação com código real.',
+    system:`Você é o Dev Frontend sênior da squad ConstruConnect. Stack: Expo/React Native (apps/mobile-client, apps/mobile-provider) e React+TypeScript+Vite (apps/web). Tipos compartilhados em packages/shared. Acessibilidade WCAG 2.2 AA obrigatória. Responda em português do Brasil.
+
+Ao responder sobre implementação:
+1. **Entendi assim:** repita o problema com suas palavras
+2. **Suposições**
+3. **Proposta** com código real (TypeScript, sem 'any')
+4. **Trade-offs**
+5. **Testes** que vai escrever (Testing Library / Playwright)
+6. **Riscos**
+
+Cubra SEMPRE os estados: loading, vazio, erro, sucesso, sem permissão. Nunca 'useEffect' para tudo ou estado global para o que é local.`,
+    tasks:[], status:'idle'
+  },
+  backend:{
+    id:'backend', name:'Dev Backend', emoji:'🖥️', color:'#A78BFA',
+    greeting:'Oi! Sou o Dev Backend. Me passe um endpoint, regra de domínio ou dúvida de modelagem.',
+    system:`Você é o Dev Backend sênior da squad ConstruConnect. Stack: Hono+Cloudflare Workers (apps/api), PostgreSQL/Supabase (banco), tipos compartilhados em packages/shared, auth WebAuthn/Passkeys. Responda em português do Brasil.
+
+Ao responder:
+1. **Entendi assim:** repita o problema
+2. **Proposta** com código real (handlers, schema, tipos)
+3. **Segurança:** validação de input, authz, LGPD, sem segredos no código
+4. **Contratos** tipados em packages/shared para o frontend consumir
+5. **Testes:** unit de domínio, integração de rota, contrato
+
+Nunca hardcode segredos. Nunca N+1 queries sem índice. Nunca engolir erros sem log.`,
+    tasks:[], status:'idle'
+  },
+  qa:{
+    id:'qa', name:'QA', emoji:'🔍', color:'#2DD4BF',
+    greeting:'Oi! Sou o QA. Me passe uma story ou feature e vou definir a estratégia de testes e os cenários de borda.',
+    system:`Você é o QA sênior da squad ConstruConnect. Pensa em risco: o que pode quebrar, o que não foi coberto, o que o usuário fará de inesperado. Responda em português do Brasil.
+
+Ao receber uma feature ou story:
+1. **Critérios de aceite testáveis?** — aponte os ambíguos
+2. **Cenários:** caminho feliz, bordas, negativos, concorrência, sem permissão
+3. **Estratégia por camada:** unit, integração, e2e (Playwright / Testing Library)
+4. **Riscos de qualidade** e prioridades
+5. **Dados de teste** necessários
+
+Nunca teste só o caminho feliz. Nunca aprove sem critério de aceite claro.`,
+    tasks:[], status:'idle'
+  },
+  devops:{
+    id:'devops', name:'DevOps', emoji:'🚀', color:'#FB7185',
+    greeting:'Oi! Sou o DevOps. Me conte uma mudança de infra, feature nova ou dúvida de deploy.',
+    system:`Você é o DevOps sênior da squad ConstruConnect. Infra: Cloudflare Pages (web) + Workers (api) via Wrangler, Supabase/Postgres. Scripts no package.json (deploy:web, deploy:api). Responda em português do Brasil.
+
+Ao receber uma feature ou mudança:
+1. **Impacto de infra** da mudança proposta
+2. **Build/deploy:** passos, ambientes, feature flags
+3. **Requisitos não-funcionais:** uptime, latência alvo, picos
+4. **Observabilidade:** logs, métricas, alertas
+5. **Segurança operacional:** segredos, config, superfície de ataque
+6. **Rollback:** como reverter rápido
+
+Nunca feature sem plano de rollback. Nunca segredos no código.`,
+    tasks:[], status:'idle'
+  }
+};
+
+const STATUS_COLOR = { idle:'#4ade80', working:'#60a5fa', thinking:'#fbbf24', blocked:'#f87171' };
+const STATUS_LABEL = { idle:'Disponível', working:'Trabalhando', thinking:'Pensando...', blocked:'Bloqueado' };
+const STATUS_ORDER = ['todo','doing','done','blocked'];
+
+// ════════════════════════════════════════════════════════════════════
+// STATE
+// ════════════════════════════════════════════════════════════════════
+let tasks  = loadTasksFromStorage();
+let taskId = 1;
+
+function loadTasksFromStorage() {
+  const stored = localStorage.getItem('cc_tasks');
+  return stored ? JSON.parse(stored) : [];
+}
+
+function saveTasksToStorage() {
+  localStorage.setItem('cc_tasks', JSON.stringify(tasks));
+}
+
+// ════════════════════════════════════════════════════════════════════
+// BOOT
+// ════════════════════════════════════════════════════════════════════
+window.addEventListener('DOMContentLoaded', () => {
+  // carrega tarefas padrão se localStorage vazio
+  if (!localStorage.getItem('cc_tasks')) {
+    const defaultTasks = [
+      {id:1, title:"US-001: Disparar modal de avaliação automaticamente ao serviço ser concluído", assignee:"frontend", status:"todo", phase:"planning"},
+      {id:2, title:"US-002: Cliente seleciona e submete avaliação de 1-5 estrelas", assignee:"frontend", status:"todo", phase:"planning"},
+      {id:3, title:"US-003: Avaliação persistida e refletida em tempo real no histórico", assignee:"backend", status:"todo", phase:"planning"},
+      {id:4, title:"US-004: Feature flag ratings permite desabilitar/habilitar fluxo", assignee:"devops", status:"todo", phase:"planning"},
+      {id:5, title:"UX Fase 1: Aprova wireframes e design tokens (ASCII mockups)", assignee:"ux", status:"doing", phase:"design"},
+      {id:6, title:"Confirmar 5 decisões de negócio com o usuário", assignee:"po", status:"blocked", phase:"planning"},
+      {id:7, title:"Tech Lead: SDD (Specification-Driven Development) da feature", assignee:"techlead", status:"todo", phase:"architecture"},
+      {id:8, title:"PM: Montar plano de execução em fatias incrementais", assignee:"pm", status:"todo", phase:"planning"},
+      {id:9, title:"QA: Definir estratégia de testes (unit/integração/e2e)", assignee:"qa", status:"todo", phase:"testing"},
+      {id:10, title:"Implementar componentes React Native (Fase 2 UX)", assignee:"frontend", status:"todo", phase:"development"},
+      {id:11, title:"Implementar endpoint POST /v1/service-requests/:id/rate", assignee:"backend", status:"todo", phase:"development"},
+      {id:12, title:"Code review + testes e2e da feature completa", assignee:"qa", status:"todo", phase:"testing"},
+      {id:13, title:"Deploy com feature flag ratings=true (prod)", assignee:"devops", status:"todo", phase:"deployment"}
+    ];
+    localStorage.setItem('cc_tasks', JSON.stringify(defaultTasks));
+    tasks = defaultTasks;
+  }
+
+  renderGrid();
+  renderTasks();
+
+  // listener para atualizações do localStorage (de outra aba)
+  window.addEventListener('storage', () => {
+    tasks = loadTasksFromStorage();
+    renderTasks();
+    renderGrid();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// (API KEY desativado — chat integrado não é necessário)
+// ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
+// RENDER GRID
+// ════════════════════════════════════════════════════════════════════
+function renderGrid() {
+  const grid = document.getElementById('agentsGrid');
+  grid.innerHTML = '';
+  Object.values(AGENTS).forEach(a => {
+    const active = tasks.filter(t => t.assignee === a.id && t.status !== 'done');
+    const doing  = tasks.find(t => t.assignee === a.id && t.status === 'doing');
+
+    const card = document.createElement('div');
+    card.className = 'agent-card';
+    card.dataset.status = a.status;
+    card.style.setProperty('--card-color', a.color);
+    card.style.setProperty('--status-ring', STATUS_COLOR[a.status]);
+    card.innerHTML = `
+      <div class="boneco ${doing ? 'has-task' : ''}">
+        <div class="bubble">📌 ${doing ? doing.title.slice(0,22)+(doing.title.length>22?'…':'') : ''}</div>
+        <div class="head" style="--card-color:${a.color}">
+          ${a.emoji}
+          <div class="status-dot" style="background:${STATUS_COLOR[a.status]}"></div>
+        </div>
+        <div class="torso" style="background:${a.color}"></div>
+        <div class="legs">
+          <div class="leg l" style="background:${a.color}"></div>
+          <div class="leg r" style="background:${a.color}"></div>
+        </div>
+      </div>
+      <div class="agent-name">${a.name}</div>
+      <div class="agent-role">${STATUS_LABEL[a.status]}</div>
+      <div class="task-pill">
+        <div class="task-pill-dot" style="background:${a.color}"></div>
+        ${active.length} tarefa${active.length !== 1 ? 's' : ''}
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// (Chat integrado removido — use /planning no Claude Code)
+// ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════
+// EXECUTE TASK (via local server)
+// ════════════════════════════════════════════════════════════════════
+async function executeTask(id) {
+  const t = tasks.find(t => t.id === id);
+  if (!t || !t.assignee) return;
+
+  const oldStatus = t.status;
+  t.status = 'doing';
+  saveTasksToStorage();
+  renderTasks();
+  renderGrid();
+
+  const ag = AGENTS[t.assignee];
+  const btn = event.target;
+  const origText = btn.textContent;
+  btn.textContent = '⏳';
+  btn.disabled = true;
+
+  try {
+    const res = await fetch('http://localhost:3333/execute-task', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        taskId: t.id,
+        taskTitle: t.title,
+        assignee: t.assignee,
+        description: t.description || t.title
+      })
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: res.statusText }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const data = await res.json();
+    console.log(`[Task ${id}] Executada:`, data);
+
+    // Mostrar resultado em um alert
+    alert(`✅ ${ag.emoji} ${ag.name} completou a tarefa:\n\n${data.response.slice(0, 500)}${data.response.length > 500 ? '...' : ''}`);
+
+    t.status = 'done';
+    saveTasksToStorage();
+    renderTasks();
+    renderGrid();
+
+  } catch (err) {
+    console.error(`[Task ${id}] Erro:`, err.message);
+    alert(`❌ Erro ao executar:\n\n${err.message}\n\nVerifique se o servidor está rodando em localhost:3333`);
+    t.status = oldStatus;
+    saveTasksToStorage();
+    renderTasks();
+    renderGrid();
+  }
+
+  btn.textContent = origText;
+  btn.disabled = false;
+}
+// ════════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════════
+// TASKS
+// ════════════════════════════════════════════════════════════════════
+// (Tasks são sincronizadas automaticamente via /planning e tasks.json)
+
+function cycleStatus(id) {
+  const t = tasks.find(t => t.id === id);
+  if (!t) return;
+  t.status = STATUS_ORDER[(STATUS_ORDER.indexOf(t.status)+1) % STATUS_ORDER.length];
+  if (t.assignee) syncAgentStatus(t.assignee);
+  saveTasksToStorage();
+  renderTasks();
+  renderGrid();
+}
+
+function removeTask(id) {
+  const t = tasks.find(t => t.id === id);
+  tasks = tasks.filter(t => t.id !== id);
+  if (t?.assignee) syncAgentStatus(t.assignee);
+  saveTasksToStorage();
+  renderTasks();
+  renderGrid();
+}
+
+function syncAgentStatus(agentId) {
+  const ag = AGENTS[agentId];
+  if (!ag) return;
+  const mine = tasks.filter(t => t.assignee === agentId);
+  if (mine.some(t => t.status === 'blocked'))      ag.status = 'blocked';
+  else if (mine.some(t => t.status === 'doing'))   ag.status = 'working';
+  else                                              ag.status = 'idle';
+}
+
+function renderTasks() {
+  const list  = document.getElementById('taskList');
+  const count = document.getElementById('taskCount');
+  count.textContent = `${tasks.length} tarefa${tasks.length!==1?'s':''}`;
+
+  if (!tasks.length) {
+    list.innerHTML = '<div class="task-empty">Nenhuma tarefa ainda.<br>Envie um projeto ao PO<br>para começar.</div>';
+    return;
+  }
+
+  const stLabel = { todo:'A fazer', doing:'Em andamento', done:'Pronto', blocked:'Bloqueado' };
+  list.innerHTML = '';
+  tasks.forEach(t => {
+    const ag  = t.assignee ? AGENTS[t.assignee] : null;
+    const div = document.createElement('div');
+    div.className = 'task-item';
+    div.innerHTML = `
+      <div class="task-row">
+        <div class="task-title">${t.title}</div>
+        <button class="task-play" onclick="executeTask(${t.id})" title="Executar tarefa (requer servidor)" ${!t.assignee ? 'disabled' : ''}>▶</button>
+        <button class="task-del" onclick="removeTask(${t.id})" title="Remover">✕</button>
+      </div>
+      <div class="task-row" style="justify-content:space-between;align-items:center">
+        <button class="status-tag st-${t.status}" onclick="cycleStatus(${t.id})" title="Clique para avançar status">
+          ${stLabel[t.status]}
+        </button>
+        ${ag
+          ? `<div class="task-meta"><div class="task-meta-dot" style="background:${ag.color}"></div>${ag.emoji} ${ag.name}</div>`
+          : `<div class="task-meta" style="color:#555">Não atribuído</div>`
+        }
+      </div>
+    `;
+    list.appendChild(div);
+  });
+}
+</script>
+</body>
+</html>

@@ -21,10 +21,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { useTheme } from '@/contexts/ThemeContext';
-import {
-  ExpoSpeechRecognitionModule,
-  useSpeechRecognitionEvent,
-} from 'expo-speech-recognition';
+let ExpoSpeechRecognitionModule: any = null;
+let useSpeechRecognitionEvent: (event: string, handler: any) => void = () => {};
+const speechAvailable = (() => {
+  try {
+    const mod = require('expo-speech-recognition');
+    ExpoSpeechRecognitionModule = mod.ExpoSpeechRecognitionModule;
+    useSpeechRecognitionEvent = mod.useSpeechRecognitionEvent;
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
@@ -477,19 +485,21 @@ export default function HomeScreen() {
           />
           <View style={styles.descriptionFooter}>
             <Text style={[styles.charCount, { color: colors.textSecondary }]}>{description.length}/500</Text>
-            <TouchableOpacity
-              onPress={handleVoiceInput}
-              style={[styles.micBtn, listening && styles.micBtnActive]}
-              accessibilityRole="button"
-              accessibilityLabel={listening ? 'Parar gravação de voz' : 'Iniciar ditado por voz'}
-              accessibilityHint="Dita a descrição do serviço usando o microfone"
-            >
-              <Ionicons
-                name={listening ? 'stop-circle' : 'mic-outline'}
-                size={22}
-                color={listening ? Colors.dangerRed : Colors.primary}
-              />
-            </TouchableOpacity>
+            {speechAvailable && (
+              <TouchableOpacity
+                onPress={handleVoiceInput}
+                style={[styles.micBtn, listening && styles.micBtnActive]}
+                accessibilityRole="button"
+                accessibilityLabel={listening ? 'Parar gravação de voz' : 'Iniciar ditado por voz'}
+                accessibilityHint="Dita a descrição do serviço usando o microfone"
+              >
+                <Ionicons
+                  name={listening ? 'stop-circle' : 'mic-outline'}
+                  size={22}
+                  color={listening ? Colors.dangerRed : Colors.primary}
+                />
+              </TouchableOpacity>
+            )}
           </View>
         </View>
 
