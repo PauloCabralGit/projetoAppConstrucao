@@ -388,15 +388,6 @@
       flex-shrink:0;
     }
     .task-del:hover{color:#f87171}
-    .task-play{
-      background:none;border:none;
-      color:var(--accent2);font-size:13px;
-      cursor:pointer;padding:0;line-height:1;
-      flex-shrink:0;
-      transition:all .2s;
-    }
-    .task-play:hover{transform:scale(1.15);color:var(--accent)}
-    .task-play:disabled{opacity:.35;cursor:not-allowed}
 
     .status-tag{
       font-size:9px;font-weight:700;
@@ -603,13 +594,13 @@
     </div>
 
     <div>
-      <div class="section-label">📝 Novo projeto / feature</div>
+      <div class="section-label">📝 Como usar</div>
       <div class="project-bar">
         <div class="project-bar-label">
-          <span class="tag">👔 PO</span>
+          <span class="tag">💡 Dica</span>
           <span class="sub">Use /planning aqui →</span>
         </div>
-        <textarea id="projectInput" placeholder="Copie sua ideia e use /planning no Claude Code (no terminal, não aqui). Ex: /planning quero adicionar avaliação por estrelas" readonly style="opacity: 0.6;"></textarea>
+        <textarea placeholder="1. Digite: /planning quero adicionar avaliação por estrelas&#10;2. Os agentes trabalham aqui&#10;3. Dashboard sincroniza o progresso&#10;4. Clique no status das tarefas para avançar" readonly style="opacity: 0.6;"></textarea>
       </div>
     </div>
 
@@ -799,19 +790,21 @@ window.addEventListener('DOMContentLoaded', () => {
   // carrega tarefas padrão se localStorage vazio
   if (!localStorage.getItem('cc_tasks')) {
     const defaultTasks = [
-      {id:1, title:"US-001: Disparar modal de avaliação automaticamente ao serviço ser concluído", assignee:"frontend", status:"todo", phase:"planning"},
-      {id:2, title:"US-002: Cliente seleciona e submete avaliação de 1-5 estrelas", assignee:"frontend", status:"todo", phase:"planning"},
-      {id:3, title:"US-003: Avaliação persistida e refletida em tempo real no histórico", assignee:"backend", status:"todo", phase:"planning"},
-      {id:4, title:"US-004: Feature flag ratings permite desabilitar/habilitar fluxo", assignee:"devops", status:"todo", phase:"planning"},
-      {id:5, title:"UX Fase 1: Aprova wireframes e design tokens (ASCII mockups)", assignee:"ux", status:"doing", phase:"design"},
-      {id:6, title:"Confirmar 5 decisões de negócio com o usuário", assignee:"po", status:"blocked", phase:"planning"},
-      {id:7, title:"Tech Lead: SDD (Specification-Driven Development) da feature", assignee:"techlead", status:"todo", phase:"architecture"},
-      {id:8, title:"PM: Montar plano de execução em fatias incrementais", assignee:"pm", status:"todo", phase:"planning"},
-      {id:9, title:"QA: Definir estratégia de testes (unit/integração/e2e)", assignee:"qa", status:"todo", phase:"testing"},
-      {id:10, title:"Implementar componentes React Native (Fase 2 UX)", assignee:"frontend", status:"todo", phase:"development"},
-      {id:11, title:"Implementar endpoint POST /v1/service-requests/:id/rate", assignee:"backend", status:"todo", phase:"development"},
-      {id:12, title:"Code review + testes e2e da feature completa", assignee:"qa", status:"todo", phase:"testing"},
-      {id:13, title:"Deploy com feature flag ratings=true (prod)", assignee:"devops", status:"todo", phase:"deployment"}
+      {id:1, title:"US-001: Criar schema de ratings (tabelas e índices)", assignee:"backend", status:"todo", phase:"development"},
+      {id:2, title:"US-002: Implementar API POST /ratings (criar avaliação)", assignee:"backend", status:"todo", phase:"development"},
+      {id:3, title:"US-003: Implementar API GET /ratings/:provider_id (listar avaliações)", assignee:"backend", status:"todo", phase:"development"},
+      {id:4, title:"US-004: Escrever SDD (Specification-Driven Development)", assignee:"techlead", status:"todo", phase:"design"},
+      {id:5, title:"US-005: Registrar ADR-001 (decisão arquitetural)", assignee:"techlead", status:"todo", phase:"design"},
+      {id:6, title:"US-006: Desenhar tela de avaliação (mobile-client)", assignee:"ux", status:"doing", phase:"design"},
+      {id:7, title:"US-007: Implementar tela de avaliação (mobile-client)", assignee:"frontend", status:"todo", phase:"development"},
+      {id:8, title:"US-008: Integrar POST /ratings no mobile-client", assignee:"frontend", status:"todo", phase:"development"},
+      {id:9, title:"US-009: Implementar tela de histórico (mobile-client)", assignee:"frontend", status:"todo", phase:"development"},
+      {id:10, title:"US-010: Exibir nota média no dashboard (mobile-provider)", assignee:"frontend", status:"todo", phase:"development"},
+      {id:11, title:"US-011: Implementar tela de histórico de avaliações (mobile-provider)", assignee:"frontend", status:"todo", phase:"development"},
+      {id:12, title:"US-012: Testes E2E (fluxo completo)", assignee:"qa", status:"todo", phase:"testing"},
+      {id:13, title:"US-013: Testes de performance (carga com 1k+ avaliações)", assignee:"backend", status:"todo", phase:"testing"},
+      {id:14, title:"US-014: Deploy em staging e validação piloto", assignee:"pm", status:"todo", phase:"deployment"},
+      {id:15, title:"US-015: Deploy em produção com monitoring", assignee:"devops", status:"todo", phase:"deployment"}
     ];
     localStorage.setItem('cc_tasks', JSON.stringify(defaultTasks));
     tasks = defaultTasks;
@@ -876,65 +869,7 @@ function renderGrid() {
 // ════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════
-// ════════════════════════════════════════════════════════════════════
-// EXECUTE TASK (via local server)
-// ════════════════════════════════════════════════════════════════════
-async function executeTask(id) {
-  const t = tasks.find(t => t.id === id);
-  if (!t || !t.assignee) return;
-
-  const oldStatus = t.status;
-  t.status = 'doing';
-  saveTasksToStorage();
-  renderTasks();
-  renderGrid();
-
-  const ag = AGENTS[t.assignee];
-  const btn = event.target;
-  const origText = btn.textContent;
-  btn.textContent = '⏳';
-  btn.disabled = true;
-
-  try {
-    const res = await fetch('http://localhost:3333/execute-task', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        taskId: t.id,
-        taskTitle: t.title,
-        assignee: t.assignee,
-        description: t.description || t.title
-      })
-    });
-
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: res.statusText }));
-      throw new Error(err.error || `HTTP ${res.status}`);
-    }
-
-    const data = await res.json();
-    console.log(`[Task ${id}] Executada:`, data);
-
-    // Mostrar resultado em um alert
-    alert(`✅ ${ag.emoji} ${ag.name} completou a tarefa:\n\n${data.response.slice(0, 500)}${data.response.length > 500 ? '...' : ''}`);
-
-    t.status = 'done';
-    saveTasksToStorage();
-    renderTasks();
-    renderGrid();
-
-  } catch (err) {
-    console.error(`[Task ${id}] Erro:`, err.message);
-    alert(`❌ Erro ao executar:\n\n${err.message}\n\nVerifique se o servidor está rodando em localhost:3333`);
-    t.status = oldStatus;
-    saveTasksToStorage();
-    renderTasks();
-    renderGrid();
-  }
-
-  btn.textContent = origText;
-  btn.disabled = false;
-}
+// (Execute task function removed — manual status updates only)
 // ════════════════════════════════════════════════════════════════════
 
 // ════════════════════════════════════════════════════════════════════
@@ -989,7 +924,6 @@ function renderTasks() {
     div.innerHTML = `
       <div class="task-row">
         <div class="task-title">${t.title}</div>
-        <button class="task-play" onclick="executeTask(${t.id})" title="Executar tarefa (requer servidor)" ${!t.assignee ? 'disabled' : ''}>▶</button>
         <button class="task-del" onclick="removeTask(${t.id})" title="Remover">✕</button>
       </div>
       <div class="task-row" style="justify-content:space-between;align-items:center">

@@ -1,111 +1,112 @@
 {
-  "project": "Avaliação por estrelas do prestador",
+  "project": "Avaliação por Estrelas do Prestador",
   "status": "planning",
   "tasks": [
     {
       "id": 1,
-      "title": "US-001: Disparar modal de avaliação automaticamente ao serviço ser concluído",
-      "assignee": "frontend",
+      "title": "US-001: Criar schema de ratings (tabelas e índices)",
+      "assignee": "backend",
       "status": "todo",
-      "phase": "planning",
-      "description": "Cenários Gherkin: modal aparece auto ao status=completed, não aparece se já avaliado, cliente pode skip"
+      "phase": "development"
     },
     {
       "id": 2,
-      "title": "US-002: Cliente seleciona e submete avaliação de 1-5 estrelas",
-      "assignee": "frontend",
+      "title": "US-002: Implementar API POST /ratings (criar avaliação)",
+      "assignee": "backend",
       "status": "todo",
-      "phase": "planning",
-      "description": "Componente StarRating + RatingModal com submit, loading, success/error states"
+      "phase": "development"
     },
     {
       "id": 3,
-      "title": "US-003: Avaliação persistida e refletida em tempo real no histórico",
+      "title": "US-003: Implementar API GET /ratings/:provider_id (listar avaliações)",
       "assignee": "backend",
       "status": "todo",
-      "phase": "planning",
-      "description": "POST /v1/service-requests/:id/rate com validação, recalc de average_rating, bloqueio automático"
+      "phase": "development"
     },
     {
       "id": 4,
-      "title": "US-004: Feature flag ratings permite desabilitar/habilitar fluxo",
-      "assignee": "devops",
+      "title": "US-004: Escrever SDD (Specification-Driven Development)",
+      "assignee": "techlead",
       "status": "todo",
-      "phase": "planning",
-      "description": "Usar flags.ratings (já existe, default: true) para condicionar modal/botões"
+      "phase": "design"
     },
     {
       "id": 5,
-      "title": "UX Fase 1: Aprova wireframes e design tokens (ASCII mockups)",
-      "assignee": "ux",
-      "status": "doing",
-      "phase": "design",
-      "description": "7 questões aguardando aprovação do usuário antes de codificar (Fase 2)"
+      "title": "US-005: Registrar ADR-001 (decisão arquitetural)",
+      "assignee": "techlead",
+      "status": "todo",
+      "phase": "design"
     },
     {
       "id": 6,
-      "title": "Confirmar 5 decisões de negócio com o usuário",
-      "assignee": "po",
-      "status": "blocked",
-      "phase": "planning",
-      "description": "Timing do modal, incentivar rating, push ao prestador, edição, visibilidade anterior"
+      "title": "US-006: Desenhar tela de avaliação (mobile-client)",
+      "assignee": "ux",
+      "status": "doing",
+      "phase": "design"
     },
     {
       "id": 7,
-      "title": "Tech Lead: SDD (Specification-Driven Development) da feature",
-      "assignee": "techlead",
+      "title": "US-007: Implementar tela de avaliação (mobile-client)",
+      "assignee": "frontend",
       "status": "todo",
-      "phase": "architecture",
-      "description": "Modelo de domínio, API contract, persistência, segurança, observabilidade, testes"
+      "phase": "development"
     },
     {
       "id": 8,
-      "title": "PM: Montar plano de execução em fatias incrementais",
-      "assignee": "pm",
+      "title": "US-008: Integrar POST /ratings no mobile-client",
+      "assignee": "frontend",
       "status": "todo",
-      "phase": "planning",
-      "description": "Sequência de entrega, dependências, riscos, marcos verificáveis"
+      "phase": "development"
     },
     {
       "id": 9,
-      "title": "QA: Definir estratégia de testes (unit/integração/e2e)",
-      "assignee": "qa",
+      "title": "US-009: Implementar tela de histórico (mobile-client)",
+      "assignee": "frontend",
       "status": "todo",
-      "phase": "testing",
-      "description": "Baseado em critérios de aceite Gherkin, cenários de borda, dados de teste"
+      "phase": "development"
     },
     {
       "id": 10,
-      "title": "Implementar componentes React Native (Fase 2 UX)",
+      "title": "US-010: Exibir nota média no dashboard (mobile-provider)",
       "assignee": "frontend",
       "status": "todo",
-      "phase": "development",
-      "description": "ServiceCard, RatingModal, StarRating com testes, estados, acessibilidade WCAG AA"
+      "phase": "development"
     },
     {
       "id": 11,
-      "title": "Implementar endpoint POST /v1/service-requests/:id/rate",
-      "assignee": "backend",
+      "title": "US-011: Implementar tela de histórico de avaliações (mobile-provider)",
+      "assignee": "frontend",
       "status": "todo",
-      "phase": "development",
-      "description": "Validação, recalc average_rating, bloqueio auto, tests unit/integração"
+      "phase": "development"
     },
     {
       "id": 12,
-      "title": "Code review + testes e2e da feature completa",
+      "title": "US-012: Testes E2E (fluxo completo)",
       "assignee": "qa",
       "status": "todo",
-      "phase": "testing",
-      "description": "Múltiplos cenários de rating, load, performance, mobile/tablet, offline"
+      "phase": "testing"
     },
     {
       "id": 13,
-      "title": "Deploy com feature flag ratings=true (prod)",
+      "title": "US-013: Testes de performance (carga com 1k+ avaliações)",
+      "assignee": "backend",
+      "status": "todo",
+      "phase": "testing"
+    },
+    {
+      "id": 14,
+      "title": "US-014: Deploy em staging e validação piloto",
+      "assignee": "pm",
+      "status": "todo",
+      "phase": "deployment"
+    },
+    {
+      "id": 15,
+      "title": "US-015: Deploy em produção com monitoring",
       "assignee": "devops",
       "status": "todo",
-      "phase": "deployment",
-      "description": "Build, CI/CD, monitoramento de erros/metrics, rollback plan"
+      "phase": "deployment"
     }
   ],
-  "lastUpdated": "2026-06-01T12:35:00Z"
+  "lastUpdated": "2026-06-02T00:00:00Z"
 }
