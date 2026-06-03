@@ -16,7 +16,12 @@
     "typecheck": "npm --workspace apps/web run typecheck && npm --workspace apps/api run typecheck",
     "deploy:api": "npm --workspace apps/api run deploy",
     "deploy:web": "npm --workspace apps/web run deploy",
-    "deploy": "npm run deploy:api && npm run deploy:web"
+    "deploy": "npm run deploy:api && npm run deploy:web",
+    "test:e2e": "npm --workspace apps/mobile-client run test:e2e",
+    "test:perf": "npm --workspace apps/api run test:perf",
+    "test": "npm run test:e2e && npm run test:perf",
+    "deploy:staging": "bash scripts/deploy-staging.sh",
+    "deploy:production": "bash scripts/deploy-production.sh"
   },
   "devDependencies": {
     "babel-plugin-module-resolver": "^5.0.3",
