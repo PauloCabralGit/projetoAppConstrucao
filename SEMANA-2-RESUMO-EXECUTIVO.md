@@ -189,6 +189,7 @@ docs/
 
 **Timeline**: 2026-06-03 a 2026-06-05
 
+
 ### ⏳ US-013: Testes de Carga
 - [ ] 500 ratings carregam em < 1s
 - [ ] Infinite scroll: FPS > 55

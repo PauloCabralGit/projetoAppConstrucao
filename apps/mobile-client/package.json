@@ -13,6 +13,7 @@
     "@expo/vector-icons": "^14.0.0",
     "@supabase/supabase-js": "^2.49.0",
     "expo": "~54.0.33",
+    "expo-clipboard": "^56.0.3",
     "expo-constants": "~17.0.5",
     "expo-dev-client": "~6.0.21",
     "expo-image-picker": "~17.0.11",
