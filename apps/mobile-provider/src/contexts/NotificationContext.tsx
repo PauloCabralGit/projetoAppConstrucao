@@ -58,13 +58,26 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       ]);
     }
 
-    // Mensagens enviadas pelo cliente
+    const ts = Date.now();
+    const CATEGORY_LABELS: Record<string, string> = {
+      alvenaria: 'Alvenaria', hidraulica: 'Hidráulica', eletrica: 'Elétrica',
+      pintura: 'Pintura', piso: 'Piso', acabamento: 'Acabamento',
+    };
+
+    // Mensagens enviadas pelo cliente (apenas dos chamados do prestador)
     const msgCh = supabase
-      .channel(`provider-notif-msg-${userId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
+      .channel(`provider-notif-msg-${userId}-${ts}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, async (payload) => {
         const msg = payload.new as any;
         if (msg.sender_id === userId) return;
         if (msg.sender_role !== 'client') return;
+        // Verificar se o chamado pertence ao prestador
+        const { data: req } = await supabase
+          .from('service_requests')
+          .select('provider_user_id')
+          .eq('id', msg.request_id)
+          .maybeSingle();
+        if (!req || req.provider_user_id !== userId) return;
         push({
           type: 'message',
           title: '💬 Nova mensagem do cliente',
@@ -74,9 +87,9 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       })
       .subscribe();
 
-    // Novos chamados disponíveis (status requested)
+    // Novos chamados disponíveis (status requested) — campo correto: category
     const jobCh = supabase
-      .channel(`provider-notif-jobs-${userId}`)
+      .channel(`provider-notif-jobs-${userId}-${ts}`)
       .on('postgres_changes', {
         event: 'INSERT',
         schema: 'public',
@@ -87,15 +100,37 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         push({
           type: 'new_job',
           title: '🔔 Novo chamado disponível',
-          body: req.service_type ?? 'Novo serviço na sua área',
+          body: CATEGORY_LABELS[req.category] ?? req.category ?? 'Novo serviço na sua área',
           request_id: req.id,
         });
       })
       .subscribe();
 
+    // Chamado atualizado para o prestador (aceite de orçamento, pagamento, etc.)
+    const srCh = supabase
+      .channel(`provider-notif-sr-${userId}-${ts}`)
+      .on('postgres_changes', {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'service_requests',
+        filter: `provider_user_id=eq.${userId}`,
+      }, (payload) => {
+        const next = payload.new as any;
+        const prev = payload.old as any;
+        if (next.payment_status === 'confirmed' && prev.payment_status !== 'confirmed') {
+          push({
+            type: 'bid_accepted',
+            title: '💳 Pagamento recebido!',
+            body: `R$ ${Number(next.quote_amount ?? 0).toFixed(2)} — ${CATEGORY_LABELS[next.category] ?? next.category}`,
+            request_id: next.id,
+          });
+        }
+      })
+      .subscribe();
+
     // Lance aceito pelo cliente
     const bidCh = supabase
-      .channel(`provider-notif-bids-${userId}`)
+      .channel(`provider-notif-bids-${userId}-${ts}`)
       .on('postgres_changes', {
         event: 'UPDATE',
         schema: 'public',
@@ -117,6 +152,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     return () => {
       supabase.removeChannel(msgCh);
       supabase.removeChannel(jobCh);
+      supabase.removeChannel(srCh);
       supabase.removeChannel(bidCh);
     };
   }, [userId]);

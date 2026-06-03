@@ -142,7 +142,7 @@ export default function TrackingScreen() {
     loadBids();
     const cleanupRequest = subscribeToRequest();
     const bidsChannel = supabase
-      .channel(`bids-${id}`)
+      .channel(`bids-${id}-${Date.now()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'bids' }, (payload) => {
         if ((payload.new as any)?.request_id === id || (payload.old as any)?.request_id === id) {
           loadBids();
@@ -259,7 +259,7 @@ export default function TrackingScreen() {
 
   function subscribeToRequest() {
     const channel = supabase
-      .channel(`service_request_${id}`)
+      .channel(`service_request_${id}_${Date.now()}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'service_requests' },
@@ -292,7 +292,7 @@ export default function TrackingScreen() {
       .then(({ data }) => { if (data) setProviderLocation(data as ProviderLocation); });
 
     const channel = supabase
-      .channel(`provider_location_${providerUserId}`)
+      .channel(`provider_location_${providerUserId}_${Date.now()}`)
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'provider_locations', filter: `user_id=eq.${providerUserId}` },

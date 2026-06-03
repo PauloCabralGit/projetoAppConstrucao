@@ -149,7 +149,7 @@ export default function JobDetailScreen() {
 
   function subscribeToJob() {
     const channel = supabase
-      .channel(`provider_job_${id}`)
+      .channel(`provider_job_${id}_${Date.now()}`)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'service_requests', filter: `id=eq.${id}` },

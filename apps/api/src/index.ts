@@ -873,7 +873,7 @@ app.post("/v1/photos/upload", async (c) => {
 
   const filePath = `${body.request_id}/${body.photo_type}/${Date.now()}.jpg`;
 
-  const { error: storageError } = await db(c.env).storage
+  const { error: storageError, data: uploadData } = await db(c.env).storage
     .from("request-photos")
     .upload(filePath, bytes, { contentType: "image/jpeg", upsert: true });
 
@@ -881,7 +881,12 @@ app.post("/v1/photos/upload", async (c) => {
     return c.json({ message: `Erro no upload: ${storageError.message}` }, 500);
   }
 
-  const publicUrl = `${c.env.SUPABASE_URL}/storage/v1/object/public/request-photos/${filePath}`;
+  // Usar o método getPublicUrl do Supabase para obter a URL correta
+  const { data: publicData } = db(c.env).storage
+    .from("request-photos")
+    .getPublicUrl(filePath);
+
+  const publicUrl = publicData?.publicUrl || `${c.env.SUPABASE_URL}/storage/v1/object/public/request-photos/${filePath}`;
 
   const { error } = await db(c.env).from("request_photos").insert({
     request_id: body.request_id,
@@ -1520,6 +1525,23 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
       .update({ payment_status: "confirmed", payment_method: "card" })
       .eq("id", id);
 
+    // Criar split para o prestador imediatamente (cartão aprova na hora)
+    const { data: paymentRecord } = await adminDb
+      .from("payments")
+      .select("id")
+      .eq("mp_payment_id", String(mpPayment.id))
+      .maybeSingle();
+
+    if (paymentRecord && req.provider_user_id) {
+      await adminDb.from("provider_splits").upsert({
+        payment_id: paymentRecord.id,
+        provider_user_id: req.provider_user_id,
+        amount: providerAmount,
+        status: "transferred",
+        transferred_at: new Date().toISOString(),
+      }, { onConflict: "payment_id" });
+    }
+
     if (req.client_user_id) {
       await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento no cartão foi aprovado.");
     }
@@ -1589,6 +1611,24 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       .from("service_requests")
       .update({ payment_status: "confirmed", payment_method: "pix" })
       .eq("id", serviceRequestId);
+
+    // Atualizar registro de payment como aprovado e criar split para o prestador
+    const { data: paymentRecord } = await adminDb
+      .from("payments")
+      .update({ status: "approved", confirmed_at: new Date().toISOString() })
+      .eq("mp_payment_id", String(payment.id))
+      .select("id, provider_amount")
+      .maybeSingle();
+
+    if (paymentRecord && req.provider_user_id) {
+      await adminDb.from("provider_splits").upsert({
+        payment_id: paymentRecord.id,
+        provider_user_id: req.provider_user_id,
+        amount: paymentRecord.provider_amount,
+        status: "transferred",
+        transferred_at: new Date().toISOString(),
+      }, { onConflict: "payment_id" });
+    }
 
     if (req.client_user_id) {
       await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", "Seu Pix foi aprovado automaticamente.");
@@ -2301,12 +2341,56 @@ app.get("/v1/providers/:id/balance", async (c) => {
 
   const adminDb = db(c.env);
 
-  // Total recebido (splits transferred)
-  const { data: transferred } = await adminDb
+  // Fonte 1: splits explícitos (pagamentos via novo sistema)
+  const { data: splits } = await adminDb
     .from("provider_splits")
-    .select("amount")
+    .select("amount, status")
+    .eq("provider_user_id", providerId);
+
+  const totalFromSplits = (splits ?? [])
+    .filter((s: any) => s.status === "transferred")
+    .reduce((sum: number, s: any) => sum + Number(s.amount), 0);
+
+  const pendingFromSplits = (splits ?? [])
+    .filter((s: any) => s.status === "pending")
+    .reduce((sum: number, s: any) => sum + Number(s.amount), 0);
+
+  // Fonte 2: pagamentos confirmados antigos (sem split explícito)
+  // Calcula provider_amount = quote_amount * (1 - commission_rate)
+  const { data: sub } = await adminDb
+    .from("provider_subscriptions")
+    .select("commission_rate")
     .eq("provider_user_id", providerId)
-    .eq("status", "transferred");
+    .maybeSingle();
+  const commissionRate = Number(sub?.commission_rate ?? 0.10);
+
+  const { data: confirmedJobs } = await adminDb
+    .from("service_requests")
+    .select("quote_amount")
+    .eq("provider_user_id", providerId)
+    .eq("payment_status", "confirmed")
+    .not("quote_amount", "is", null);
+
+  // Verificar quais já têm split para não contar dobrado
+  const splitPaymentIds = new Set<string>();
+  if (splits && splits.length > 0) {
+    const { data: paymentRefs } = await adminDb
+      .from("provider_splits")
+      .select("payment_id")
+      .eq("provider_user_id", providerId);
+    const { data: relatedPayments } = await adminDb
+      .from("payments")
+      .select("id, service_request_id")
+      .in("id", (paymentRefs ?? []).map((p: any) => p.payment_id));
+    (relatedPayments ?? []).forEach((p: any) => splitPaymentIds.add(p.service_request_id));
+  }
+
+  const totalFromOldPayments = (confirmedJobs ?? [])
+    .filter((j: any) => !splitPaymentIds.has(j.id))
+    .reduce((sum: number, j: any) => {
+      const gross = Number(j.quote_amount ?? 0);
+      return sum + Math.round(gross * (1 - commissionRate) * 100) / 100;
+    }, 0);
 
   // Total sacado
   const { data: withdrawn } = await adminDb
@@ -2315,19 +2399,11 @@ app.get("/v1/providers/:id/balance", async (c) => {
     .eq("provider_user_id", providerId)
     .in("status", ["completed", "processing"]);
 
-  // Total aprovado ainda não repassado
-  const { data: approved } = await adminDb
-    .from("provider_splits")
-    .select("amount")
-    .eq("provider_user_id", providerId)
-    .eq("status", "pending");
-
-  const totalTransferred = (transferred ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
   const totalWithdrawn = (withdrawn ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
-  const totalPending = (approved ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
-  const available = Math.max(0, totalTransferred - totalWithdrawn);
+  const totalEarned = totalFromSplits + totalFromOldPayments;
+  const available = Math.max(0, totalEarned - totalWithdrawn);
 
-  return c.json({ available, pending: totalPending });
+  return c.json({ available, pending: pendingFromSplits });
 });
 
 // ── US-012: Solicitar saque via Pix ──────────────────────────────────────────

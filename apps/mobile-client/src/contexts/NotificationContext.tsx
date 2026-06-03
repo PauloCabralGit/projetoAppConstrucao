@@ -66,8 +66,10 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       ]);
     }
 
+    const ts = Date.now();
+
     const msgCh = supabase
-      .channel(`client-notif-msg-${userId}`)
+      .channel(`client-notif-msg-${userId}-${ts}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
         const msg = payload.new as any;
         if (msg.sender_id === userId) return;
@@ -81,30 +83,43 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       })
       .subscribe();
 
+    // Filtro correto: client_user_id (não client_id)
     const reqCh = supabase
-      .channel(`client-notif-req-${userId}`)
+      .channel(`client-notif-req-${userId}-${ts}`)
       .on('postgres_changes', {
         event: 'UPDATE',
         schema: 'public',
         table: 'service_requests',
-        filter: `client_id=eq.${userId}`,
+        filter: `client_user_id=eq.${userId}`,
       }, (payload) => {
         const next = payload.new as any;
         const prev = payload.old as any;
         if (next.status === prev.status) return;
+        const CATEGORY_LABELS: Record<string, string> = {
+          alvenaria: 'Alvenaria', hidraulica: 'Hidráulica', eletrica: 'Elétrica',
+          pintura: 'Pintura', piso: 'Piso', acabamento: 'Acabamento',
+        };
         push({
           type: 'status_update',
           title: STATUS_LABELS[next.status] ?? '📋 Pedido atualizado',
-          body: next.service_type ?? 'Atualização de status',
+          body: CATEGORY_LABELS[next.category] ?? next.category ?? 'Atualização de status',
           request_id: next.id,
         });
       })
       .subscribe();
 
+    // Filtra lances apenas dos chamados do cliente
     const bidCh = supabase
-      .channel(`client-notif-bids-${userId}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bids' }, (payload) => {
+      .channel(`client-notif-bids-${userId}-${ts}`)
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bids' }, async (payload) => {
         const bid = payload.new as any;
+        // Verificar se o chamado pertence ao cliente
+        const { data: req } = await supabase
+          .from('service_requests')
+          .select('client_user_id')
+          .eq('id', bid.request_id)
+          .maybeSingle();
+        if (!req || req.client_user_id !== userId) return;
         push({
           type: 'bid',
           title: '💰 Novo orçamento recebido',

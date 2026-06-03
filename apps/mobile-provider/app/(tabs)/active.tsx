@@ -130,10 +130,12 @@ export default function ActiveScreen() {
   }, [activeJob?.id, activeJob?.status]);
 
   // Realtime subscription for the active job
+  // Usa timestamp no nome do canal para evitar conflito ao re-subscrever o mesmo job
   useEffect(() => {
     if (!activeJob?.id) return;
+    const channelName = `active_job_${activeJob.id}_${Date.now()}`;
     const channel = supabase
-      .channel(`active_job_${activeJob.id}`)
+      .channel(channelName)
       .on(
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'service_requests', filter: `id=eq.${activeJob.id}` },
