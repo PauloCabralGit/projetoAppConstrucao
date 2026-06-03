@@ -724,6 +724,7 @@ app.put("/v1/profile", async (c) => {
     companyName?: string;
     specialties?: string;
     acceptsEmergencyJobs?: boolean;
+    accessibilitySpecialist?: boolean;
     status?: string;
     pixKey?: string;
   }>();
@@ -780,6 +781,7 @@ app.put("/v1/profile", async (c) => {
     const profileUpdates: Record<string, unknown> = {};
     if (body.companyName !== undefined) profileUpdates.company_name = body.companyName;
     if (body.acceptsEmergencyJobs !== undefined) profileUpdates.accepts_emergency_jobs = body.acceptsEmergencyJobs;
+    if (body.accessibilitySpecialist !== undefined) profileUpdates.accessibility_specialist = body.accessibilitySpecialist;
     if (body.status !== undefined) profileUpdates.status = body.status;
 
     if (Object.keys(profileUpdates).length > 0) {
@@ -816,6 +818,94 @@ app.put("/v1/profile", async (c) => {
   }
 
   return c.json({ message: "Perfil atualizado com sucesso." }, 200);
+});
+
+// ── Carregar perfil completo (service role, à prova de RLS) ─────────────────
+app.get("/v1/profile", async (c) => {
+  const userId = c.get("userId");
+  const adminDb = db(c.env);
+
+  // 1. Buscar linha do usuário
+  let { data: userRow } = await adminDb
+    .from("app_users")
+    .select("id, role, full_name, email, city, phone, pix_key, document_number")
+    .eq("id", userId)
+    .maybeSingle();
+
+  // 2. Self-heal: se não existe linha com id = auth.uid(), tentar reconciliar por email
+  if (!userRow) {
+    const { data: authUser } = await adminDb.auth.admin.getUserById(userId);
+    const email = authUser?.user?.email ?? "";
+    const meta = authUser?.user?.user_metadata ?? {};
+
+    if (email) {
+      // Existe uma linha órfã com o mesmo email mas id diferente?
+      const { data: orphan } = await adminDb
+        .from("app_users")
+        .select("id, role, full_name, email, city, phone, pix_key, document_number")
+        .eq("email", email)
+        .maybeSingle();
+
+      if (orphan) {
+        // Re-vincular: criar linha correta com o id do auth e remover a órfã
+        await adminDb.from("app_users").delete().eq("email", email).neq("id", userId);
+        const { data: fixed } = await adminDb.from("app_users").upsert({
+          id: userId,
+          role: orphan.role ?? meta.role ?? "client",
+          full_name: orphan.full_name,
+          email,
+          phone: orphan.phone ?? "",
+          city: orphan.city ?? "",
+          pix_key: orphan.pix_key ?? null,
+          document_number: orphan.document_number ?? "",
+        }, { onConflict: "id" }).select("id, role, full_name, email, city, phone, pix_key, document_number").maybeSingle();
+        userRow = fixed ?? null;
+      } else {
+        // Criar linha a partir dos metadados do auth
+        const { data: created } = await adminDb.from("app_users").upsert({
+          id: userId,
+          role: meta.role ?? "client",
+          full_name: meta.full_name ?? "",
+          email,
+          phone: "",
+          city: "",
+          document_number: "",
+        }, { onConflict: "id" }).select("id, role, full_name, email, city, phone, pix_key, document_number").maybeSingle();
+        userRow = created ?? null;
+      }
+    }
+  }
+
+  if (!userRow) return c.json({ message: "Perfil não encontrado." }, 404);
+
+  // 3. Buscar dados de prestador (se houver)
+  const { data: providerRow } = await adminDb
+    .from("provider_profiles")
+    .select("company_name, accepts_emergency_jobs, accessibility_specialist, status, provider_skills(skills(label))")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  const specialties = ((providerRow as any)?.provider_skills ?? [])
+    .map((ps: any) => ps?.skills?.label)
+    .filter(Boolean)
+    .join(", ");
+
+  return c.json({
+    profile: {
+      id: userRow.id,
+      role: userRow.role,
+      full_name: userRow.full_name ?? "",
+      email: userRow.email ?? "",
+      city: userRow.city ?? "",
+      phone: userRow.phone ?? "",
+      pix_key: userRow.pix_key ?? "",
+      company_name: (providerRow as any)?.company_name ?? "",
+      accepts_emergency_jobs: (providerRow as any)?.accepts_emergency_jobs ?? false,
+      accessibility_specialist: (providerRow as any)?.accessibility_specialist ?? false,
+      status: (providerRow as any)?.status ?? "available",
+      specialties,
+    },
+  });
 });
 
 app.post("/v1/auth/webauthn/register-options", async (c) => {

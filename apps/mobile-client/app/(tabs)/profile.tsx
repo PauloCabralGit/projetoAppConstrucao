@@ -49,19 +49,38 @@ export default function ProfileScreen() {
 
   async function loadProfile() {
     setLoading(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setLoading(false); return; }
+    const { data: { session } } = await supabase.auth.getSession();
+    const user = session?.user;
+    if (!session || !user) { setLoading(false); return; }
     setUserId(user.id);
 
-    const { data } = await supabase
-      .from('app_users')
-      .select('full_name, email, city, phone, role')
-      .eq('id', user.id)
-      .single();
+    try {
+      const res = await fetch(`${API_BASE}/profile`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      });
+      const raw = await res.text();
+      let data: any = null;
+      try { data = JSON.parse(raw); } catch { data = null; }
 
-    if (data) {
-      setProfile(data as UserProfile);
-    } else {
+      const p = data?.profile;
+      if (res.ok && p) {
+        setProfile({
+          full_name: p.full_name ?? user.user_metadata?.full_name ?? 'Usuário',
+          email: p.email ?? user.email ?? '',
+          city: p.city ?? '',
+          phone: p.phone ?? '',
+          role: p.role ?? user.user_metadata?.role ?? 'client',
+        });
+      } else {
+        setProfile({
+          full_name: user.user_metadata?.full_name ?? 'Usuário',
+          email: user.email ?? '',
+          city: '',
+          phone: '',
+          role: user.user_metadata?.role ?? 'client',
+        });
+      }
+    } catch {
       setProfile({
         full_name: user.user_metadata?.full_name ?? 'Usuário',
         email: user.email ?? '',
@@ -91,11 +110,32 @@ export default function ProfileScreen() {
     setSaveError('');
 
     try {
-      const { error } = await supabase
-        .from('app_users')
-        .update({ full_name: editName.trim(), phone: editPhone.trim(), city: editCity.trim() })
-        .eq('id', userId);
-      if (error) { setSaveError(error.message); setSaving(false); return; }
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) { setSaveError('Sessão expirada. Faça login novamente.'); setSaving(false); return; }
+
+      const res = await fetch(`${API_BASE}/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          userId,
+          fullName: editName.trim(),
+          phone: editPhone.trim(),
+          city: editCity.trim(),
+        }),
+      });
+
+      const raw = await res.text();
+      let data: any = null;
+      try { data = JSON.parse(raw); } catch { data = null; }
+
+      if (!res.ok) {
+        setSaveError(data?.message ?? 'Não foi possível salvar. Tente novamente.');
+        setSaving(false);
+        return;
+      }
 
       setProfile((prev) => prev
         ? { ...prev, full_name: editName.trim(), phone: editPhone.trim(), city: editCity.trim() }

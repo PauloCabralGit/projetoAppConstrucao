@@ -1,8 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { VendasModule } from "./crm/modules/Vendas";
+import { MarketingModule } from "./crm/modules/Marketing";
+import { FinanceiroModule } from "./crm/modules/Financeiro";
+import { RelatoriosModule } from "./crm/modules/Relatorios";
+import { JuridicoModule } from "./crm/modules/Juridico";
+import { FornecedoresModule } from "./crm/modules/Fornecedores";
+import { RHModule } from "./crm/modules/RH";
+import { SuporteModule } from "./crm/modules/Suporte";
+import { AgendaModule } from "./crm/modules/Agenda";
 
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
-type Page = "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags";
+type Page =
+  | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags"
+  | "vendas" | "marketing" | "financeiro" | "relatorios"
+  | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda";
 
 interface Overview {
   totalUsers: number;
@@ -1534,15 +1546,49 @@ function FeatureFlagsPage({ adminKey }: { adminKey: string }) {
   );
 }
 
-// ── Nav config ────────────────────────────────────────────────────────────────
-const NAV: { key: Page; label: string; icon: string }[] = [
-  { key: "dashboard", label: "Dashboard", icon: "🏠" },
-  { key: "requests", label: "Pedidos", icon: "📋" },
-  { key: "providers", label: "Prestadores", icon: "👷" },
-  { key: "users", label: "Usuários", icon: "👥" },
-  { key: "payments", label: "Pagamentos", icon: "💰" },
-  { key: "complaints", label: "Reclamações", icon: "⚠️" },
-  { key: "flags", label: "Feature Flags", icon: "🚩" },
+// ── Nav config (agrupada — CRM) ────────────────────────────────────────────────
+const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: string }[] }[] = [
+  {
+    label: "Operação do App",
+    items: [
+      { key: "dashboard", label: "Dashboard", icon: "🏠" },
+      { key: "requests", label: "Pedidos", icon: "📋" },
+      { key: "providers", label: "Prestadores", icon: "👷" },
+      { key: "users", label: "Usuários", icon: "👥" },
+      { key: "payments", label: "Pagamentos", icon: "💰" },
+      { key: "complaints", label: "Reclamações", icon: "⚠️" },
+      { key: "flags", label: "Feature Flags", icon: "🚩" },
+    ],
+  },
+  {
+    label: "Comercial",
+    items: [
+      { key: "vendas", label: "Vendas (CRM)", icon: "📈" },
+      { key: "marketing", label: "Marketing", icon: "📣" },
+    ],
+  },
+  {
+    label: "Financeiro",
+    items: [
+      { key: "financeiro", label: "Financeiro", icon: "🏦" },
+      { key: "relatorios", label: "Relatórios & BI", icon: "📊" },
+    ],
+  },
+  {
+    label: "Administrativo",
+    items: [
+      { key: "juridico", label: "Jurídico", icon: "⚖️" },
+      { key: "rh", label: "RH", icon: "🧑‍💼" },
+      { key: "fornecedores", label: "Fornecedores", icon: "🚚" },
+    ],
+  },
+  {
+    label: "Atendimento",
+    items: [
+      { key: "suporte", label: "Suporte", icon: "🎧" },
+      { key: "agenda", label: "Agenda & Tarefas", icon: "🗓️" },
+    ],
+  },
 ];
 
 // ── Root ──────────────────────────────────────────────────────────────────────
@@ -1634,30 +1680,35 @@ export function App() {
           </div>
         </div>
         <nav className="sidebar-nav">
-          {NAV.map((n) => (
-            <button
-              key={n.key}
-              className={`nav-item${page === n.key ? " active" : ""}`}
-              onClick={() => navigate(n.key)}
-            >
-              <span className="nav-icon">{n.icon}</span>
-              {n.label}
-              {(badges[n.key] ?? 0) > 0 && (
-                <span style={{
-                  marginLeft: "auto",
-                  background: "#e74c3c",
-                  color: "#fff",
-                  borderRadius: "10px",
-                  padding: "1px 7px",
-                  fontSize: 11,
-                  fontWeight: 700,
-                  minWidth: 18,
-                  textAlign: "center",
-                }}>
-                  {badges[n.key]}
-                </span>
-              )}
-            </button>
+          {NAV_GROUPS.map((group) => (
+            <div key={group.label}>
+              <div className="sidebar-group-label">{group.label}</div>
+              {group.items.map((n) => (
+                <button
+                  key={n.key}
+                  className={`nav-item${page === n.key ? " active" : ""}`}
+                  onClick={() => navigate(n.key)}
+                >
+                  <span className="nav-icon">{n.icon}</span>
+                  {n.label}
+                  {(badges[n.key] ?? 0) > 0 && (
+                    <span style={{
+                      marginLeft: "auto",
+                      background: "#e74c3c",
+                      color: "#fff",
+                      borderRadius: "10px",
+                      padding: "1px 7px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      minWidth: 18,
+                      textAlign: "center",
+                    }}>
+                      {badges[n.key]}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
         <button className="logout-btn" onClick={handleLogout}>
@@ -1674,6 +1725,15 @@ export function App() {
           {page === "payments" && <PaymentsPage adminKey={adminKey} />}
           {page === "complaints" && <ComplaintsPage adminKey={adminKey} />}
           {page === "flags" && <FeatureFlagsPage adminKey={adminKey} />}
+          {page === "vendas" && <VendasModule />}
+          {page === "marketing" && <MarketingModule />}
+          {page === "financeiro" && <FinanceiroModule adminKey={adminKey} />}
+          {page === "relatorios" && <RelatoriosModule adminKey={adminKey} />}
+          {page === "juridico" && <JuridicoModule />}
+          {page === "rh" && <RHModule />}
+          {page === "fornecedores" && <FornecedoresModule />}
+          {page === "suporte" && <SuporteModule />}
+          {page === "agenda" && <AgendaModule />}
         </div>
       </main>
     </div>
