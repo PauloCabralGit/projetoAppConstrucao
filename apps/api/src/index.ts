@@ -222,44 +222,93 @@ function operatorAllowed(user: any, area: string, method: string): boolean {
   return false;
 }
 
+// ── Auditoria ───────────────────────────────────────────────────────────────
+type AuditActor = { tipo: "master" | "operador"; id: string | null; nome: string; email: string };
+
+function extractRegistroId(path: string): string | null {
+  const segs = path.split("/").filter(Boolean);
+  const last = segs[segs.length - 1];
+  return last && /^[0-9a-f-]{8,}$/i.test(last) ? last : null;
+}
+
+async function recordAudit(
+  env: Bindings,
+  info: { actor: AuditActor; acao: string; area: string; recurso: string; status: number; ip: string },
+) {
+  try {
+    await db(env).from("crm_audit_log").insert({
+      actor_tipo: info.actor.tipo,
+      actor_id: info.actor.id,
+      actor_nome: info.actor.nome,
+      actor_email: info.actor.email,
+      acao: info.acao,
+      area: info.area,
+      recurso: info.recurso.replace(/^\/v1\/admin\//, ""),
+      registro_id: extractRegistroId(info.recurso),
+      status: info.status,
+      ip: info.ip,
+    });
+  } catch {
+    /* auditoria nunca deve quebrar a requisição */
+  }
+}
+
 // Middleware de autorização para todo /v1/admin/*: aceita a chave master
 // (dono) OU um token de sessão de operador (no mesmo header x-admin-key).
+// Registra em auditoria toda mutação bem-sucedida e tentativas negadas.
 app.use("/v1/admin/*", async (c, next) => {
   const path = c.req.path;
   const method = c.req.method;
   const key = c.req.header("x-admin-key") ?? "";
+  const ip = c.req.header("cf-connecting-ip") ?? "";
+
+  let actor: AuditActor | null = null;
 
   // Dono / master
   if (c.env.ADMIN_KEY && key === c.env.ADMIN_KEY) {
     c.set("authorized", true);
     c.set("isMaster", true);
-    return next();
-  }
-
-  // Operador via token de sessão
-  if (key) {
+    actor = { tipo: "master", id: null, nome: "Administrador", email: "" };
+  } else if (key) {
+    // Operador via token de sessão
     const adminDb = db(c.env);
     const { data: sess } = await adminDb
       .from("crm_sessions").select("user_id, expires_at").eq("token", key).maybeSingle();
-    if (sess && new Date(sess.expires_at) > new Date()) {
-      const { data: user } = await adminDb
-        .from("crm_users").select("id, nome, perfil, areas, ativo").eq("id", sess.user_id).maybeSingle();
-      if (user && user.ativo) {
-        c.set("crmUser", user);
-        // Gestão de acessos é exclusiva do master
-        if (path.startsWith("/v1/admin/crm-users")) {
-          return c.json({ message: "Apenas o administrador master gerencia acessos." }, 403);
-        }
-        // Overview liberado para qualquer operador autenticado (KPIs agregados)
-        if (path === "/v1/admin/overview") { c.set("authorized", true); return next(); }
-        if (operatorAllowed(user, areaForPath(path), method)) { c.set("authorized", true); return next(); }
-        return c.json({ message: "Sem permissão para esta área." }, 403);
-      }
+    if (!sess || new Date(sess.expires_at) <= new Date()) {
+      return c.json({ message: "Sessão inválida ou expirada." }, 401);
     }
-    return c.json({ message: "Sessão inválida ou expirada." }, 401);
+    const { data: user } = await adminDb
+      .from("crm_users").select("id, nome, email, perfil, areas, ativo").eq("id", sess.user_id).maybeSingle();
+    if (!user || !user.ativo) {
+      return c.json({ message: "Sessão inválida ou expirada." }, 401);
+    }
+    c.set("crmUser", user);
+    actor = { tipo: "operador", id: user.id, nome: user.nome, email: user.email };
+    const area = areaForPath(path);
+
+    if (path.startsWith("/v1/admin/crm-users")) {
+      await recordAudit(c.env, { actor, acao: "acesso negado", area: "acesso", recurso: path, status: 403, ip });
+      return c.json({ message: "Apenas o administrador master gerencia acessos." }, 403);
+    }
+    if (path === "/v1/admin/overview") {
+      c.set("authorized", true);
+    } else if (operatorAllowed(user, area, method)) {
+      c.set("authorized", true);
+    } else {
+      await recordAudit(c.env, { actor, acao: "acesso negado", area, recurso: path, status: 403, ip });
+      return c.json({ message: "Sem permissão para esta área." }, 403);
+    }
+  } else {
+    return c.json({ message: "Não autorizado." }, 401);
   }
 
-  return c.json({ message: "Não autorizado." }, 401);
+  await next();
+
+  // Registra mutações bem-sucedidas
+  if (actor && (method === "POST" || method === "PATCH" || method === "DELETE") && c.res.status < 400) {
+    const acao = method === "POST" ? "criou" : method === "DELETE" ? "excluiu" : "atualizou";
+    await recordAudit(c.env, { actor, acao, area: areaForPath(path), recurso: path, status: c.res.status, ip });
+  }
 });
 
 // ── MercadoPago webhook HMAC validation ───────────────────────────────────────
@@ -1907,6 +1956,26 @@ app.delete("/v1/admin/crm-users/:id", async (c) => {
   const { error } = await db(c.env).from("crm_users").delete().eq("id", c.req.param("id"));
   if (error) return c.json({ message: error.message }, 500);
   return c.json({ ok: true });
+});
+
+// ── Log de auditoria (somente master) ───────────────────────────────────────
+app.get("/v1/admin/audit", async (c) => {
+  if (!isMaster(c)) return c.json({ message: "Não autorizado." }, 403);
+  const area = c.req.query("area");
+  const actorId = c.req.query("actor");
+  const limit = Math.min(Number(c.req.query("limit") ?? 200), 500);
+
+  let q = db(c.env)
+    .from("crm_audit_log")
+    .select("id, actor_tipo, actor_nome, actor_email, acao, area, recurso, registro_id, status, ip, created_at")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (area && area !== "todas") q = q.eq("area", area);
+  if (actorId) q = q.eq("actor_id", actorId);
+
+  const { data, error } = await q;
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ items: data ?? [] });
 });
 
 // ── CRM: factory de CRUD admin (Vendas/Financeiro) ──────────────────────────

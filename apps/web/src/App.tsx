@@ -9,6 +9,7 @@ import { RHModule } from "./crm/modules/RH";
 import { SuporteModule } from "./crm/modules/Suporte";
 import { AgendaModule } from "./crm/modules/Agenda";
 import { AcessoModule } from "./crm/modules/Acesso";
+import { AuditoriaModule } from "./crm/modules/Auditoria";
 
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
@@ -16,7 +17,7 @@ type Page =
   | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags"
   | "vendas" | "marketing" | "financeiro" | "relatorios"
   | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda"
-  | "acesso";
+  | "acesso" | "auditoria";
 
 // Mapeia cada página para a "área" de permissão correspondente.
 const PAGE_AREA: Record<Page, string> = {
@@ -25,6 +26,7 @@ const PAGE_AREA: Record<Page, string> = {
   vendas: "vendas", marketing: "marketing", financeiro: "financeiro", relatorios: "relatorios",
   juridico: "juridico", rh: "rh", fornecedores: "fornecedores", suporte: "suporte", agenda: "agenda",
   acesso: "__master__",
+  auditoria: "__master__",
 };
 
 interface Overview {
@@ -1604,6 +1606,7 @@ const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: stri
     label: "Configurações",
     items: [
       { key: "acesso", label: "Controle de Acesso", icon: "🔒" },
+      { key: "auditoria", label: "Auditoria", icon: "📜" },
     ],
   },
 ];
@@ -1856,6 +1859,7 @@ export function App() {
           {page === "suporte" && <SuporteModule adminKey={adminKey} />}
           {page === "agenda" && <AgendaModule adminKey={adminKey} />}
           {page === "acesso" && isMaster && <AcessoModule adminKey={adminKey} />}
+          {page === "auditoria" && isMaster && <AuditoriaModule adminKey={adminKey} />}
         </div>
       </main>
     </div>
