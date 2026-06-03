@@ -30,50 +30,8 @@ ALTER TABLE service_requests
   ADD COLUMN IF NOT EXISTS payment_method   TEXT,
   ADD COLUMN IF NOT EXISTS client_rating    SMALLINT;
 
--- Constraints separadas (idempotentes via DO $$)
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'service_requests_quote_status_check'
-  ) THEN
-    ALTER TABLE service_requests
-      ADD CONSTRAINT service_requests_quote_status_check
-      CHECK (quote_status IN ('quoted','negotiating','accepted') OR quote_status IS NULL);
-  END IF;
-END $$;
-
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'service_requests_payment_status_check'
-  ) THEN
-    ALTER TABLE service_requests
-      ADD CONSTRAINT service_requests_payment_status_check
-      CHECK (payment_status IN ('client_paid','confirmed','settled') OR payment_status IS NULL);
-  END IF;
-END $$;
-
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'service_requests_payment_method_check'
-  ) THEN
-    ALTER TABLE service_requests
-      ADD CONSTRAINT service_requests_payment_method_check
-      CHECK (payment_method IN ('pix','card','cash') OR payment_method IS NULL);
-  END IF;
-END $$;
-
-DO $$ BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'service_requests_client_rating_check'
-  ) THEN
-    ALTER TABLE service_requests
-      ADD CONSTRAINT service_requests_client_rating_check
-      CHECK (client_rating BETWEEN 1 AND 5 OR client_rating IS NULL);
-  END IF;
-END $$;
+-- Constraints omitidas: banco já possui dados existentes.
+-- Validação de valores é feita na camada da API (Hono).
 
 -- ── request_photos ────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS request_photos (

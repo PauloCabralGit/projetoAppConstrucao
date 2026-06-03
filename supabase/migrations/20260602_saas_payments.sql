@@ -154,10 +154,27 @@ DROP POLICY IF EXISTS "locations_select_public" ON provider_locations;
 CREATE POLICY "locations_select_public" ON provider_locations
   FOR SELECT USING (true);
 
-DROP POLICY IF EXISTS "locations_upsert_own" ON provider_locations;
-CREATE POLICY "locations_upsert_own" ON provider_locations
-  FOR ALL USING (auth.uid() = provider_user_id)
-  WITH CHECK (auth.uid() = provider_user_id);
+-- Policy de escrita: descobre o nome da coluna PK dinamicamente
+DO $$
+DECLARE
+  pk_col TEXT;
+BEGIN
+  SELECT a.attname INTO pk_col
+  FROM pg_index i
+  JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+  WHERE i.indrelid = 'provider_locations'::regclass AND i.indisprimary
+  LIMIT 1;
+
+  IF pk_col IS NOT NULL THEN
+    DROP POLICY IF EXISTS "locations_upsert_own" ON provider_locations;
+    EXECUTE format(
+      'CREATE POLICY "locations_upsert_own" ON provider_locations
+       FOR ALL USING (auth.uid() = %I)
+       WITH CHECK (auth.uid() = %I)',
+      pk_col, pk_col
+    );
+  END IF;
+END $$;
 
 DO $$ BEGIN
   IF NOT EXISTS (
