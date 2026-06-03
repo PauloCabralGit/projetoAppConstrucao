@@ -6,35 +6,35 @@
       "id": 1,
       "title": "US-001: Criar schema de ratings (tabelas e índices)",
       "assignee": "backend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 2,
       "title": "US-002: Implementar API POST /ratings (criar avaliação)",
       "assignee": "backend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 3,
       "title": "US-003: Implementar API GET /ratings/:provider_id (listar avaliações)",
       "assignee": "backend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 4,
       "title": "US-004: Escrever SDD (Specification-Driven Development)",
       "assignee": "techlead",
-      "status": "todo",
+      "status": "done",
       "phase": "design"
     },
     {
       "id": 5,
       "title": "US-005: Registrar ADR-001 (decisão arquitetural)",
       "assignee": "techlead",
-      "status": "todo",
+      "status": "done",
       "phase": "design"
     },
     {
