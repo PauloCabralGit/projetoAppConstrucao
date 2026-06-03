@@ -14,6 +14,7 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
@@ -29,6 +30,7 @@ interface CompletedJob {
   budget_max: number | null;
   budget_min: number | null;
   quote_amount: number | null;
+  provider_amount: number | null; // valor real após comissão (tabela payments)
   created_at: string;
   city: string;
 }
@@ -53,7 +55,10 @@ function formatDate(dateStr: string): string {
   return new Date(dateStr).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' });
 }
 
+// US-018: usar provider_amount da tabela payments se disponível,
+// senão cair para quote_amount (valor bruto)
 function getJobValue(job: CompletedJob): number {
+  if (job.provider_amount != null && Number(job.provider_amount) > 0) return Number(job.provider_amount);
   if (job.quote_amount != null && Number(job.quote_amount) > 0) return Number(job.quote_amount);
   if (job.budget_max !== null && job.budget_max > 0) return job.budget_max;
   if (job.budget_min !== null && job.budget_min > 0) return job.budget_min;
@@ -97,7 +102,10 @@ export default function EarningsScreen() {
     const [jobsRes, nameRes] = await Promise.all([
       supabase
         .from('service_requests')
-        .select('id, category, budget_min, budget_max, quote_amount, created_at, city')
+        .select(`
+          id, category, budget_min, budget_max, quote_amount, created_at, city,
+          payments(provider_amount)
+        `)
         .eq('provider_user_id', user.id)
         .eq('status', 'completed')
         .order('created_at', { ascending: false })
@@ -105,7 +113,16 @@ export default function EarningsScreen() {
       supabase.from('app_users').select('full_name').eq('id', user.id).single(),
     ]);
 
-    if (!jobsRes.error && jobsRes.data) setJobs(jobsRes.data as CompletedJob[]);
+    if (!jobsRes.error && jobsRes.data) {
+      // Normalizar: extrair provider_amount do join com payments
+      const normalized = (jobsRes.data as any[]).map((r) => ({
+        ...r,
+        provider_amount: Array.isArray(r.payments) && r.payments.length > 0
+          ? r.payments[0].provider_amount
+          : null,
+      }));
+      setJobs(normalized as CompletedJob[]);
+    }
     if (!nameRes.error && nameRes.data) setProviderName((nameRes.data as any).full_name ?? '');
   }, []);
 
@@ -257,15 +274,24 @@ export default function EarningsScreen() {
             <View style={styles.headerBanner}>
               <View style={styles.headerTopRow}>
                 <Text style={styles.headerTitle}>Ganhos</Text>
-                <TouchableOpacity
-                  style={[styles.reportBtn, generatingReport && { opacity: 0.6 }]}
-                  onPress={handleGenerateReport}
-                  disabled={generatingReport}
-                >
-                  {generatingReport
-                    ? <ActivityIndicator size="small" color={Colors.cardWhite} />
-                    : <><Ionicons name="document-text-outline" size={15} color={Colors.cardWhite} /><Text style={styles.reportBtnText}>Relatório PDF</Text></>}
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', gap: 8 }}>
+                  <TouchableOpacity
+                    style={[styles.reportBtn, { backgroundColor: Colors.successGreen }]}
+                    onPress={() => router.push('/withdrawal')}
+                  >
+                    <Ionicons name="cash-outline" size={15} color={Colors.cardWhite} />
+                    <Text style={styles.reportBtnText}>Sacar</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.reportBtn, generatingReport && { opacity: 0.6 }]}
+                    onPress={handleGenerateReport}
+                    disabled={generatingReport}
+                  >
+                    {generatingReport
+                      ? <ActivityIndicator size="small" color={Colors.cardWhite} />
+                      : <><Ionicons name="document-text-outline" size={15} color={Colors.cardWhite} /><Text style={styles.reportBtnText}>PDF</Text></>}
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <View style={styles.summaryRow}>

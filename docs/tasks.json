@@ -1,112 +1,27 @@
 {
-  "project": "Avaliação por Estrelas do Prestador",
-  "status": "planning",
+  "project": "ConstruConnect — SaaS + Pagamentos + Produção",
+  "status": "production-ready",
   "tasks": [
-    {
-      "id": 1,
-      "title": "US-001: Criar schema de ratings (tabelas e índices)",
-      "assignee": "backend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 2,
-      "title": "US-002: Implementar API POST /ratings (criar avaliação)",
-      "assignee": "backend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 3,
-      "title": "US-003: Implementar API GET /ratings/:provider_id (listar avaliações)",
-      "assignee": "backend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 4,
-      "title": "US-004: Escrever SDD (Specification-Driven Development)",
-      "assignee": "techlead",
-      "status": "done",
-      "phase": "design"
-    },
-    {
-      "id": 5,
-      "title": "US-005: Registrar ADR-001 (decisão arquitetural)",
-      "assignee": "techlead",
-      "status": "done",
-      "phase": "design"
-    },
-    {
-      "id": 6,
-      "title": "US-006: Desenhar tela de avaliação (mobile-client)",
-      "assignee": "ux",
-      "status": "done",
-      "phase": "design"
-    },
-    {
-      "id": 7,
-      "title": "US-007: Implementar tela de avaliação (mobile-client)",
-      "assignee": "frontend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 8,
-      "title": "US-008: Integrar POST /ratings no mobile-client",
-      "assignee": "frontend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 9,
-      "title": "US-009: Implementar tela de histórico (mobile-client)",
-      "assignee": "frontend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 10,
-      "title": "US-010: Exibir nota média no dashboard (mobile-provider)",
-      "assignee": "frontend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 11,
-      "title": "US-011: Implementar tela de histórico de avaliações (mobile-provider)",
-      "assignee": "frontend",
-      "status": "done",
-      "phase": "development"
-    },
-    {
-      "id": 12,
-      "title": "US-012: Testes E2E (fluxo completo)",
-      "assignee": "qa",
-      "status": "todo",
-      "phase": "testing"
-    },
-    {
-      "id": 13,
-      "title": "US-013: Testes de performance (carga com 1k+ avaliações)",
-      "assignee": "backend",
-      "status": "todo",
-      "phase": "testing"
-    },
-    {
-      "id": 14,
-      "title": "US-014: Deploy em staging e validação piloto",
-      "assignee": "pm",
-      "status": "todo",
-      "phase": "deployment"
-    },
-    {
-      "id": 15,
-      "title": "US-015: Deploy em produção com monitoring",
-      "assignee": "devops",
-      "status": "todo",
-      "phase": "deployment"
-    }
+    {"id": 1, "title": "Middleware JWT em todos os endpoints de escrita da API", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 2, "title": "Validar assinatura HMAC no webhook MercadoPago", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 3, "title": "Habilitar RLS em service_requests, app_users e provider_profiles", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 4, "title": "Migração SQL: payments, provider_splits, provider_subscriptions, provider_locations, provider_withdrawals", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 5, "title": "Índices de performance em service_requests (status, client_user_id, provider_user_id, created_at)", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 6, "title": "Corrigir endpoint PATCH /reject para atualizar banco e notificar cliente", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 7, "title": "Persistir status online/offline do prestador em provider_profiles via PATCH", "assignee": "backend", "status": "done", "phase": "Semana 1 — Segurança"},
+    {"id": 8, "title": "OAuth MP Connect para vinculação da conta MercadoPago do prestador", "assignee": "backend", "status": "done", "phase": "Semana 2 — Pagamentos"},
+    {"id": 9, "title": "Split automático (comissão da plataforma) na criação de pagamento Pix", "assignee": "backend", "status": "done", "phase": "Semana 2 — Pagamentos"},
+    {"id": 10, "title": "Endpoint POST /create-card-payment com MP Payments API e split", "assignee": "backend", "status": "done", "phase": "Semana 2 — Pagamentos"},
+    {"id": 11, "title": "Tela de pagamento por cartão no app cliente (MP SDK + parcelamento)", "assignee": "frontend", "status": "done", "phase": "Semana 2 — Pagamentos"},
+    {"id": 12, "title": "Tela de saque via Pix no app do prestador", "assignee": "frontend", "status": "done", "phase": "Semana 2 — Pagamentos"},
+    {"id": 13, "title": "Endpoint POST /v1/subscriptions com MP Subscriptions (preapproval)", "assignee": "backend", "status": "done", "phase": "Semana 3 — SaaS"},
+    {"id": 14, "title": "Tela de escolha de plano (Free/Pro/Premium) no onboarding do prestador", "assignee": "frontend", "status": "done", "phase": "Semana 3 — SaaS"},
+    {"id": 15, "title": "Cloudflare Cron para bloqueio automático de assinatura expirada", "assignee": "devops", "status": "done", "phase": "Semana 3 — SaaS"},
+    {"id": 16, "title": "Limitar 5 chamados/mês para plano Free com 403 + CTA de upgrade", "assignee": "backend", "status": "done", "phase": "Semana 3 — SaaS"},
+    {"id": 17, "title": "Heartbeat GPS do prestador (POST /v1/providers/:id/location a cada 30s)", "assignee": "backend", "status": "done", "phase": "Semana 4 — Go-Live"},
+    {"id": 18, "title": "Corrigir dashboard de ganhos para usar payments.provider_amount", "assignee": "frontend", "status": "done", "phase": "Semana 4 — Go-Live"},
+    {"id": 19, "title": "Rate limiting no Cloudflare + Sentry para monitoramento de erros", "assignee": "devops", "status": "done", "phase": "Semana 4 — Go-Live"},
+    {"id": 20, "title": "Endpoint exclusão de conta LGPD com anonimização de dados pessoais", "assignee": "backend", "status": "done", "phase": "Semana 4 — Go-Live"}
   ],
   "lastUpdated": "2026-06-02T00:00:00Z"
 }

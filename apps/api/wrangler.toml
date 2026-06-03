@@ -5,9 +5,24 @@ compatibility_date = "2026-05-16"
 [vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-# Mercado Pago — substitua pela sua Access Token (sandbox começa com TEST-, produção com APP_USR-)
+# Mercado Pago — Access Token (sandbox: TEST-, produção: APP_USR-)
 MERCADOPAGO_ACCESS_TOKEN = ""
+# Mercado Pago — Webhook secret (gerado no painel MP > Webhooks)
+MERCADOPAGO_WEBHOOK_SECRET = ""
+# Mercado Pago — Chave pública (segura para expor no client)
+MERCADOPAGO_PUBLIC_KEY = ""
+# Mercado Pago — Marketplace OAuth (gerado no painel MP > Aplicações)
+MP_APP_ID = ""
+MP_APP_SECRET = ""
+MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
 
 [[kv_namespaces]]
 binding = "FEATURE_FLAGS"
 id = "17281fd061e64ac0b32c469a8044d980"
+
+# Sentry DSN para monitoramento de erros (obter em sentry.io)
+SENTRY_DSN = ""
+
+# Cron: verifica assinaturas expiradas todo dia às 03h BRT (06h UTC)
+[triggers]
+crons = ["0 6 * * *"]

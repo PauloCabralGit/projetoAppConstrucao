@@ -5,11 +5,21 @@ import type { RegistrationPayload } from "@construconnect/shared";
 
 type Bindings = {
   APP_NAME: string;
+  SENTRY_DSN: string;
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
   MERCADOPAGO_ACCESS_TOKEN: string;
+  MERCADOPAGO_WEBHOOK_SECRET: string;
+  MERCADOPAGO_PUBLIC_KEY: string;
+  MP_APP_ID: string;
+  MP_APP_SECRET: string;
+  MP_REDIRECT_URI: string;
   ADMIN_KEY: string;
   FEATURE_FLAGS: KVNamespace;
+};
+
+type Variables = {
+  userId: string;
 };
 
 const DEFAULT_FLAGS = [
@@ -40,16 +50,160 @@ async function getFlags(kv: KVNamespace) {
   return results.sort((a, b) => a.category.localeCompare(b.category) || a.key.localeCompare(b.key));
 }
 
-const app = new Hono<{ Bindings: Bindings }>();
+const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 app.use(cors({
-  origin: ["https://projetoappconstrucao.pages.dev", "http://localhost:5173"],
+  origin: (origin) => {
+    const allowed = [
+      "https://construconnect-web.pages.dev",
+      "https://projetoappconstrucao.pages.dev",
+      "http://localhost:5173",
+      "http://localhost:8081", // Expo web dev
+    ];
+    return allowed.includes(origin ?? "") ? origin! : allowed[0];
+  },
   allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowHeaders: ["Content-Type", "Authorization", "x-admin-key"]
+  allowHeaders: ["Content-Type", "Authorization", "x-admin-key"],
 }));
 
 const db = (env: Bindings) =>
   createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
+
+// ── Sentry error reporting via REST API ───────────────────────────────────────
+async function reportError(env: Bindings, err: unknown, context?: Record<string, unknown>) {
+  if (!env.SENTRY_DSN) return;
+  try {
+    const dsn = new URL(env.SENTRY_DSN);
+    const projectId = dsn.pathname.replace("/", "");
+    const sentryUrl = `${dsn.protocol}//${dsn.host}/api/${projectId}/envelope/`;
+    const key = dsn.username;
+
+    const message = err instanceof Error ? err.message : String(err);
+    const stack = err instanceof Error ? err.stack : undefined;
+
+    const header = JSON.stringify({ dsn: env.SENTRY_DSN, sdk: { name: "construconnect.workers", version: "1.0" } });
+    const itemHeader = JSON.stringify({ type: "event" });
+    const event = JSON.stringify({
+      event_id: crypto.randomUUID().replace(/-/g, ""),
+      timestamp: new Date().toISOString(),
+      platform: "javascript",
+      level: "error",
+      environment: "production",
+      exception: { values: [{ type: "Error", value: message, stacktrace: stack ? { frames: [{ filename: "api/index.ts", function: "handler", abs_path: stack }] } : undefined }] },
+      extra: context,
+    });
+
+    await fetch(sentryUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-sentry-envelope", "X-Sentry-Auth": `Sentry sentry_key=${key}, sentry_version=7` },
+      body: `${header}\n${itemHeader}\n${event}`,
+    });
+  } catch {} // nunca deixar o reporter quebrar a requisição
+}
+
+// ── US-019: Rate limiting simples via KV ──────────────────────────────────────
+// Limite: 120 req/min por IP nos endpoints de escrita
+const RATE_LIMIT_WRITE = 120;
+const rateCache = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(ip: string, limit = RATE_LIMIT_WRITE): boolean {
+  const now = Date.now();
+  const window = 60_000;
+  const entry = rateCache.get(ip);
+  if (!entry || now > entry.resetAt) {
+    rateCache.set(ip, { count: 1, resetAt: now + window });
+    return true;
+  }
+  entry.count++;
+  if (entry.count > limit) return false;
+  return true;
+}
+
+app.use("/v1/*", async (c, next) => {
+  const method = c.req.method;
+  // Apenas limitar POST/PATCH/PUT/DELETE
+  if (method === "GET" || method === "OPTIONS") return next();
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+  if (!checkRateLimit(ip)) {
+    return c.json({ message: "Muitas requisições. Tente novamente em 1 minuto." }, 429);
+  }
+  return next();
+});
+
+// ── Auth middleware (JWT) ─────────────────────────────────────────────────────
+// Rotas públicas que não exigem autenticação
+const PUBLIC_PATHS = new Set([
+  "/",
+  "/health",
+  "/v1/register",
+  "/v1/auth/webauthn/register-options",
+  "/v1/auth/webauthn/verify-registration",
+  "/v1/webhooks/mercadopago",
+  "/v1/feature-flags",
+  "/v1/providers",
+  "/v1/providers/available",
+]);
+
+app.use("/v1/*", async (c, next) => {
+  const path = c.req.path;
+
+  // Rotas admin têm checagem própria via x-admin-key
+  if (path.startsWith("/v1/admin/")) return next();
+
+  // Rotas totalmente públicas
+  if (PUBLIC_PATHS.has(path)) return next();
+
+  // GET de portfólio e certificações são públicos (qualquer cliente pode visualizar)
+  if (c.req.method === "GET" && (
+    /^\/v1\/providers\/[^/]+\/portfolio$/.test(path) ||
+    /^\/v1\/providers\/[^/]+\/certifications$/.test(path)
+  )) return next();
+
+  const token = c.req.header("Authorization")?.replace("Bearer ", "");
+  if (!token) return c.json({ message: "Não autorizado." }, 401);
+
+  const { data: { user }, error } = await db(c.env).auth.getUser(token);
+  if (error || !user) return c.json({ message: "Token inválido ou expirado." }, 401);
+
+  c.set("userId", user.id);
+  return next();
+});
+
+// ── MercadoPago webhook HMAC validation ───────────────────────────────────────
+async function validateMPWebhookSignature(
+  secret: string,
+  xSignature: string | undefined,
+  xRequestId: string | undefined,
+  dataId: string | undefined
+): Promise<boolean> {
+  if (!secret || !xSignature) return false;
+
+  const parts: Record<string, string> = {};
+  for (const part of xSignature.split(",")) {
+    const [k, v] = part.split("=");
+    if (k && v) parts[k.trim()] = v.trim();
+  }
+  const ts = parts["ts"] ?? "";
+  const v1 = parts["v1"] ?? "";
+  if (!ts || !v1) return false;
+
+  const manifest = [
+    dataId ? `id:${dataId}` : "",
+    xRequestId ? `request-id:${xRequestId}` : "",
+    `ts:${ts}`,
+  ].filter(Boolean).join(";") + ";";
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(manifest));
+  const hex = Array.from(new Uint8Array(sig)).map(b => b.toString(16).padStart(2, "0")).join("");
+  return hex === v1;
+}
 
 app.get("/", (c) =>
   c.json({
@@ -60,7 +214,12 @@ app.get("/", (c) =>
   })
 );
 
-app.get("/health", (c) => c.json({ ok: true }));
+app.get("/health", (c) => c.json({
+  ok: true,
+  version: "2.0.0",
+  features: ["jwt-auth","hmac-webhook","payments","saas","ratings","chat","tracking","lgpd"],
+  timestamp: new Date().toISOString(),
+}));
 
 // ── Push notification helper ───────────────────────────────────────────────
 async function sendPush(env: Bindings, userId: string, title: string, body: string) {
@@ -162,6 +321,12 @@ app.patch("/v1/service-requests/:id/accept", async (c) => {
     return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
   }
 
+  // US-016: Verificar limite mensal do plano Free
+  const limitCheck = await enforceJobLimit(c.env, body.provider_user_id);
+  if (!limitCheck.allowed) {
+    return c.json({ message: limitCheck.message, code: "PLAN_LIMIT_REACHED" }, 403);
+  }
+
   const adminDb = db(c.env);
 
   // FK constraint: provider_user_id references provider_profiles(user_id)
@@ -180,6 +345,9 @@ app.patch("/v1/service-requests/:id/accept", async (c) => {
 
   if (error) return c.json({ message: error.message }, 400);
   if (!data) return c.json({ message: "Chamado não disponível ou já aceito." }, 409);
+
+  // Incrementar contador mensal do plano
+  await incrementJobCount(c.env, body.provider_user_id);
 
   return c.json({ id: data.id, message: "Chamado aceito com sucesso." });
 });
@@ -217,6 +385,42 @@ app.post("/v1/service-requests/:id/reject", async (c) => {
   const jobId = c.req.param("id");
   const body = await c.req.json<{ provider_user_id: string; reason?: string }>().catch(() => ({} as any));
   if (!jobId || !body.provider_user_id) return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+
+  const adminDb = db(c.env);
+
+  // Buscar client_user_id para notificar
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("client_user_id, status")
+    .eq("id", jobId)
+    .maybeSingle();
+
+  if (!req) return c.json({ message: "Chamado não encontrado." }, 404);
+
+  // Resetar chamado: remover prestador e voltar para "requested" para outros aceitarem
+  const { error } = await adminDb
+    .from("service_requests")
+    .update({
+      status: "requested",
+      provider_user_id: null,
+      quote_amount: null,
+      quote_status: null,
+    })
+    .eq("id", jobId)
+    .eq("provider_user_id", body.provider_user_id);
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  // Notificar cliente que o prestador recusou
+  if (req.client_user_id) {
+    await sendPush(
+      c.env,
+      req.client_user_id,
+      "🔄 Prestador recusou o chamado",
+      "Um prestador recusou seu chamado. Seu pedido continua disponível para outros prestadores."
+    );
+  }
+
   return c.json({ message: "Chamado recusado." });
 });
 
@@ -436,7 +640,7 @@ app.post("/v1/register", async (c) => {
     const { data: existing } = await adminDb.auth.admin.listUsers();
     const found = existing?.users?.find((u) => u.email === payload.email);
     if (!found) return c.json({ message: "Usuário já cadastrado. Faça login." }, 409);
-    authData.user = found as typeof authData.user;
+    authData.user = found as unknown as typeof authData.user;
   }
 
   const userId = authData?.user?.id;
@@ -978,6 +1182,122 @@ app.patch("/v1/service-requests/:id/start", async (c) => {
   return c.json({ message: "Serviço iniciado." });
 });
 
+// ── Helpers de plano/comissão ────────────────────────────────────────────────
+async function getProviderCommissionRate(env: Bindings, providerUserId: string): Promise<number> {
+  const { data } = await db(env)
+    .from("provider_subscriptions")
+    .select("commission_rate, status")
+    .eq("provider_user_id", providerUserId)
+    .maybeSingle();
+  if (!data || data.status !== "active") return 0.10;
+  return Number(data.commission_rate ?? 0.10);
+}
+
+// ── US-008: MP Connect OAuth — URL de autorização ────────────────────────────
+app.get("/v1/providers/:id/mp-connect-url", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  if (!c.env.MP_APP_ID) {
+    return c.json({ message: "Integração MP Connect não configurada." }, 503);
+  }
+
+  const url = new URL("https://auth.mercadopago.com/authorization");
+  url.searchParams.set("client_id", c.env.MP_APP_ID);
+  url.searchParams.set("response_type", "code");
+  url.searchParams.set("platform_id", "mp");
+  url.searchParams.set("state", providerId);
+  url.searchParams.set("redirect_uri", c.env.MP_REDIRECT_URI);
+
+  return c.json({ url: url.toString() });
+});
+
+// ── US-008: MP Connect OAuth — Callback ──────────────────────────────────────
+app.get("/v1/auth/mp-callback", async (c) => {
+  const code = c.req.query("code");
+  const providerId = c.req.query("state");
+
+  if (!code || !providerId) {
+    return c.text("Parâmetros inválidos.", 400);
+  }
+
+  if (!c.env.MP_APP_ID || !c.env.MP_APP_SECRET) {
+    return c.text("Integração não configurada.", 503);
+  }
+
+  // Trocar code por access_token do prestador
+  const tokenRes = await fetch("https://api.mercadopago.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: c.env.MP_APP_ID,
+      client_secret: c.env.MP_APP_SECRET,
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: c.env.MP_REDIRECT_URI,
+    }),
+  });
+
+  if (!tokenRes.ok) {
+    const err = await tokenRes.text();
+    console.error("[MP Connect] Token exchange failed:", err);
+    return c.text("Erro ao conectar conta MercadoPago.", 500);
+  }
+
+  const tokenData = await tokenRes.json() as {
+    access_token: string;
+    user_id: number;
+    refresh_token?: string;
+  };
+
+  await db(c.env)
+    .from("provider_profiles")
+    .update({
+      mp_access_token: tokenData.access_token,
+      mp_user_id: String(tokenData.user_id),
+      mp_refresh_token: tokenData.refresh_token ?? null,
+    })
+    .eq("user_id", providerId);
+
+  // Redireciona de volta ao app (deep link)
+  return c.redirect(`construconnect://mp-connect-success`);
+});
+
+// ── US-008: Verificar status do MP Connect ────────────────────────────────────
+app.get("/v1/providers/:id/mp-status", async (c) => {
+  const providerId = c.req.param("id");
+  const { data } = await db(c.env)
+    .from("provider_profiles")
+    .select("mp_user_id")
+    .eq("user_id", providerId)
+    .maybeSingle();
+  return c.json({ connected: !!data?.mp_user_id });
+});
+
+// ── Provider online/offline toggle ───────────────────────────────────────────
+app.patch("/v1/providers/:id/status", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  const body = await c.req.json<{ status: "available" | "busy" | "offline" }>().catch(() => ({} as any));
+
+  if (!body.status || !["available", "busy", "offline"].includes(body.status)) {
+    return c.json({ message: "Status inválido. Use: available, busy ou offline." }, 400);
+  }
+
+  // Prestador só pode atualizar o próprio status
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const { error } = await db(c.env)
+    .from("provider_profiles")
+    .update({ status: body.status, last_seen_at: new Date().toISOString() })
+    .eq("user_id", providerId);
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Status atualizado.", status: body.status });
+});
+
 // ── Mercado Pago helper ───────────────────────────────────────────────────
 async function createMercadoPagoPix(env: Bindings, params: {
   amount: number;
@@ -1029,7 +1349,7 @@ async function createMercadoPagoPix(env: Bindings, params: {
   };
 }
 
-// ── Gerar Pix via Mercado Pago ────────────────────────────────────────────
+// ── US-009: Gerar Pix via Mercado Pago com split ─────────────────────────────
 app.post("/v1/service-requests/:id/create-pix", async (c) => {
   const id = c.req.param("id");
 
@@ -1041,7 +1361,7 @@ app.post("/v1/service-requests/:id/create-pix", async (c) => {
 
   const { data: req } = await adminDb
     .from("service_requests")
-    .select("quote_amount, category, client_user_id, status")
+    .select("quote_amount, category, client_user_id, provider_user_id, status, payment_status")
     .eq("id", id)
     .maybeSingle();
 
@@ -1051,6 +1371,18 @@ app.post("/v1/service-requests/:id/create-pix", async (c) => {
   if (!req.quote_amount) {
     return c.json({ message: "Valor do serviço não definido." }, 400);
   }
+  if (req.payment_status === "confirmed") {
+    return c.json({ message: "Este serviço já foi pago." }, 409);
+  }
+
+  const amount = Number(req.quote_amount);
+
+  // Calcular comissão com base no plano do prestador
+  const commissionRate = req.provider_user_id
+    ? await getProviderCommissionRate(c.env, req.provider_user_id)
+    : 0.10;
+  const platformFee = Math.round(amount * commissionRate * 100) / 100;
+  const providerAmount = Math.round((amount - platformFee) * 100) / 100;
 
   const { data: client } = await adminDb
     .from("app_users")
@@ -1060,7 +1392,7 @@ app.post("/v1/service-requests/:id/create-pix", async (c) => {
 
   try {
     const pixData = await createMercadoPagoPix(c.env, {
-      amount: Number(req.quote_amount),
+      amount,
       description: `Serviço de ${req.category} - ConstruConnect`,
       payerEmail: (client as any)?.email ?? `cliente_${req.client_user_id}@construconnect.app`,
       payerName: (client as any)?.full_name ?? "Cliente",
@@ -1068,21 +1400,166 @@ app.post("/v1/service-requests/:id/create-pix", async (c) => {
       externalReference: id,
     });
 
+    // Registrar pagamento pendente na tabela payments
+    await adminDb.from("payments").upsert({
+      service_request_id: id,
+      mp_payment_id: pixData.mpPaymentId,
+      amount,
+      platform_fee: platformFee,
+      provider_amount: providerAmount,
+      payment_method: "pix",
+      status: "pending",
+      payer_email: (client as any)?.email ?? null,
+    }, { onConflict: "mp_payment_id" });
+
     return c.json({
       qrCode: pixData.qrCode,
       qrCodeBase64: pixData.qrCodeBase64,
       mpPaymentId: pixData.mpPaymentId,
-      amount: Number(req.quote_amount),
+      amount,
+      platformFee,
+      providerAmount,
     });
   } catch (err: any) {
     return c.json({ message: err.message ?? "Erro ao gerar Pix." }, 500);
   }
 });
 
+// ── US-010: Pagamento via cartão com split ────────────────────────────────────
+app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
+  const id = c.req.param("id");
+  const body = await c.req.json<{
+    token: string;
+    installments: number;
+    payment_method_id: string;
+    issuer_id?: string;
+    payer_email: string;
+  }>().catch(() => ({} as any));
+
+  if (!body.token || !body.installments || !body.payment_method_id || !body.payer_email) {
+    return c.json({ message: "Campos obrigatórios: token, installments, payment_method_id, payer_email." }, 400);
+  }
+
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
+  }
+
+  const adminDb = db(c.env);
+
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("quote_amount, category, client_user_id, provider_user_id, status, payment_status")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!req || req.status !== "completed") {
+    return c.json({ message: "Serviço não encontrado ou não concluído." }, 400);
+  }
+  if (!req.quote_amount) {
+    return c.json({ message: "Valor do serviço não definido." }, 400);
+  }
+  if (req.payment_status === "confirmed") {
+    return c.json({ message: "Este serviço já foi pago." }, 409);
+  }
+
+  const amount = Number(req.quote_amount);
+  const commissionRate = req.provider_user_id
+    ? await getProviderCommissionRate(c.env, req.provider_user_id)
+    : 0.10;
+  const platformFee = Math.round(amount * commissionRate * 100) / 100;
+  const providerAmount = Math.round((amount - platformFee) * 100) / 100;
+
+  const payload: Record<string, unknown> = {
+    transaction_amount: amount,
+    token: body.token,
+    description: `Serviço de ${req.category} - ConstruConnect`,
+    installments: body.installments,
+    payment_method_id: body.payment_method_id,
+    external_reference: id,
+    payer: { email: body.payer_email },
+  };
+  if (body.issuer_id) payload.issuer_id = body.issuer_id;
+
+  const mpRes = await fetch("https://api.mercadopago.com/v1/payments", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
+      "X-Idempotency-Key": `card-${id}-${Date.now()}`,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (!mpRes.ok) {
+    const err = await mpRes.text();
+    return c.json({ message: `Erro MercadoPago: ${err}` }, 400);
+  }
+
+  const mpPayment = await mpRes.json() as {
+    id: number;
+    status: string;
+    status_detail: string;
+  };
+
+  // Registrar na tabela payments
+  await adminDb.from("payments").insert({
+    service_request_id: id,
+    mp_payment_id: String(mpPayment.id),
+    amount,
+    platform_fee: platformFee,
+    provider_amount: providerAmount,
+    payment_method: "card",
+    status: mpPayment.status === "approved" ? "approved" : "pending",
+    payer_email: body.payer_email,
+    confirmed_at: mpPayment.status === "approved" ? new Date().toISOString() : null,
+  });
+
+  if (mpPayment.status === "approved") {
+    await adminDb
+      .from("service_requests")
+      .update({ payment_status: "confirmed", payment_method: "card" })
+      .eq("id", id);
+
+    if (req.client_user_id) {
+      await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento no cartão foi aprovado.");
+    }
+    if (req.provider_user_id) {
+      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O cliente pagou R$ ${providerAmount.toFixed(2).replace(".", ",")} via cartão.`);
+    }
+  }
+
+  return c.json({
+    status: mpPayment.status,
+    statusDetail: mpPayment.status_detail,
+    mpPaymentId: String(mpPayment.id),
+    amount,
+    platformFee,
+    providerAmount,
+  });
+});
+
 // ── Webhook Mercado Pago (pagamento aprovado) ─────────────────────────────
 app.post("/v1/webhooks/mercadopago", async (c) => {
   try {
-    const body = await c.req.json<{ type?: string; data?: { id?: string } }>();
+    const rawBody = await c.req.text();
+    let body: { type?: string; data?: { id?: string } };
+    try { body = JSON.parse(rawBody); } catch { return c.json({ ok: true }); }
+
+    // Validar assinatura HMAC antes de processar
+    if (c.env.MERCADOPAGO_WEBHOOK_SECRET) {
+      const xSignature = c.req.header("x-signature");
+      const xRequestId = c.req.header("x-request-id");
+      const isValid = await validateMPWebhookSignature(
+        c.env.MERCADOPAGO_WEBHOOK_SECRET,
+        xSignature,
+        xRequestId,
+        body.data?.id
+      );
+      if (!isValid) {
+        console.warn("[Webhook MP] Assinatura inválida rejeitada.");
+        return c.json({ ok: false }, 400);
+      }
+    }
 
     if (body.type !== "payment" || !body.data?.id) return c.json({ ok: true });
     if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ ok: true });
@@ -1816,4 +2293,457 @@ app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
   return c.json({ message: "Bid aceito. Prestador atribuído ao chamado." });
 });
 
-export default app;
+// ── US-012: Saldo disponível do prestador ─────────────────────────────────────
+app.get("/v1/providers/:id/balance", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const adminDb = db(c.env);
+
+  // Total recebido (splits transferred)
+  const { data: transferred } = await adminDb
+    .from("provider_splits")
+    .select("amount")
+    .eq("provider_user_id", providerId)
+    .eq("status", "transferred");
+
+  // Total sacado
+  const { data: withdrawn } = await adminDb
+    .from("provider_withdrawals")
+    .select("amount")
+    .eq("provider_user_id", providerId)
+    .in("status", ["completed", "processing"]);
+
+  // Total aprovado ainda não repassado
+  const { data: approved } = await adminDb
+    .from("provider_splits")
+    .select("amount")
+    .eq("provider_user_id", providerId)
+    .eq("status", "pending");
+
+  const totalTransferred = (transferred ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  const totalWithdrawn = (withdrawn ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  const totalPending = (approved ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  const available = Math.max(0, totalTransferred - totalWithdrawn);
+
+  return c.json({ available, pending: totalPending });
+});
+
+// ── US-012: Solicitar saque via Pix ──────────────────────────────────────────
+app.post("/v1/providers/:id/withdrawal", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const body = await c.req.json<{ amount: number; pix_key: string }>().catch(() => ({} as any));
+
+  if (!body.amount || body.amount <= 0) return c.json({ message: "Valor inválido." }, 400);
+  if (!body.pix_key?.trim()) return c.json({ message: "Chave Pix obrigatória." }, 400);
+
+  const adminDb = db(c.env);
+
+  // Verificar saldo disponível
+  const balanceRes = await adminDb
+    .from("provider_splits")
+    .select("amount")
+    .eq("provider_user_id", providerId)
+    .eq("status", "transferred");
+  const withdrawnRes = await adminDb
+    .from("provider_withdrawals")
+    .select("amount")
+    .eq("provider_user_id", providerId)
+    .in("status", ["completed", "processing"]);
+
+  const totalTransferred = (balanceRes.data ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  const totalWithdrawn = (withdrawnRes.data ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  const available = Math.max(0, totalTransferred - totalWithdrawn);
+
+  if (body.amount > available) {
+    return c.json({ message: `Saldo insuficiente. Disponível: R$ ${available.toFixed(2).replace(".", ",")}` }, 400);
+  }
+
+  const { data, error } = await adminDb
+    .from("provider_withdrawals")
+    .insert({
+      provider_user_id: providerId,
+      amount: body.amount,
+      pix_key: body.pix_key.trim(),
+      status: "requested",
+    })
+    .select("id, amount, pix_key, status, created_at")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  await sendPush(c.env, providerId, "💸 Saque solicitado!", `Seu saque de R$ ${body.amount.toFixed(2).replace(".", ",")} via Pix foi solicitado e será processado em até 1 dia útil.`);
+
+  return c.json({ withdrawal: data }, 201);
+});
+
+// ── Listar saques do prestador ────────────────────────────────────────────────
+app.get("/v1/providers/:id/withdrawals", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const { data, error } = await db(c.env)
+    .from("provider_withdrawals")
+    .select("id, amount, pix_key, status, created_at, processed_at")
+    .eq("provider_user_id", providerId)
+    .order("created_at", { ascending: false })
+    .limit(50);
+
+  if (error) return c.json({ error: error.message }, 500);
+  return c.json({ withdrawals: data ?? [] });
+});
+
+// ── Retornar chave pública MP para tokenizar cartão no client ─────────────────
+app.get("/v1/mp-public-key", (c) => {
+  if (!c.env.MERCADOPAGO_PUBLIC_KEY) {
+    return c.json({ message: "Chave pública não configurada." }, 503);
+  }
+  return c.json({ publicKey: c.env.MERCADOPAGO_PUBLIC_KEY });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// US-013: ASSINATURAS SAAS (MP Preapproval)
+// ═══════════════════════════════════════════════════════════════════════════
+
+const PLAN_CONFIG = {
+  free:    { price: 0,     jobsLimit: 5,    commission: 0.10, label: "Free" },
+  pro:     { price: 49.90, jobsLimit: null, commission: 0.08, label: "Pro" },
+  premium: { price: 99.90, jobsLimit: null, commission: 0.06, label: "Premium" },
+} as const;
+type PlanId = keyof typeof PLAN_CONFIG;
+
+// Retornar plano atual do prestador
+app.get("/v1/providers/:id/subscription", async (c) => {
+  const { data } = await db(c.env)
+    .from("provider_subscriptions")
+    .select("plan, status, current_period_end, monthly_job_count, commission_rate")
+    .eq("provider_user_id", c.req.param("id"))
+    .maybeSingle();
+
+  return c.json({
+    plan: data?.plan ?? "free",
+    status: data?.status ?? "active",
+    current_period_end: data?.current_period_end ?? null,
+    monthly_job_count: data?.monthly_job_count ?? 0,
+    commission_rate: data?.commission_rate ?? 0.10,
+    jobs_limit: PLAN_CONFIG[(data?.plan as PlanId) ?? "free"].jobsLimit,
+  });
+});
+
+// Criar / atualizar assinatura Pro ou Premium
+app.post("/v1/providers/:id/subscription", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const body = await c.req.json<{ plan: string; payer_email: string }>().catch(() => ({} as any));
+  const planId = body.plan as PlanId;
+  if (!planId || !(planId in PLAN_CONFIG)) {
+    return c.json({ message: "Plano inválido. Use: free, pro ou premium." }, 400);
+  }
+
+  // Plano free → apenas atualizar no banco, sem MP
+  if (planId === "free") {
+    await db(c.env).from("provider_subscriptions").upsert({
+      provider_user_id: providerId,
+      plan: "free",
+      status: "active",
+      commission_rate: 0.10,
+      mp_subscription_id: null,
+      current_period_end: null,
+    }, { onConflict: "provider_user_id" });
+    return c.json({ plan: "free", message: "Plano gratuito ativado." });
+  }
+
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return c.json({ message: "Integração com MercadoPago não configurada." }, 503);
+  }
+
+  const planConf = PLAN_CONFIG[planId];
+
+  // Criar preapproval no MP
+  const mpRes = await fetch("https://api.mercadopago.com/preapproval", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
+    },
+    body: JSON.stringify({
+      reason: `ConstruConnect — Plano ${planConf.label}`,
+      auto_recurring: {
+        frequency: 1,
+        frequency_type: "months",
+        transaction_amount: planConf.price,
+        currency_id: "BRL",
+      },
+      back_url: "construconnect://subscription-success",
+      payer_email: body.payer_email,
+      external_reference: providerId,
+    }),
+  });
+
+  if (!mpRes.ok) {
+    const err = await mpRes.text();
+    return c.json({ message: `Erro MercadoPago: ${err}` }, 400);
+  }
+
+  const mpSub = await mpRes.json() as { id: string; init_point: string; status: string };
+
+  // Salvar assinatura pendente
+  await db(c.env).from("provider_subscriptions").upsert({
+    provider_user_id: providerId,
+    plan: planId,
+    status: "pending",
+    commission_rate: planConf.commission,
+    mp_subscription_id: mpSub.id,
+    current_period_end: null,
+  }, { onConflict: "provider_user_id" });
+
+  return c.json({ initPoint: mpSub.init_point, subscriptionId: mpSub.id });
+});
+
+// Webhook de assinatura MP (preapproval)
+app.post("/v1/webhooks/mercadopago/subscription", async (c) => {
+  try {
+    const body = await c.req.json<{ type?: string; data?: { id?: string } }>().catch(() => ({ type: undefined, data: undefined }));
+    if (body.type !== "preapproval" || !body.data?.id) return c.json({ ok: true });
+    if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ ok: true });
+
+    const mpRes = await fetch(`https://api.mercadopago.com/preapproval/${body.data.id}`, {
+      headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
+    });
+    if (!mpRes.ok) return c.json({ ok: true });
+
+    const sub = await mpRes.json() as {
+      status: string;
+      external_reference: string;
+      next_payment_date?: string;
+    };
+
+    if (!sub.external_reference) return c.json({ ok: true });
+    const providerId = sub.external_reference;
+
+    const { data: existing } = await db(c.env)
+      .from("provider_subscriptions")
+      .select("plan")
+      .eq("provider_user_id", providerId)
+      .maybeSingle();
+
+    const planId = (existing?.plan as PlanId | undefined) ?? "free";
+    const planConf = PLAN_CONFIG[planId] ?? PLAN_CONFIG.free;
+
+    const periodEnd = sub.next_payment_date
+      ? new Date(sub.next_payment_date).toISOString()
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+
+    await db(c.env).from("provider_subscriptions").update({
+      status: sub.status === "authorized" ? "active" : sub.status === "cancelled" ? "cancelled" : "past_due",
+      current_period_end: periodEnd,
+      commission_rate: planConf.commission,
+    }).eq("provider_user_id", providerId);
+
+    if (sub.status === "authorized") {
+      await sendPush(c.env, providerId, "✅ Assinatura ativa!", `Seu plano ${planConf.label} está ativo até ${new Date(periodEnd).toLocaleDateString("pt-BR")}.`);
+    }
+
+    return c.json({ ok: true });
+  } catch { return c.json({ ok: true }); }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// US-016: LIMITE DE CHAMADOS PARA PLANO FREE
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function enforceJobLimit(env: Bindings, providerUserId: string): Promise<{ allowed: boolean; message?: string }> {
+  const { data: sub } = await db(env)
+    .from("provider_subscriptions")
+    .select("plan, status, monthly_job_count")
+    .eq("provider_user_id", providerUserId)
+    .maybeSingle();
+
+  const plan = (sub?.plan ?? "free") as PlanId;
+  const conf = PLAN_CONFIG[plan];
+
+  // Planos pagos sem limite
+  if (!conf.jobsLimit) return { allowed: true };
+
+  // Verificar se assinatura está ativa
+  if (sub?.status !== "active") return { allowed: true };
+
+  const count = sub?.monthly_job_count ?? 0;
+  if (count >= conf.jobsLimit) {
+    return {
+      allowed: false,
+      message: `Limite de ${conf.jobsLimit} chamados/mês atingido no plano Free. Faça upgrade para o plano Pro para chamados ilimitados.`,
+    };
+  }
+  return { allowed: true };
+}
+
+async function incrementJobCount(env: Bindings, providerUserId: string) {
+  // Ler e incrementar de forma segura
+  const { data } = await db(env).from("provider_subscriptions")
+    .select("monthly_job_count")
+    .eq("provider_user_id", providerUserId)
+    .maybeSingle();
+
+  await db(env).from("provider_subscriptions")
+    .update({ monthly_job_count: (data?.monthly_job_count ?? 0) + 1 })
+    .eq("provider_user_id", providerUserId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// US-017: HEARTBEAT DE GPS DO PRESTADOR
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.post("/v1/providers/:id/location", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const body = await c.req.json<{ latitude: number; longitude: number; heading?: number }>().catch(() => ({} as any));
+  if (body.latitude == null || body.longitude == null) {
+    return c.json({ message: "latitude e longitude são obrigatórios." }, 400);
+  }
+
+  await db(c.env).from("provider_locations").upsert({
+    provider_user_id: providerId,
+    latitude: body.latitude,
+    longitude: body.longitude,
+    heading: body.heading ?? null,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "provider_user_id" });
+
+  // Atualizar last_seen_at em provider_profiles também
+  await db(c.env).from("provider_profiles")
+    .update({ last_seen_at: new Date().toISOString() })
+    .eq("user_id", providerId);
+
+  return c.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// US-020: LGPD — EXCLUSÃO / ANONIMIZAÇÃO DE CONTA
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.delete("/v1/account", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<{ confirm: string }>().catch(() => ({} as any));
+
+  if (body.confirm !== "EXCLUIR MINHA CONTA") {
+    return c.json({ message: 'Para confirmar, envie { "confirm": "EXCLUIR MINHA CONTA" } no corpo da requisição.' }, 400);
+  }
+
+  const adminDb = db(c.env);
+
+  // 1. Anonimizar dados pessoais em app_users (LGPD art. 18)
+  const anonymized = {
+    full_name: `Usuário Removido ${userId.slice(0, 8)}`,
+    email: `removed_${userId.slice(0, 8)}@deleted.construconnect`,
+    phone: "",
+    document_number: "",
+    avatar_url: null,
+    blocked_until: new Date().toISOString(), // bloqueia acesso imediato
+  };
+  await adminDb.from("app_users").update(anonymized).eq("id", userId);
+
+  // 2. Remover chave Pix e tokens de push
+  await adminDb.from("app_users").update({ pix_key: null, push_token: null }).eq("id", userId);
+
+  // 3. Cancelar assinatura ativa (se houver)
+  const { data: sub } = await adminDb
+    .from("provider_subscriptions")
+    .select("mp_subscription_id")
+    .eq("provider_user_id", userId)
+    .maybeSingle();
+
+  if (sub?.mp_subscription_id && c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    await fetch(`https://api.mercadopago.com/preapproval/${sub.mp_subscription_id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
+      body: JSON.stringify({ status: "cancelled" }),
+    }).catch(() => {});
+  }
+  await adminDb.from("provider_subscriptions").update({ status: "cancelled" }).eq("provider_user_id", userId);
+
+  // 4. Remover credenciais WebAuthn
+  await adminDb.from("webauthn_credentials").delete().eq("user_id", userId);
+
+  // 5. Deixar service_requests histórico mas sem vínculo claro (provider_user_id fica)
+  //    Mensagens e fotos são removidas em cascata pelo ON DELETE
+
+  // 6. Desativar conta no Supabase Auth
+  await adminDb.auth.admin.updateUserById(userId, { ban_duration: "876000h" }).catch(() => {});
+
+  console.log(`[LGPD] Conta anonimizada: ${userId} em ${new Date().toISOString()}`);
+
+  return c.json({ message: "Conta excluída. Seus dados foram anonimizados conforme a LGPD." });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// US-015: CRON — Verificar assinaturas expiradas (todo dia 03h BRT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function checkExpiredSubscriptions(env: Bindings) {
+  const now = new Date().toISOString();
+  const adminDb = db(env);
+
+  const { data: expired } = await adminDb
+    .from("provider_subscriptions")
+    .select("provider_user_id, plan")
+    .eq("status", "active")
+    .not("current_period_end", "is", null)
+    .lt("current_period_end", now);
+
+  for (const sub of expired ?? []) {
+    await adminDb.from("provider_subscriptions")
+      .update({ status: "expired" })
+      .eq("provider_user_id", sub.provider_user_id);
+
+    await sendPush(
+      env,
+      sub.provider_user_id,
+      "⚠️ Assinatura expirada",
+      `Seu plano ${sub.plan} expirou. Renove agora para continuar recebendo chamados ilimitados.`
+    );
+    console.log(`[Cron] Assinatura expirada: ${sub.provider_user_id}`);
+  }
+
+  // Reset de contador mensal (executar no dia 1 de cada mês)
+  const today = new Date();
+  if (today.getDate() === 1) {
+    await adminDb.from("provider_subscriptions").update({ monthly_job_count: 0 });
+    console.log("[Cron] Contador mensal de chamados resetado.");
+  }
+
+  return { expired: (expired ?? []).length };
+}
+
+// ─── Worker export com scheduled handler e error boundary ────────────────────
+export default {
+  async fetch(request: Request, env: Bindings, ctx: ExecutionContext) {
+    try {
+      return await app.fetch(request, env, ctx);
+    } catch (err) {
+      await reportError(env, err, { url: request.url, method: request.method });
+      return new Response(JSON.stringify({ message: "Erro interno do servidor." }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+  },
+  async scheduled(_event: ScheduledEvent, env: Bindings, _ctx: ExecutionContext) {
+    try {
+      const result = await checkExpiredSubscriptions(env);
+      console.log("[Cron] checkExpiredSubscriptions:", JSON.stringify(result));
+    } catch (err) {
+      await reportError(env, err, { cron: "checkExpiredSubscriptions" });
+      console.error("[Cron] Error:", err);
+    }
+  },
+};

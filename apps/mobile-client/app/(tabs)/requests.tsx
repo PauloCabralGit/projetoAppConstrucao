@@ -213,9 +213,13 @@ export default function RequestsScreen() {
   }
 
   function handleRequestPress(req: ServiceRequest) {
-    if (req.status !== 'cancelled' && req.status !== 'draft') {
-      router.push(`/tracking/${req.id}`);
+    if (req.status === 'cancelled' || req.status === 'draft') return;
+    // Serviço concluído e ainda não pago → ir para tela de pagamento
+    if (req.status === 'completed' && !req.payment_status) {
+      router.push(`/payment/${req.id}`);
+      return;
     }
+    router.push(`/tracking/${req.id}`);
   }
 
   function renderItem({ item }: { item: ServiceRequest }) {

@@ -504,6 +504,12 @@ export default function ProviderProfileScreen() {
           )}
         </View>
 
+        <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/subscription' as any)}>
+          <Ionicons name="diamond-outline" size={22} color={Colors.primary} />
+          <Text style={[styles.faqBtnText, { color: Colors.primary }]}>Meu Plano</Text>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
+        </TouchableOpacity>
+
         <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/(tabs)/faq' as any)}>
           <Ionicons name="help-circle-outline" size={22} color={Colors.darkNavy} />
           <Text style={styles.faqBtnText}>FAQ e Suporte</Text>
