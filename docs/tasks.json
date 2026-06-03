@@ -41,42 +41,42 @@
       "id": 6,
       "title": "US-006: Desenhar tela de avaliação (mobile-client)",
       "assignee": "ux",
-      "status": "doing",
+      "status": "done",
       "phase": "design"
     },
     {
       "id": 7,
       "title": "US-007: Implementar tela de avaliação (mobile-client)",
       "assignee": "frontend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 8,
       "title": "US-008: Integrar POST /ratings no mobile-client",
       "assignee": "frontend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 9,
       "title": "US-009: Implementar tela de histórico (mobile-client)",
       "assignee": "frontend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 10,
       "title": "US-010: Exibir nota média no dashboard (mobile-provider)",
       "assignee": "frontend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
       "id": 11,
       "title": "US-011: Implementar tela de histórico de avaliações (mobile-provider)",
       "assignee": "frontend",
-      "status": "todo",
+      "status": "done",
       "phase": "development"
     },
     {
