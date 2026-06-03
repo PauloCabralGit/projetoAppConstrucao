@@ -121,11 +121,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         filter: `provider_user_id=eq.${userId}`,
       }, (payload) => {
         const next = payload.new as any;
-        const prev = payload.old as any;
+        const prev = (payload.old ?? {}) as any;
         const cat = CATEGORY_LABELS[next.category] ?? next.category ?? 'Serviço';
+        const valor = `R$ ${Number(next.quote_amount ?? 0).toFixed(2).replace('.', ',')}`;
 
-        // Notificações de status
-        if (next.status !== prev.status) {
+        // Notificações de status (só dispara quando há mudança real de status)
+        if (prev.status !== undefined && next.status !== prev.status) {
           const statusMap: Record<string, { title: string; emoji: string }> = {
             accepted: { emoji: '✅', title: 'Pedido aceito pelo cliente' },
             in_transit: { emoji: '🚗', title: 'Pronto para sair?' },
@@ -144,12 +145,23 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           }
         }
 
-        // Notificação de pagamento confirmado
+        // ─ Cliente informou que enviou o pagamento (client_paid)
+        // Este é o evento que dispara quando o cliente paga pelo app.
+        if (next.payment_status === 'client_paid' && prev.payment_status !== 'client_paid') {
+          push({
+            type: 'payment',
+            title: '💳 Cliente enviou o pagamento!',
+            body: `${valor} — ${cat}. Confirme o recebimento no app.`,
+            request_id: next.id,
+          });
+        }
+
+        // ─ Pagamento confirmado/aprovado (Pix/cartão automático ou confirmação manual)
         if (next.payment_status === 'confirmed' && prev.payment_status !== 'confirmed') {
           push({
             type: 'payment',
-            title: '💳 Pagamento recebido!',
-            body: `R$ ${Number(next.quote_amount ?? 0).toFixed(2)} — ${cat}`,
+            title: '✅ Pagamento confirmado!',
+            body: `${valor} — ${cat}`,
             request_id: next.id,
           });
         }

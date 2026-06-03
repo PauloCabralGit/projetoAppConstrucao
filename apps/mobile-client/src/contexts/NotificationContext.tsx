@@ -104,15 +104,13 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
         filter: `client_user_id=eq.${userId}`,
       }, (payload) => {
         const next = payload.new as any;
-        const prev = payload.old as any;
-
-        // Ignorar se status não mudou
-        if (next.status === prev.status && next.payment_status === prev.payment_status) return;
+        const prev = (payload.old ?? {}) as any;
 
         const cat = CATEGORY_LABELS[next.category] ?? next.category ?? 'Serviço';
+        const valor = `R$ ${Number(next.quote_amount ?? 0).toFixed(2).replace('.', ',')}`;
 
-        // Notificações de status
-        if (next.status !== prev.status) {
+        // Notificações de status (só quando há mudança real)
+        if (prev.status !== undefined && next.status !== prev.status) {
           push({
             type: 'status_update',
             title: STATUS_LABELS[next.status] ?? '📋 Pedido atualizado',
@@ -121,12 +119,12 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           });
         }
 
-        // Notificação de pagamento confirmado
+        // Notificação de pagamento confirmado pelo prestador
         if (next.payment_status === 'confirmed' && prev.payment_status !== 'confirmed') {
           push({
             type: 'payment',
-            title: '💳 Pagamento recebido',
-            body: `${cat} — R$ ${Number(next.quote_amount ?? 0).toFixed(2)}`,
+            title: '✅ Pagamento confirmado',
+            body: `${cat} — ${valor}`,
             request_id: next.id,
           });
         }

@@ -105,9 +105,6 @@ export default function TrackingScreen() {
   const [providerProfile, setProviderProfile] = useState<ProviderProfile | null>(null);
   const [photos, setPhotos] = useState<RequestPhoto[]>([]);
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
-  const [ratingModal, setRatingModal] = useState(false);
-  const [selectedRating, setSelectedRating] = useState(0);
-  const [submittingRating, setSubmittingRating] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cancelling, setCancelling] = useState(false);
 
@@ -587,33 +584,6 @@ export default function TrackingScreen() {
     setSubmittingComplaint(false);
   }
 
-  async function handleSubmitRating() {
-    if (selectedRating === 0) {
-      Alert.alert('Selecione uma nota', 'Toque em uma estrela para avaliar.');
-      return;
-    }
-    setSubmittingRating(true);
-    const { data: { user } } = await supabase.auth.getUser();
-    try {
-      const res = await fetch(`${API_BASE}/service-requests/${id}/rate`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rating: selectedRating, client_user_id: user?.id }),
-      });
-      const json = await res.json();
-      if (res.ok) {
-        setRequest(prev => prev ? { ...prev, client_rating: selectedRating } : null);
-        setRatingModal(false);
-        Alert.alert('Avaliação enviada!', `Você avaliou com ${selectedRating} estrela${selectedRating !== 1 ? 's' : ''}. Obrigado!`);
-      } else {
-        Alert.alert('Erro', json?.message ?? 'Não foi possível enviar a avaliação.');
-      }
-    } catch {
-      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
-    }
-    setSubmittingRating(false);
-  }
-
   if (loading) {
     return (
       <View style={styles.loadingContainer}>
@@ -730,7 +700,7 @@ export default function TrackingScreen() {
                 <Text style={styles.completedRatingLabel}>Sua avaliação: {request.client_rating} estrela{request.client_rating !== 1 ? 's' : ''}</Text>
               </View>
             ) : flags.ratings ? (
-              <TouchableOpacity style={styles.completedRatePrompt} onPress={() => { setSelectedRating(0); setRatingModal(true); }}>
+              <TouchableOpacity style={styles.completedRatePrompt} onPress={() => router.push(`/report/${id}` as any)}>
                 <Ionicons name="star-outline" size={16} color={Colors.warningAmber} />
                 <Text style={styles.completedRatePromptText}>Avaliar profissional</Text>
                 <Ionicons name="chevron-forward" size={14} color={Colors.textSecondary} />
@@ -893,41 +863,6 @@ export default function TrackingScreen() {
             </View>
           )}
         </ScrollView>
-
-        {/* Rating modal */}
-        <Modal visible={ratingModal} transparent animationType="slide" onRequestClose={() => setRatingModal(false)}>
-          <View style={styles.ratingOverlay}>
-            <View style={styles.ratingSheet}>
-              <View style={styles.ratingSheetHandle} />
-              <Text style={styles.ratingTitle}>Como foi o serviço?</Text>
-              <Text style={styles.ratingSubtitle}>
-                {providerProfile?.full_name ? `Avalie ${providerProfile.full_name}` : 'Dê sua nota para o profissional'}
-              </Text>
-              <View style={styles.starsRow}>
-                {[1, 2, 3, 4, 5].map((star) => (
-                  <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} hitSlop={8}>
-                    <Ionicons name={star <= selectedRating ? 'star' : 'star-outline'} size={44} color={Colors.warningAmber} />
-                  </TouchableOpacity>
-                ))}
-              </View>
-              {selectedRating > 0 && (
-                <Text style={styles.ratingHint}>
-                  {selectedRating === 5 ? 'Excelente!' : selectedRating === 4 ? 'Muito bom!' : selectedRating === 3 ? 'Regular' : selectedRating === 2 ? 'Ruim' : 'Péssimo'}
-                </Text>
-              )}
-              <TouchableOpacity
-                style={[styles.ratingSubmitBtn, (submittingRating || selectedRating === 0) && { opacity: 0.5 }]}
-                onPress={handleSubmitRating}
-                disabled={submittingRating || selectedRating === 0}
-              >
-                {submittingRating ? <ActivityIndicator color="#fff" /> : <Text style={styles.ratingSubmitText}>Enviar avaliação</Text>}
-              </TouchableOpacity>
-              <TouchableOpacity onPress={() => setRatingModal(false)} style={{ marginTop: 8 }}>
-                <Text style={styles.ratingSkipText}>Avaliar depois</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </Modal>
 
         {/* Photo viewer */}
         <Modal visible={photoViewer !== null} transparent animationType="fade" onRequestClose={() => setPhotoViewer(null)}>
@@ -1249,7 +1184,7 @@ export default function TrackingScreen() {
 
         {/* Rating section */}
         {isCompleted && request?.client_rating == null && (
-          <TouchableOpacity style={styles.ratingBannerCard} onPress={() => { setSelectedRating(0); setRatingModal(true); }}>
+          <TouchableOpacity style={styles.ratingBannerCard} onPress={() => router.push(`/report/${id}` as any)}>
             <Ionicons name="star-outline" size={22} color={Colors.warningAmber} />
             <View style={{ flex: 1 }}>
               <Text style={styles.ratingBannerTitle}>Avalie o profissional</Text>
@@ -1496,51 +1431,6 @@ export default function TrackingScreen() {
                 )}
               </TouchableOpacity>
             </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Rating modal */}
-      <Modal visible={ratingModal} transparent animationType="slide" onRequestClose={() => setRatingModal(false)}>
-        <View style={styles.ratingOverlay}>
-          <View style={styles.ratingSheet}>
-            <View style={styles.ratingSheetHandle} />
-            <Text style={styles.ratingTitle}>Como foi o serviço?</Text>
-            <Text style={styles.ratingSubtitle}>
-              {providerProfile?.full_name ? `Avalie ${providerProfile.full_name}` : 'Dê sua nota para o profissional'}
-            </Text>
-
-            <View style={styles.starsRow}>
-              {[1, 2, 3, 4, 5].map((star) => (
-                <TouchableOpacity key={star} onPress={() => setSelectedRating(star)} hitSlop={8}>
-                  <Ionicons
-                    name={star <= selectedRating ? 'star' : 'star-outline'}
-                    size={44}
-                    color={Colors.warningAmber}
-                  />
-                </TouchableOpacity>
-              ))}
-            </View>
-
-            {selectedRating > 0 && (
-              <Text style={styles.ratingHint}>
-                {selectedRating === 5 ? 'Excelente!' : selectedRating === 4 ? 'Muito bom!' : selectedRating === 3 ? 'Regular' : selectedRating === 2 ? 'Ruim' : 'Péssimo'}
-              </Text>
-            )}
-
-            <TouchableOpacity
-              style={[styles.ratingSubmitBtn, (submittingRating || selectedRating === 0) && { opacity: 0.5 }]}
-              onPress={handleSubmitRating}
-              disabled={submittingRating || selectedRating === 0}
-            >
-              {submittingRating
-                ? <ActivityIndicator color="#fff" />
-                : <Text style={styles.ratingSubmitText}>Enviar avaliação</Text>}
-            </TouchableOpacity>
-
-            <TouchableOpacity onPress={() => setRatingModal(false)} style={{ marginTop: 8 }}>
-              <Text style={styles.ratingSkipText}>Avaliar depois</Text>
-            </TouchableOpacity>
           </View>
         </View>
       </Modal>

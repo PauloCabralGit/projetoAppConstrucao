@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useFocusEffect } from 'expo-router';
 import {
   View,
@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
-import { rejectedJobIds } from '@/lib/rejectedJobs';
+import { rejectedJobIds, loadRejectedJobIds } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -82,6 +82,9 @@ export default function JobsScreen() {
   const [bidAmounts, setBidAmounts] = useState<Record<string, string>>({});
   const [biddingJob, setBiddingJob] = useState<string | null>(null);
   const [submittedBids, setSubmittedBids] = useState<Set<string>>(new Set());
+  // Bumped whenever the rejected set may have changed (e.g. on focus) so the
+  // memoized visible list re-applies the rejected filter against the Set.
+  const [rejectedVersion, setRejectedVersion] = useState(0);
   const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
   const fetchJobs = useCallback(async () => {
@@ -98,10 +101,21 @@ export default function JobsScreen() {
     }
   }, []);
 
+  // Always filter the rendered list against the rejected set, regardless of how
+  // `jobs` was populated (initial fetch, refresh, or realtime INSERT). Depends
+  // on `rejectedVersion` so it re-runs after a rejection is registered on focus.
+  const visibleJobs = useMemo(
+    () => jobs.filter(j => !rejectedJobIds.has(j.id)),
+    [jobs, rejectedVersion]
+  );
+
   useEffect(() => {
     loadProvider();
     setLoading(true);
-    fetchJobs().finally(() => setLoading(false));
+    // Hydrate persisted rejections before the first render of the list, then fetch.
+    loadRejectedJobIds()
+      .then(() => setRejectedVersion(v => v + 1))
+      .finally(() => fetchJobs().finally(() => setLoading(false)));
     startListening();
     return () => {
       if (channelRef.current) {
@@ -111,9 +125,11 @@ export default function JobsScreen() {
     };
   }, [fetchJobs]);
 
-  // Re-fetch when screen regains focus (e.g. coming back from job detail after rejecting)
+  // Re-fetch + re-apply the rejected filter when the screen regains focus
+  // (e.g. coming back from job detail after rejecting).
   useFocusEffect(
     useCallback(() => {
+      setRejectedVersion(v => v + 1);
       fetchJobs();
     }, [fetchJobs])
   );
@@ -305,7 +321,7 @@ export default function JobsScreen() {
           <View>
             <Text style={styles.greeting}>Olá, {providerName.split(' ')[0]}</Text>
             <Text style={styles.headerSubtitle}>
-              {jobs.length} chamado{jobs.length !== 1 ? 's' : ''} disponível{jobs.length !== 1 ? 'is' : ''}
+              {visibleJobs.length} chamado{visibleJobs.length !== 1 ? 's' : ''} disponível{visibleJobs.length !== 1 ? 'is' : ''}
             </Text>
           </View>
           <View style={styles.onlineToggle}>
@@ -336,7 +352,7 @@ export default function JobsScreen() {
         </View>
       ) : (
         <FlatList
-          data={jobs}
+          data={visibleJobs}
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           contentContainerStyle={styles.listContent}

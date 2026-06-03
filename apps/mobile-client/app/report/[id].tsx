@@ -33,7 +33,8 @@ const QUESTIONS: Question[] = [
 ];
 
 export default function ReportScreen() {
-  const { id } = useLocalSearchParams();
+  const params = useLocalSearchParams<{ id: string | string[] }>();
+  const id = Array.isArray(params.id) ? params.id[0] : params.id;
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [existing, setExisting] = useState<any>(null);
@@ -67,7 +68,8 @@ export default function ReportScreen() {
       });
 
       if (res.ok) {
-        const data = await res.json();
+        const raw = await res.text();
+        const data = raw ? JSON.parse(raw) : {};
         if (data.report) {
           setExisting(data.report);
           setRatings({
@@ -97,10 +99,18 @@ export default function ReportScreen() {
       return;
     }
 
+    if (!id) {
+      Alert.alert('Erro', 'Chamado inválido.');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!session) {
+        Alert.alert('Sessão expirada', 'Faça login novamente para enviar o relatório.');
+        return;
+      }
 
       const res = await fetch(`${API_BASE}/service-requests/${id}/report`, {
         method: 'POST',
@@ -114,23 +124,35 @@ export default function ReportScreen() {
           behavior: ratings.behavior,
           cleanliness: ratings.cleanliness,
           material_quality: ratings.material_quality,
-          estimated_time: estimatedTime ? parseInt(estimatedTime) : undefined,
-          actual_time: actualTime ? parseInt(actualTime) : undefined,
+          estimated_time: estimatedTime ? parseInt(estimatedTime, 10) : undefined,
+          actual_time: actualTime ? parseInt(actualTime, 10) : undefined,
           comments: comments.trim() || undefined,
           issues_found: issues.trim() || undefined,
         }),
       });
 
+      // Guard JSON parsing: the server may return non-JSON (e.g. an HTML 500
+      // page or empty body), which would make res.json() throw and mask the
+      // real status. Read as text first, then parse defensively.
+      const raw = await res.text();
+      let parsed: any = null;
+      if (raw) {
+        try { parsed = JSON.parse(raw); } catch { parsed = null; }
+      }
+
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.message || 'Erro ao salvar relatório');
+        const serverMessage =
+          parsed?.message ||
+          (raw && raw.length < 300 ? raw : '') ||
+          `Erro ${res.status} ao salvar relatório`;
+        throw new Error(serverMessage);
       }
 
       Alert.alert('✅ Sucesso', 'Relatório salvo com sucesso!', [
         { text: 'OK', onPress: () => router.back() },
       ]);
     } catch (err: any) {
-      Alert.alert('Erro', err.message || 'Falha ao salvar');
+      Alert.alert('Erro', err?.message || 'Falha ao salvar');
     } finally {
       setSubmitting(false);
     }

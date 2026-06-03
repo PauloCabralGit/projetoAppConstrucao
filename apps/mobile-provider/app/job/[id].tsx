@@ -17,7 +17,7 @@ import * as Location from 'expo-location';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import { useLocalSearchParams, router } from 'expo-router';
-import { rejectedJobIds } from '@/lib/rejectedJobs';
+import { addRejectedJobId } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -305,7 +305,9 @@ export default function JobDetailScreen() {
     } finally {
       setRejecting(false);
       setRejectModalOpen(false);
-      rejectedJobIds.add(id);
+      // Persist the rejection so the job stays hidden in the list immediately
+      // (in-memory Set) and after an app reload (secure-store), then go back.
+      await addRejectedJobId(id);
       router.back();
     }
   }
