@@ -1,9 +1,8 @@
 -- ─────────────────────────────────────────────────────────────────────────────
--- ConstruConnect — SaaS + Payments migration
--- Semana 1: segurança, tabelas de pagamento, RLS, índices
+-- ConstruConnect — SaaS + Payments (idempotent)
 -- ─────────────────────────────────────────────────────────────────────────────
 
--- ── 1. Índices de performance em service_requests ────────────────────────────
+-- ── 1. Índices de performance ────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_sr_status          ON service_requests(status);
 CREATE INDEX IF NOT EXISTS idx_sr_client          ON service_requests(client_user_id);
 CREATE INDEX IF NOT EXISTS idx_sr_provider        ON service_requests(provider_user_id);
@@ -15,35 +14,39 @@ CREATE INDEX IF NOT EXISTS idx_provider_status    ON provider_profiles(status);
 
 -- ── 2. RLS nas tabelas core ───────────────────────────────────────────────────
 
--- app_users
 ALTER TABLE app_users ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "users_select_own" ON app_users;
 CREATE POLICY "users_select_own" ON app_users
   FOR SELECT USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "users_update_own" ON app_users;
 CREATE POLICY "users_update_own" ON app_users
   FOR UPDATE USING (auth.uid() = id);
 
--- provider_profiles (leitura pública; escrita somente pelo dono)
 ALTER TABLE provider_profiles ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "provider_profiles_select_public" ON provider_profiles;
 CREATE POLICY "provider_profiles_select_public" ON provider_profiles
   FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "provider_profiles_update_own" ON provider_profiles;
 CREATE POLICY "provider_profiles_update_own" ON provider_profiles
   FOR UPDATE USING (auth.uid() = user_id);
 
--- service_requests
 ALTER TABLE service_requests ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "sr_select_involved" ON service_requests;
 CREATE POLICY "sr_select_involved" ON service_requests
   FOR SELECT USING (
     auth.uid() = client_user_id OR auth.uid() = provider_user_id
   );
 
+DROP POLICY IF EXISTS "sr_insert_client" ON service_requests;
 CREATE POLICY "sr_insert_client" ON service_requests
   FOR INSERT WITH CHECK (auth.uid() = client_user_id);
 
+DROP POLICY IF EXISTS "sr_update_involved" ON service_requests;
 CREATE POLICY "sr_update_involved" ON service_requests
   FOR UPDATE USING (
     auth.uid() = client_user_id OR auth.uid() = provider_user_id
@@ -72,6 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_payments_mp_id  ON payments(mp_payment_id);
 
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "payments_select_involved" ON payments;
 CREATE POLICY "payments_select_involved" ON payments
   FOR SELECT USING (
     auth.uid() IN (
@@ -82,7 +86,7 @@ CREATE POLICY "payments_select_involved" ON payments
   );
 
 
--- ── 4. Tabela de splits (repasse ao prestador) ────────────────────────────────
+-- ── 4. Splits (repasse ao prestador) ─────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS provider_splits (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   payment_id        UUID NOT NULL REFERENCES payments(id) ON DELETE CASCADE,
@@ -100,11 +104,12 @@ CREATE INDEX IF NOT EXISTS idx_splits_payment  ON provider_splits(payment_id);
 
 ALTER TABLE provider_splits ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "splits_select_own" ON provider_splits;
 CREATE POLICY "splits_select_own" ON provider_splits
   FOR SELECT USING (auth.uid() = provider_user_id);
 
 
--- ── 5. Tabela de assinaturas SaaS (planos dos prestadores) ───────────────────
+-- ── 5. Assinaturas SaaS ───────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS provider_subscriptions (
   id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   provider_user_id      UUID NOT NULL UNIQUE REFERENCES app_users(id) ON DELETE CASCADE,
@@ -112,7 +117,7 @@ CREATE TABLE IF NOT EXISTS provider_subscriptions (
                           CHECK (plan IN ('free','pro','premium')),
   mp_subscription_id    TEXT,
   status                TEXT NOT NULL DEFAULT 'active'
-                          CHECK (status IN ('active','cancelled','past_due','expired')),
+                          CHECK (status IN ('active','cancelled','past_due','expired','pending')),
   current_period_end    TIMESTAMPTZ,
   monthly_job_count     INT NOT NULL DEFAULT 0,
   commission_rate       NUMERIC(4,2) NOT NULL DEFAULT 0.10,
@@ -125,14 +130,16 @@ CREATE INDEX IF NOT EXISTS idx_subs_status   ON provider_subscriptions(status);
 
 ALTER TABLE provider_subscriptions ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "subs_select_own" ON provider_subscriptions;
 CREATE POLICY "subs_select_own" ON provider_subscriptions
   FOR SELECT USING (auth.uid() = provider_user_id);
 
+DROP POLICY IF EXISTS "subs_update_own" ON provider_subscriptions;
 CREATE POLICY "subs_update_own" ON provider_subscriptions
   FOR UPDATE USING (auth.uid() = provider_user_id);
 
 
--- ── 6. Localização em tempo real do prestador ────────────────────────────────
+-- ── 6. Localização em tempo real ─────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS provider_locations (
   provider_user_id  UUID PRIMARY KEY REFERENCES app_users(id) ON DELETE CASCADE,
   latitude          NUMERIC(10,7) NOT NULL,
@@ -143,17 +150,26 @@ CREATE TABLE IF NOT EXISTS provider_locations (
 
 ALTER TABLE provider_locations ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "locations_select_public" ON provider_locations;
 CREATE POLICY "locations_select_public" ON provider_locations
   FOR SELECT USING (true);
 
+DROP POLICY IF EXISTS "locations_upsert_own" ON provider_locations;
 CREATE POLICY "locations_upsert_own" ON provider_locations
   FOR ALL USING (auth.uid() = provider_user_id)
   WITH CHECK (auth.uid() = provider_user_id);
 
-ALTER PUBLICATION supabase_realtime ADD TABLE provider_locations;
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_publication_tables
+    WHERE pubname = 'supabase_realtime' AND tablename = 'provider_locations'
+  ) THEN
+    ALTER PUBLICATION supabase_realtime ADD TABLE provider_locations;
+  END IF;
+END $$;
 
 
--- ── 7. Saques solicitados pelo prestador ─────────────────────────────────────
+-- ── 7. Saques ─────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS provider_withdrawals (
   id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   provider_user_id  UUID NOT NULL REFERENCES app_users(id) ON DELETE CASCADE,
@@ -170,14 +186,16 @@ CREATE INDEX IF NOT EXISTS idx_withdrawals_provider ON provider_withdrawals(prov
 
 ALTER TABLE provider_withdrawals ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "withdrawals_select_own" ON provider_withdrawals;
 CREATE POLICY "withdrawals_select_own" ON provider_withdrawals
   FOR SELECT USING (auth.uid() = provider_user_id);
 
+DROP POLICY IF EXISTS "withdrawals_insert_own" ON provider_withdrawals;
 CREATE POLICY "withdrawals_insert_own" ON provider_withdrawals
   FOR INSERT WITH CHECK (auth.uid() = provider_user_id);
 
 
--- ── 8. Inicializar assinatura FREE para prestadores existentes ────────────────
+-- ── 8. Seed plano Free para prestadores existentes ───────────────────────────
 INSERT INTO provider_subscriptions (provider_user_id, plan, status, commission_rate)
 SELECT user_id, 'free', 'active', 0.10
 FROM provider_profiles
