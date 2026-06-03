@@ -267,9 +267,11 @@ export default function TrackingScreen() {
           if ((payload.new as any)?.id !== id) return;
           const updated = payload.new as ServiceRequest;
           setRequest(updated);
-          if (updated.status === 'completed' && updated.client_rating == null) {
-            setSelectedRating(0);
-            setRatingModal(true);
+          if (updated.status === 'completed') {
+            // Redirecionar para tela de relatório do serviço
+            setTimeout(() => {
+              router.push(`/report/${id}` as any);
+            }, 500);
           }
           if (updated.status === 'in_progress') {
             loadPhotos();

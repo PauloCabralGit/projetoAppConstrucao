@@ -94,6 +94,7 @@ export default function EarningsScreen() {
   const [showGoalModal, setShowGoalModal] = useState(false);
   const [generatingReport, setGeneratingReport] = useState(false);
   const [providerName, setProviderName] = useState('');
+  const [selectedMonthKey, setSelectedMonthKey] = useState<string | null>(null);
 
   const fetchCompletedJobs = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
@@ -346,30 +347,76 @@ export default function EarningsScreen() {
               )}
             </View>
 
-            {/* Gráfico dos últimos 6 meses */}
+            {/* Gráfico dos últimos 6 meses - Interativo */}
             <View style={styles.chartCard}>
               <Text style={styles.chartTitle}>Últimos 6 meses</Text>
+              <Text style={styles.chartSubtitle}>Toque em um mês para ver os detalhes</Text>
               <View style={styles.chartBars}>
                 {months.map((m) => {
                   const heightPct = maxVal > 0 ? m.total / maxVal : 0;
                   const isCurrentMonth = m.key === getMonthKey(new Date().toISOString());
+                  const isSelected = selectedMonthKey === m.key;
                   return (
-                    <View key={m.key} style={styles.chartBarCol}>
+                    <TouchableOpacity
+                      key={m.key}
+                      style={[
+                        styles.chartBarCol,
+                        isSelected && styles.chartBarColSelected,
+                      ]}
+                      onPress={() => setSelectedMonthKey(isSelected ? null : m.key)}
+                    >
                       <Text style={styles.chartBarValue}>
                         {m.total > 0 ? (m.total >= 1000 ? `${(m.total / 1000).toFixed(1)}k` : `${m.total}`) : ''}
                       </Text>
-                      <View style={styles.chartBarTrack}>
+                      <View style={[
+                        styles.chartBarTrack,
+                        isSelected && styles.chartBarTrackSelected,
+                      ]}>
                         <View style={[
                           styles.chartBarFill,
                           { height: `${Math.max(heightPct * 100, m.total > 0 ? 5 : 0)}%` as any },
                           isCurrentMonth && { backgroundColor: Colors.primary },
+                          isSelected && { backgroundColor: Colors.successGreen },
                         ]} />
                       </View>
-                      <Text style={[styles.chartBarLabel, isCurrentMonth && { color: Colors.primary, fontWeight: '700' }]}>{m.label}</Text>
-                    </View>
+                      <Text style={[
+                        styles.chartBarLabel,
+                        isCurrentMonth && { color: Colors.primary, fontWeight: '700' },
+                        isSelected && { color: Colors.successGreen, fontWeight: '700' },
+                      ]}>{m.label}</Text>
+                    </TouchableOpacity>
                   );
                 })}
               </View>
+
+              {/* Detalhes do mês selecionado */}
+              {selectedMonthKey && (
+                <View style={styles.monthDetailsCard}>
+                  <Text style={styles.monthDetailsTitle}>
+                    Detalhes de {MONTH_NAMES[parseInt(selectedMonthKey.split('-')[1])]}
+                  </Text>
+                  {(() => {
+                    const monthJobs = jobs.filter(j => getMonthKey(j.created_at) === selectedMonthKey);
+                    const monthTotal = monthJobs.reduce((acc, j) => acc + getJobValue(j), 0);
+                    return (
+                      <View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Serviços completos:</Text>
+                          <Text style={styles.detailValue}>{monthJobs.length}</Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Total ganho:</Text>
+                          <Text style={[styles.detailValue, { color: Colors.successGreen, fontWeight: '700', fontSize: 16 }]}>{formatCurrency(monthTotal)}</Text>
+                        </View>
+                        <View style={styles.detailRow}>
+                          <Text style={styles.detailLabel}>Média por serviço:</Text>
+                          <Text style={styles.detailValue}>{monthJobs.length > 0 ? formatCurrency(monthTotal / monthJobs.length) : 'N/A'}</Text>
+                        </View>
+                      </View>
+                    );
+                  })()}
+                </View>
+              )}
             </View>
 
             <View style={styles.listHeader}>
@@ -464,13 +511,21 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.cardWhite, borderRadius: 14, padding: 16,
     shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 4, elevation: 2,
   },
-  chartTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary, marginBottom: 16 },
-  chartBars: { flexDirection: 'row', alignItems: 'flex-end', height: 100, gap: 4 },
-  chartBarCol: { flex: 1, alignItems: 'center', height: '100%', justifyContent: 'flex-end', gap: 4 },
+  chartTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary, marginBottom: 4 },
+  chartSubtitle: { fontSize: 11, color: Colors.textSecondary, marginBottom: 12 },
+  chartBars: { flexDirection: 'row', alignItems: 'flex-end', height: 100, gap: 4, marginBottom: 12 },
+  chartBarCol: { flex: 1, alignItems: 'center', height: '100%', justifyContent: 'flex-end', gap: 4, paddingHorizontal: 4, paddingVertical: 8, borderRadius: 8 },
+  chartBarColSelected: { backgroundColor: Colors.background, borderWidth: 2, borderColor: Colors.successGreen },
   chartBarValue: { fontSize: 9, color: Colors.textSecondary, fontWeight: '600', textAlign: 'center' },
   chartBarTrack: { width: '70%', height: 64, justifyContent: 'flex-end', backgroundColor: Colors.background, borderRadius: 4 },
+  chartBarTrackSelected: { backgroundColor: '#F0FDF4' },
   chartBarFill: { width: '100%', borderRadius: 4, backgroundColor: Colors.darkNavy },
   chartBarLabel: { fontSize: 10, color: Colors.textSecondary, textAlign: 'center' },
+  monthDetailsCard: { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: Colors.border },
+  monthDetailsTitle: { fontSize: 13, fontWeight: '700', color: Colors.textPrimary, marginBottom: 12 },
+  detailRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
+  detailLabel: { fontSize: 12, color: Colors.textSecondary, fontWeight: '500' },
+  detailValue: { fontSize: 13, color: Colors.textPrimary, fontWeight: '600' },
   listHeader: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 8 },
   listHeaderTitle: { fontSize: 15, fontWeight: '700', color: Colors.textPrimary },
   listContent: { paddingHorizontal: 16, paddingBottom: 20, flexGrow: 1 },

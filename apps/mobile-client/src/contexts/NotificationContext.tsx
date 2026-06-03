@@ -4,7 +4,7 @@ import { supabase } from '@/lib/supabase';
 
 export interface AppNotification {
   id: string;
-  type: 'message' | 'status_update' | 'bid';
+  type: 'message' | 'status_update' | 'bid' | 'payment';
   title: string;
   body: string;
   created_at: string;
@@ -38,6 +38,16 @@ const STATUS_LABELS: Record<string, string> = {
   cancelled: '❌ Pedido cancelado',
 };
 
+const CATEGORY_LABELS: Record<string, string> = {
+  alvenaria: 'Alvenaria',
+  hidraulica: 'Hidráulica',
+  eletrica: 'Elétrica',
+  pintura: 'Pintura',
+  piso: 'Piso',
+  acabamento: 'Acabamento',
+  acessibilidade: 'Acessibilidade',
+};
+
 function uid() {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
 }
@@ -68,6 +78,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
     const ts = Date.now();
 
+    // ─ Mensagens do prestador
     const msgCh = supabase
       .channel(`client-notif-msg-${userId}-${ts}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages' }, (payload) => {
@@ -83,7 +94,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       })
       .subscribe();
 
-    // Filtro correto: client_user_id (não client_id)
+    // ─ Atualizações de status do chamado do cliente
     const reqCh = supabase
       .channel(`client-notif-req-${userId}-${ts}`)
       .on('postgres_changes', {
@@ -94,26 +105,39 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       }, (payload) => {
         const next = payload.new as any;
         const prev = payload.old as any;
-        if (next.status === prev.status) return;
-        const CATEGORY_LABELS: Record<string, string> = {
-          alvenaria: 'Alvenaria', hidraulica: 'Hidráulica', eletrica: 'Elétrica',
-          pintura: 'Pintura', piso: 'Piso', acabamento: 'Acabamento',
-        };
-        push({
-          type: 'status_update',
-          title: STATUS_LABELS[next.status] ?? '📋 Pedido atualizado',
-          body: CATEGORY_LABELS[next.category] ?? next.category ?? 'Atualização de status',
-          request_id: next.id,
-        });
+
+        // Ignorar se status não mudou
+        if (next.status === prev.status && next.payment_status === prev.payment_status) return;
+
+        const cat = CATEGORY_LABELS[next.category] ?? next.category ?? 'Serviço';
+
+        // Notificações de status
+        if (next.status !== prev.status) {
+          push({
+            type: 'status_update',
+            title: STATUS_LABELS[next.status] ?? '📋 Pedido atualizado',
+            body: cat,
+            request_id: next.id,
+          });
+        }
+
+        // Notificação de pagamento confirmado
+        if (next.payment_status === 'confirmed' && prev.payment_status !== 'confirmed') {
+          push({
+            type: 'payment',
+            title: '💳 Pagamento recebido',
+            body: `${cat} — R$ ${Number(next.quote_amount ?? 0).toFixed(2)}`,
+            request_id: next.id,
+          });
+        }
       })
       .subscribe();
 
-    // Filtra lances apenas dos chamados do cliente
+    // ─ Novos orçamentos recebidos
     const bidCh = supabase
       .channel(`client-notif-bids-${userId}-${ts}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'bids' }, async (payload) => {
         const bid = payload.new as any;
-        // Verificar se o chamado pertence ao cliente
         const { data: req } = await supabase
           .from('service_requests')
           .select('client_user_id')

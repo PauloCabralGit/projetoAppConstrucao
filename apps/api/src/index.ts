@@ -2703,6 +2703,96 @@ app.post("/v1/providers/:id/location", async (c) => {
   return c.json({ ok: true });
 });
 
+// ── Salvar relatório de serviço ────────────────────────────────────────────
+app.post("/v1/service-requests/:id/report", async (c) => {
+  const userId = c.get("userId");
+  const serviceRequestId = c.req.param("id");
+
+  const body = await c.req.json<{
+    overall_rating: number;
+    punctuality: number;
+    behavior: number;
+    cleanliness: number;
+    material_quality: number;
+    estimated_time?: number;
+    actual_time?: number;
+    comments?: string;
+    issues_found?: string;
+  }>();
+
+  const adminDb = db(c.env);
+
+  // Validar que o chamado pertence ao cliente
+  const { data: request } = await adminDb
+    .from("service_requests")
+    .select("client_user_id, provider_user_id, status")
+    .eq("id", serviceRequestId)
+    .maybeSingle();
+
+  if (!request || request.client_user_id !== userId) {
+    return c.json({ message: "Chamado não encontrado ou não autorizado." }, 404);
+  }
+
+  if (request.status !== "completed") {
+    return c.json({ message: "Relatório só pode ser preenchido após serviço finalizado." }, 400);
+  }
+
+  // Validar ratings
+  for (const [key, val] of Object.entries(body)) {
+    if (["overall_rating", "punctuality", "behavior", "cleanliness", "material_quality"].includes(key)) {
+      const num = Number(val);
+      if (num < 1 || num > 5) {
+        return c.json({ message: `${key} deve estar entre 1 e 5.` }, 400);
+      }
+    }
+  }
+
+  const { error } = await adminDb.from("service_reports").upsert({
+    request_id: serviceRequestId,
+    client_user_id: userId,
+    provider_user_id: request.provider_user_id,
+    overall_rating: body.overall_rating,
+    punctuality: body.punctuality,
+    behavior: body.behavior,
+    cleanliness: body.cleanliness,
+    material_quality: body.material_quality,
+    estimated_time: body.estimated_time,
+    actual_time: body.actual_time,
+    comments: body.comments,
+    issues_found: body.issues_found,
+  }, { onConflict: "request_id" });
+
+  if (error) return c.json({ message: error.message }, 500);
+
+  return c.json({ ok: true, message: "Relatório salvo com sucesso." });
+});
+
+// ── Buscar relatório do serviço ────────────────────────────────────────────
+app.get("/v1/service-requests/:id/report", async (c) => {
+  const userId = c.get("userId");
+  const serviceRequestId = c.req.param("id");
+
+  const adminDb = db(c.env);
+
+  const { data: request } = await adminDb
+    .from("service_requests")
+    .select("client_user_id, provider_user_id")
+    .eq("id", serviceRequestId)
+    .maybeSingle();
+
+  if (!request || (request.client_user_id !== userId && request.provider_user_id !== userId)) {
+    return c.json({ message: "Não autorizado." }, 403);
+  }
+
+  const { data: report } = await adminDb
+    .from("service_reports")
+    .select("*")
+    .eq("request_id", serviceRequestId)
+    .maybeSingle();
+
+  return c.json({ report: report ?? null });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
 // US-020: LGPD — EXCLUSÃO / ANONIMIZAÇÃO DE CONTA
 // ═══════════════════════════════════════════════════════════════════════════
