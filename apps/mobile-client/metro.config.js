@@ -13,12 +13,24 @@ config.resolver.nodeModulesPaths = [
   path.resolve(monorepoRoot, 'node_modules'),
 ];
 
-// Force React (and react-native) to always resolve from this app's node_modules,
-// preventing duplicate instances when packages like expo-router bundle their own copy.
-const FORCED_MODULES = ['react', 'react-native', 'react/jsx-runtime', 'react/jsx-dev-runtime'];
+// Force these modules to always resolve from this app's node_modules
+// to prevent duplicate instances and version mismatches in the monorepo.
+const FORCED_MODULES = [
+  'react',
+  'react-native',
+  'react/jsx-runtime',
+  'react/jsx-dev-runtime',
+  'expo-linking',
+  'expo-constants',
+  'expo-modules-core',
+];
+
 const _resolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
-  if (FORCED_MODULES.includes(moduleName) || moduleName.startsWith('react-native/')) {
+  if (
+    FORCED_MODULES.includes(moduleName) ||
+    moduleName.startsWith('react-native/')
+  ) {
     return (
       _resolveRequest
         ? _resolveRequest(
