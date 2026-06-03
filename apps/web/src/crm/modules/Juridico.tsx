@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   uid, brl, dateBR, todayISO,
-  useLocalCollection,
+  useApiCollection, CRM_API_BASE,
   PageHeader, KpiGrid, Kpi,
   Toolbar, SearchInput, Select,
   Badge, DataTable, type Column,
@@ -115,7 +115,7 @@ function daysUntil(iso: string): number {
 
 // ════════════════════════════════════════════════════════════════════════════
 
-export function JuridicoModule() {
+export function JuridicoModule({ adminKey }: { adminKey: string }) {
   const [tab, setTab] = useState("contratos");
 
   return (
@@ -131,9 +131,9 @@ export function JuridicoModule() {
         onChange={setTab}
       />
       <div style={{ marginTop: 16 }}>
-        {tab === "contratos" && <ContratosTab />}
-        {tab === "compliance" && <ComplianceTab />}
-        {tab === "disputas" && <DisputasTab />}
+        {tab === "contratos" && <ContratosTab adminKey={adminKey} />}
+        {tab === "compliance" && <ComplianceTab adminKey={adminKey} />}
+        {tab === "disputas" && <DisputasTab adminKey={adminKey} />}
       </div>
     </div>
   );
@@ -146,8 +146,9 @@ const emptyContrato = (): Omit<Contrato, "id"> => ({
   inicio: todayISO(), fim: todayISO(), valor: 0, obs: "",
 });
 
-function ContratosTab() {
-  const { items, add, update, remove } = useLocalCollection<Contrato>("jur_contratos", CONTRATOS_SEED);
+function ContratosTab({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Contrato>(`${CRM_API_BASE}/jur/contratos`, adminKey);
+  void CONTRATOS_SEED;
   const [busca, setBusca] = useState("");
   const [filtroStatus, setFiltroStatus] = useState("todos");
   const [open, setOpen] = useState(false);
@@ -272,8 +273,9 @@ function ContratosTab() {
 
 const emptyCompliance = (): Omit<ComplianceItem, "id"> => ({ titulo: "", descricao: "", status: "pendente" });
 
-function ComplianceTab() {
-  const { items, add, update, remove } = useLocalCollection<ComplianceItem>("jur_compliance", COMPLIANCE_SEED);
+function ComplianceTab({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<ComplianceItem>(`${CRM_API_BASE}/jur/compliance`, adminKey);
+  void COMPLIANCE_SEED;
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<ComplianceItem, "id">>(emptyCompliance());
@@ -372,8 +374,9 @@ const emptyDisputa = (): Omit<Disputa, "id"> => ({
   parte: "", tipo: "cível", status: "aberto", valor: 0, advogado: "", obs: "",
 });
 
-function DisputasTab() {
-  const { items, add, update, remove } = useLocalCollection<Disputa>("jur_disputas", DISPUTAS_SEED);
+function DisputasTab({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Disputa>(`${CRM_API_BASE}/jur/disputas`, adminKey);
+  void DISPUTAS_SEED;
   const [busca, setBusca] = useState("");
   const [filtroStatus, setFiltroStatus] = useState("todos");
   const [open, setOpen] = useState(false);

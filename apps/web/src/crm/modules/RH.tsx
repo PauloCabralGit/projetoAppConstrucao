@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   uid, brl, dateBR, todayISO,
-  useLocalCollection,
+  useApiCollection, CRM_API_BASE,
   PageHeader, KpiGrid, Kpi,
   Toolbar, SearchInput, Select,
   Badge, DataTable, type Column,
@@ -93,10 +93,11 @@ const emptyAusencia = (): Ausencia => ({
   id: "", colaborador: "", tipo: "férias", inicio: todayISO(), fim: todayISO(), status: "pendente",
 });
 
-export function RHModule() {
-  const equipe = useLocalCollection<Colaborador>("rh_equipe", SEED_EQUIPE);
-  const vagas = useLocalCollection<Vaga>("rh_vagas", SEED_VAGAS);
-  const ausencias = useLocalCollection<Ausencia>("rh_ausencias", SEED_AUSENCIAS);
+export function RHModule({ adminKey }: { adminKey: string }) {
+  const equipe = useApiCollection<Colaborador>(`${CRM_API_BASE}/rh/equipe`, adminKey);
+  const vagas = useApiCollection<Vaga>(`${CRM_API_BASE}/rh/vagas`, adminKey);
+  const ausencias = useApiCollection<Ausencia>(`${CRM_API_BASE}/rh/ausencias`, adminKey);
+  void SEED_EQUIPE; void SEED_VAGAS; void SEED_AUSENCIAS;
 
   const [tab, setTab] = useState("equipe");
 
@@ -136,7 +137,7 @@ export function RHModule() {
 }
 
 // ── Equipe ────────────────────────────────────────────────────────────────────
-function EquipeTab({ equipe }: { equipe: ReturnType<typeof useLocalCollection<Colaborador>> }) {
+function EquipeTab({ equipe }: { equipe: ReturnType<typeof useApiCollection<Colaborador>> }) {
   const [busca, setBusca] = useState("");
   const [filtroDep, setFiltroDep] = useState("todos");
   const [modal, setModal] = useState<Colaborador | null>(null);
@@ -271,7 +272,7 @@ function FolhaTab({ ativos }: { ativos: Colaborador[] }) {
 }
 
 // ── Recrutamento ───────────────────────────────────────────────────────────────
-function RecrutamentoTab({ vagas }: { vagas: ReturnType<typeof useLocalCollection<Vaga>> }) {
+function RecrutamentoTab({ vagas }: { vagas: ReturnType<typeof useApiCollection<Vaga>> }) {
   const [modal, setModal] = useState<Vaga | null>(null);
 
   const columns: Column<Vaga>[] = [
@@ -342,7 +343,7 @@ function VagaModal({ vaga, onClose, onSave }: { vaga: Vaga; onClose: () => void;
 }
 
 // ── Férias / Ausências ─────────────────────────────────────────────────────────
-function AusenciasTab({ ausencias, equipe }: { ausencias: ReturnType<typeof useLocalCollection<Ausencia>>; equipe: Colaborador[] }) {
+function AusenciasTab({ ausencias, equipe }: { ausencias: ReturnType<typeof useApiCollection<Ausencia>>; equipe: Colaborador[] }) {
   const [modal, setModal] = useState<Ausencia | null>(null);
 
   const columns: Column<Ausencia>[] = [

@@ -8,13 +8,24 @@ import { FornecedoresModule } from "./crm/modules/Fornecedores";
 import { RHModule } from "./crm/modules/RH";
 import { SuporteModule } from "./crm/modules/Suporte";
 import { AgendaModule } from "./crm/modules/Agenda";
+import { AcessoModule } from "./crm/modules/Acesso";
 
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
 type Page =
   | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags"
   | "vendas" | "marketing" | "financeiro" | "relatorios"
-  | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda";
+  | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda"
+  | "acesso";
+
+// Mapeia cada página para a "área" de permissão correspondente.
+const PAGE_AREA: Record<Page, string> = {
+  dashboard: "operacao", requests: "operacao", providers: "operacao", users: "operacao",
+  payments: "operacao", complaints: "operacao", flags: "operacao",
+  vendas: "vendas", marketing: "marketing", financeiro: "financeiro", relatorios: "relatorios",
+  juridico: "juridico", rh: "rh", fornecedores: "fornecedores", suporte: "suporte", agenda: "agenda",
+  acesso: "__master__",
+};
 
 interface Overview {
   totalUsers: number;
@@ -1589,16 +1600,53 @@ const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: stri
       { key: "agenda", label: "Agenda & Tarefas", icon: "🗓️" },
     ],
   },
+  {
+    label: "Configurações",
+    items: [
+      { key: "acesso", label: "Controle de Acesso", icon: "🔒" },
+    ],
+  },
 ];
+
+// ── Auth (master ou operador com áreas) ─────────────────────────────────────────
+interface AuthState { cred: string; areas: string[]; isMaster: boolean; nome: string }
+
+function loadAuth(): AuthState {
+  try {
+    const raw = sessionStorage.getItem("crm_auth");
+    if (raw) return JSON.parse(raw) as AuthState;
+  } catch {}
+  const legacy = sessionStorage.getItem("admin_key");
+  if (legacy) return { cred: legacy, areas: ["*"], isMaster: true, nome: "Administrador" };
+  return { cred: "", areas: [], isMaster: false, nome: "" };
+}
+function saveAuth(a: AuthState) {
+  sessionStorage.setItem("crm_auth", JSON.stringify(a));
+  sessionStorage.removeItem("admin_key");
+}
 
 // ── Root ──────────────────────────────────────────────────────────────────────
 export function App() {
-  const [adminKey, setAdminKey] = useState(() => sessionStorage.getItem("admin_key") ?? "");
+  const [adminKey, setAdminKey] = useState(() => loadAuth().cred);
+  const [areas, setAreas] = useState<string[]>(() => loadAuth().areas);
+  const [isMaster, setIsMaster] = useState(() => loadAuth().isMaster);
+  const [nome, setNome] = useState(() => loadAuth().nome);
+  const [loginMode, setLoginMode] = useState<"operador" | "master">("operador");
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
   const [keyInput, setKeyInput] = useState("");
   const [loginError, setLoginError] = useState("");
   const [logging, setLogging] = useState(false);
   const [page, setPage] = useState<Page>("dashboard");
   const [badges, setBadges] = useState<Partial<Record<Page, number>>>({});
+
+  const canAccess = (area: string) => {
+    if (area === "__master__") return isMaster;
+    return isMaster || areas.includes("*") || areas.includes(area);
+  };
+  const visibleGroups = NAV_GROUPS
+    .map((g) => ({ ...g, items: g.items.filter((it) => canAccess(PAGE_AREA[it.key])) }))
+    .filter((g) => g.items.length > 0);
 
   function handleBadge(p: Page, count: number) {
     setBadges((prev) => ({ ...prev, [p]: count }));
@@ -1613,27 +1661,61 @@ export function App() {
 
   const loggedIn = adminKey.length > 0;
 
+  // Redireciona para a primeira área permitida se a atual não for acessível.
+  useEffect(() => {
+    if (!loggedIn) return;
+    if (!canAccess(PAGE_AREA[page])) {
+      const first = visibleGroups[0]?.items[0]?.key;
+      if (first) setPage(first);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [adminKey, isMaster, areas]);
+
+  function applyAuth(a: AuthState) {
+    saveAuth(a);
+    setAdminKey(a.cred);
+    setAreas(a.areas);
+    setIsMaster(a.isMaster);
+    setNome(a.nome);
+  }
+
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setLoginError("");
     setLogging(true);
     try {
-      const res = await apiFetch("/v1/admin/overview", keyInput).catch(() => null);
-      if (!res || !res.ok) {
-        setLoginError("Chave de administrador inválida.");
-        return;
+      if (loginMode === "master") {
+        const res = await apiFetch("/v1/admin/overview", keyInput).catch(() => null);
+        if (!res || !res.ok) { setLoginError("Chave de administrador inválida."); return; }
+        applyAuth({ cred: keyInput, areas: ["*"], isMaster: true, nome: "Administrador" });
+      } else {
+        const res = await fetch(`${API}/v1/crm/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, senha }),
+        }).catch(() => null);
+        const data = res ? await res.json().catch(() => null) : null;
+        if (!res || !res.ok || !data?.token) {
+          setLoginError(data?.message ?? "E-mail ou senha inválidos.");
+          return;
+        }
+        applyAuth({ cred: data.token, areas: data.areas ?? [], isMaster: false, nome: data.nome ?? "Operador" });
       }
-      sessionStorage.setItem("admin_key", keyInput);
-      setAdminKey(keyInput);
     } finally {
       setLogging(false);
     }
   }
 
   function handleLogout() {
+    sessionStorage.removeItem("crm_auth");
     sessionStorage.removeItem("admin_key");
     setAdminKey("");
+    setAreas([]);
+    setIsMaster(false);
+    setNome("");
     setKeyInput("");
+    setEmail("");
+    setSenha("");
   }
 
   if (!loggedIn) {
@@ -1647,18 +1729,57 @@ export function App() {
               <p>Painel Administrativo</p>
             </div>
           </div>
+          <div className="login-tabs">
+            <button
+              type="button"
+              className={`login-tab${loginMode === "operador" ? " active" : ""}`}
+              onClick={() => { setLoginMode("operador"); setLoginError(""); }}
+            >Operador</button>
+            <button
+              type="button"
+              className={`login-tab${loginMode === "master" ? " active" : ""}`}
+              onClick={() => { setLoginMode("master"); setLoginError(""); }}
+            >Dono (chave master)</button>
+          </div>
+
           <form onSubmit={handleLogin} className="login-form">
-            <label>
-              Chave de acesso
-              <input
-                type="password"
-                value={keyInput}
-                onChange={(e) => setKeyInput(e.target.value)}
-                placeholder="Digite a chave de administrador"
-                required
-                autoFocus
-              />
-            </label>
+            {loginMode === "operador" ? (
+              <>
+                <label>
+                  E-mail
+                  <input
+                    type="email"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder="seu@email.com"
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  Senha
+                  <input
+                    type="password"
+                    value={senha}
+                    onChange={(e) => setSenha(e.target.value)}
+                    placeholder="Sua senha"
+                    required
+                  />
+                </label>
+              </>
+            ) : (
+              <label>
+                Chave de acesso
+                <input
+                  type="password"
+                  value={keyInput}
+                  onChange={(e) => setKeyInput(e.target.value)}
+                  placeholder="Digite a chave de administrador"
+                  required
+                  autoFocus
+                />
+              </label>
+            )}
             {loginError && <p className="login-error">{loginError}</p>}
             <button className="login-btn" type="submit" disabled={logging}>
               {logging ? "Verificando..." : "Entrar"}
@@ -1676,11 +1797,11 @@ export function App() {
           <span className="logo-mark sm">CC</span>
           <div>
             <strong>ConstruConnect</strong>
-            <p>Admin</p>
+            <p>{isMaster ? "Administrador" : (nome || "Operador")}</p>
           </div>
         </div>
         <nav className="sidebar-nav">
-          {NAV_GROUPS.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.label}>
               <div className="sidebar-group-label">{group.label}</div>
               {group.items.map((n) => (
@@ -1725,15 +1846,16 @@ export function App() {
           {page === "payments" && <PaymentsPage adminKey={adminKey} />}
           {page === "complaints" && <ComplaintsPage adminKey={adminKey} />}
           {page === "flags" && <FeatureFlagsPage adminKey={adminKey} />}
-          {page === "vendas" && <VendasModule />}
-          {page === "marketing" && <MarketingModule />}
+          {page === "vendas" && <VendasModule adminKey={adminKey} />}
+          {page === "marketing" && <MarketingModule adminKey={adminKey} />}
           {page === "financeiro" && <FinanceiroModule adminKey={adminKey} />}
           {page === "relatorios" && <RelatoriosModule adminKey={adminKey} />}
-          {page === "juridico" && <JuridicoModule />}
-          {page === "rh" && <RHModule />}
-          {page === "fornecedores" && <FornecedoresModule />}
-          {page === "suporte" && <SuporteModule />}
-          {page === "agenda" && <AgendaModule />}
+          {page === "juridico" && <JuridicoModule adminKey={adminKey} />}
+          {page === "rh" && <RHModule adminKey={adminKey} />}
+          {page === "fornecedores" && <FornecedoresModule adminKey={adminKey} />}
+          {page === "suporte" && <SuporteModule adminKey={adminKey} />}
+          {page === "agenda" && <AgendaModule adminKey={adminKey} />}
+          {page === "acesso" && isMaster && <AcessoModule adminKey={adminKey} />}
         </div>
       </main>
     </div>

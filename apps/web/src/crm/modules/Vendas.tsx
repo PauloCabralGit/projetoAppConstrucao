@@ -4,7 +4,8 @@ import {
   brl,
   dateBR,
   todayISO,
-  useLocalCollection,
+  useApiCollection,
+  CRM_API_BASE,
   PageHeader,
   KpiGrid,
   Kpi,
@@ -165,8 +166,9 @@ function emptyForm(): Omit<Lead, "id" | "createdAt"> {
   };
 }
 
-export function VendasModule() {
-  const { items, add, update, remove } = useLocalCollection<Lead>("vendas_leads", SEED);
+export function VendasModule({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Lead>(`${CRM_API_BASE}/leads`, adminKey);
+  void SEED;
   const [busca, setBusca] = useState("");
   const [filtroResp, setFiltroResp] = useState("todos");
 

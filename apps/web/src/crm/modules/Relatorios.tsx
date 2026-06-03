@@ -92,17 +92,24 @@ function normalizaEstagio(s: string): string {
 
 export function RelatoriosModule({ adminKey }: { adminKey: string }) {
   const [overview, setOverview] = useState<AdminOverview | null>(null);
+  const [lancamentos, setLancamentos] = useState<LancamentoLite[]>([]);
+  const [leads, setLeads] = useState<LeadLite[]>([]);
 
   useEffect(() => {
     let alive = true;
+    const API = "https://construconnect-api.orionsystem.workers.dev/v1/admin";
+    const h = { "x-admin-key": adminKey };
     (async () => {
       try {
-        const res = await fetch("https://construconnect-api.orionsystem.workers.dev/v1/admin/overview", {
-          headers: { "x-admin-key": adminKey },
-        });
-        if (!res.ok) return;
-        const json = (await res.json()) as AdminOverview;
-        if (alive) setOverview(json);
+        const [ov, lc, ld] = await Promise.all([
+          fetch(`${API}/overview`, { headers: h }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch(`${API}/crm/lancamentos`, { headers: h }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch(`${API}/crm/leads`, { headers: h }).then((r) => (r.ok ? r.json() : null)).catch(() => null),
+        ]);
+        if (!alive) return;
+        if (ov) setOverview(ov as AdminOverview);
+        if (lc?.items) setLancamentos(lc.items as LancamentoLite[]);
+        if (ld?.items) setLeads(ld.items as LeadLite[]);
       } catch {
         // degrada graciosamente
       }
@@ -112,7 +119,7 @@ export function RelatoriosModule({ adminKey }: { adminKey: string }) {
 
   // ── Receita por mês (lida do Financeiro) ──────────────────────────────────
   const receitaPorMes = useMemo(() => {
-    const lanc = lerColecao<LancamentoLite>("fin_lancamentos");
+    const lanc = lancamentos;
     if (lanc.length === 0) return { data: SEED_RECEITA_MENSAL, fonte: "exemplo" as const };
     const acc: Record<string, number> = {};
     for (const l of lanc) {
@@ -123,11 +130,10 @@ export function RelatoriosModule({ adminKey }: { adminKey: string }) {
     const keys = Object.keys(acc).sort();
     const data = keys.map((k) => ({ label: rotuloMes(k), value: Math.round(acc[k]) }));
     return { data: data.length ? data : SEED_RECEITA_MENSAL, fonte: "financeiro" as const };
-  }, []);
+  }, [lancamentos]);
 
   // ── Leads por estágio (lido de Vendas) ────────────────────────────────────
   const leadsPorEstagio = useMemo(() => {
-    const leads = lerColecao<LeadLite>("vendas_leads");
     if (leads.length === 0) return { data: SEED_LEADS_ESTAGIO, fonte: "exemplo" as const };
     const acc: Record<string, number> = {};
     for (const l of leads) {
@@ -136,7 +142,7 @@ export function RelatoriosModule({ adminKey }: { adminKey: string }) {
     }
     const data = Object.entries(acc).map(([label, value]) => ({ label, value }));
     return { data: data.length ? data : SEED_LEADS_ESTAGIO, fonte: "vendas" as const };
-  }, []);
+  }, [leads]);
 
   // ── KPIs consolidados ─────────────────────────────────────────────────────
   const receitaTotal = overview?.totalRevenue;

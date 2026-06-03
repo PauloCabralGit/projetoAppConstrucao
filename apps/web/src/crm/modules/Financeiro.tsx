@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   uid, brl, dateBR, todayISO, monthKey,
-  useLocalCollection,
+  useApiCollection, CRM_API_BASE,
   PageHeader, KpiGrid, Kpi,
   Toolbar, SearchInput, Select,
   Badge, DataTable, type Column,
@@ -107,8 +107,9 @@ const STATUS_TONE: Record<StatusFatura, "green" | "orange" | "red"> = {
 
 export function FinanceiroModule({ adminKey }: { adminKey: string }) {
   const [tab, setTab] = useState<string>("visao");
-  const lancamentos = useLocalCollection<Lancamento>("fin_lancamentos", SEED_LANCAMENTOS);
-  const faturas = useLocalCollection<Fatura>("fin_faturas", SEED_FATURAS);
+  const lancamentos = useApiCollection<Lancamento>(`${CRM_API_BASE}/lancamentos`, adminKey);
+  const faturas = useApiCollection<Fatura>(`${CRM_API_BASE}/faturas`, adminKey);
+  void SEED_LANCAMENTOS; void SEED_FATURAS;
 
   const [overview, setOverview] = useState<AdminOverview | null>(null);
 
@@ -270,7 +271,7 @@ function VisaoGeral({
 }
 
 // ══════════════════════════════ Lançamentos ════════════════════════════════
-type LancStore = ReturnType<typeof useLocalCollection<Lancamento>>;
+type LancStore = ReturnType<typeof useApiCollection<Lancamento>>;
 
 const LANC_VAZIO: Omit<Lancamento, "id"> = {
   data: todayISO(), descricao: "", categoria: "Comissão plataforma", tipo: "receita", valor: 0,
@@ -420,7 +421,7 @@ function LancamentosTab({ store }: { store: LancStore }) {
 }
 
 // ════════════════════════════════ Faturas ══════════════════════════════════
-type FatStore = ReturnType<typeof useLocalCollection<Fatura>>;
+type FatStore = ReturnType<typeof useApiCollection<Fatura>>;
 
 const FAT_VAZIA: Omit<Fatura, "id"> = {
   parte: "", direcao: "receber", valor: 0, vencimento: todayISO(), status: "pendente",

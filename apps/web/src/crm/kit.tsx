@@ -67,6 +67,57 @@ export function useLocalCollection<T extends { id: string }>(key: string, seed: 
   return { items, add, update, remove, setAll };
 }
 
+// Hook com a MESMA API do useLocalCollection, mas persistido no backend real
+// (endpoints admin /v1/admin/crm/*). Atualiza a UI de forma otimista.
+export function useApiCollection<T extends { id: string }>(base: string, adminKey: string) {
+  const [items, setItems] = useState<T[]>([]);
+  const [loading, setLoading] = useState(true);
+  const headers = { "Content-Type": "application/json", "x-admin-key": adminKey };
+
+  const reload = useCallback(async () => {
+    try {
+      const r = await fetch(base, { headers: { "x-admin-key": adminKey } });
+      if (r.ok) {
+        const d = await r.json();
+        setItems((d.items ?? []) as T[]);
+      }
+    } catch {
+      /* mantém o estado atual em caso de falha de rede */
+    } finally {
+      setLoading(false);
+    }
+  }, [base, adminKey]);
+
+  useEffect(() => { reload(); }, [reload]);
+
+  const add = useCallback((item: Omit<T, "id"> & { id?: string }) => {
+    const tempId = item.id ?? uid();
+    const optimistic = { ...item, id: tempId } as T;
+    setItems((prev) => [optimistic, ...prev]);
+    fetch(base, { method: "POST", headers, body: JSON.stringify(item) })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (d?.item) setItems((prev) => prev.map((it) => (it.id === tempId ? d.item : it))); })
+      .catch(() => {});
+    return optimistic;
+  }, [base, adminKey]);
+
+  const update = useCallback((id: string, patch: Partial<T>) => {
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
+    fetch(`${base}/${id}`, { method: "PATCH", headers, body: JSON.stringify(patch) }).catch(() => {});
+  }, [base, adminKey]);
+
+  const remove = useCallback((id: string) => {
+    setItems((prev) => prev.filter((it) => it.id !== id));
+    fetch(`${base}/${id}`, { method: "DELETE", headers: { "x-admin-key": adminKey } }).catch(() => {});
+  }, [base, adminKey]);
+
+  const setAll = useCallback((next: T[]) => setItems(next), []);
+
+  return { items, add, update, remove, setAll, loading, reload };
+}
+
+export const CRM_API_BASE = "https://construconnect-api.orionsystem.workers.dev/v1/admin/crm";
+
 // ── Componentes ───────────────────────────────────────────────────────────────
 
 export function PageHeader({ title, subtitle, actions }: { title: string; subtitle?: string; actions?: ReactNode }) {

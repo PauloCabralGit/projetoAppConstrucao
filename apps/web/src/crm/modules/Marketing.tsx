@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import {
   uid,
   brl,
-  useLocalCollection,
+  useApiCollection,
+  CRM_API_BASE,
   PageHeader,
   KpiGrid,
   Kpi,
@@ -74,8 +75,9 @@ function numField(v: string): number {
   return Number(v.replace(/[^\d]/g, "")) || 0;
 }
 
-export function MarketingModule() {
-  const { items, add, update, remove } = useLocalCollection<Campanha>("mkt_campanhas", SEED);
+export function MarketingModule({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Campanha>(`${CRM_API_BASE}/mkt/campanhas`, adminKey);
+  void SEED;
   const [tab, setTab] = useState<"campanhas" | "canais">("campanhas");
 
   const [open, setOpen] = useState(false);

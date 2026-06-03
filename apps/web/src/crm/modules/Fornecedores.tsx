@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   uid, brl, dateBR, todayISO,
-  useLocalCollection,
+  useApiCollection, CRM_API_BASE,
   PageHeader, KpiGrid, Kpi,
   Toolbar, SearchInput, Select,
   Badge, DataTable, type Column,
@@ -97,7 +97,7 @@ function cotacaoTone(s: CotacaoStatus): "blue" | "orange" | "green" | "red" {
 
 // ════════════════════════════════════════════════════════════════════════════
 
-export function FornecedoresModule() {
+export function FornecedoresModule({ adminKey }: { adminKey: string }) {
   const [tab, setTab] = useState("fornecedores");
 
   return (
@@ -113,9 +113,9 @@ export function FornecedoresModule() {
         onChange={setTab}
       />
       <div style={{ marginTop: 16 }}>
-        {tab === "fornecedores" && <FornecedoresTab />}
-        {tab === "estoque" && <EstoqueTab />}
-        {tab === "cotacoes" && <CotacoesTab />}
+        {tab === "fornecedores" && <FornecedoresTab adminKey={adminKey} />}
+        {tab === "estoque" && <EstoqueTab adminKey={adminKey} />}
+        {tab === "cotacoes" && <CotacoesTab adminKey={adminKey} />}
       </div>
     </div>
   );
@@ -127,8 +127,9 @@ const emptyFornecedor = (): Omit<Fornecedor, "id"> => ({
   nome: "", cnpj: "", categoria: "cimento", contato: "", telefone: "", cidade: "", avaliacao: 3,
 });
 
-function FornecedoresTab() {
-  const { items, add, update, remove } = useLocalCollection<Fornecedor>("forn_fornecedores", FORNECEDORES_SEED);
+function FornecedoresTab({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Fornecedor>(`${CRM_API_BASE}/forn/fornecedores`, adminKey);
+  void FORNECEDORES_SEED;
   const [busca, setBusca] = useState("");
   const [filtroCat, setFiltroCat] = useState("todas");
   const [open, setOpen] = useState(false);
@@ -255,8 +256,9 @@ const emptyInsumo = (): Omit<Insumo, "id"> => ({
   item: "", categoria: "cimento", quantidade: 0, unidade: "un", minimo: 0, custo: 0,
 });
 
-function EstoqueTab() {
-  const { items, add, update, remove } = useLocalCollection<Insumo>("forn_estoque", ESTOQUE_SEED);
+function EstoqueTab({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Insumo>(`${CRM_API_BASE}/forn/estoque`, adminKey);
+  void ESTOQUE_SEED;
   const [busca, setBusca] = useState("");
   const [filtroCat, setFiltroCat] = useState("todas");
   const [open, setOpen] = useState(false);
@@ -383,8 +385,9 @@ const emptyCotacao = (): Omit<Cotacao, "id"> => ({
   item: "", fornecedor: "", valor: 0, prazo: todayISO(), status: "solicitada",
 });
 
-function CotacoesTab() {
-  const { items, add, update, remove } = useLocalCollection<Cotacao>("forn_cotacoes", COTACOES_SEED);
+function CotacoesTab({ adminKey }: { adminKey: string }) {
+  const { items, add, update, remove } = useApiCollection<Cotacao>(`${CRM_API_BASE}/forn/cotacoes`, adminKey);
+  void COTACOES_SEED;
   const [busca, setBusca] = useState("");
   const [filtroStatus, setFiltroStatus] = useState("todos");
   const [open, setOpen] = useState(false);

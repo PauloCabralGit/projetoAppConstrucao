@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   uid, dateBR, todayISO,
-  useLocalCollection,
+  useApiCollection, CRM_API_BASE,
   PageHeader, KpiGrid, Kpi,
   Toolbar, Select,
   Badge, Button, Modal, Field, TextInput, Textarea,
@@ -66,9 +66,10 @@ const emptyCompromisso = (): Compromisso => ({
   id: "", titulo: "", data: todayISO(), hora: "09:00", participantes: "", tipo: "reunião", notas: "",
 });
 
-export function AgendaModule() {
-  const tarefas = useLocalCollection<Tarefa>("agenda_tarefas", SEED_TAREFAS);
-  const compromissos = useLocalCollection<Compromisso>("agenda_compromissos", SEED_COMPROMISSOS);
+export function AgendaModule({ adminKey }: { adminKey: string }) {
+  const tarefas = useApiCollection<Tarefa>(`${CRM_API_BASE}/agenda/tarefas`, adminKey);
+  const compromissos = useApiCollection<Compromisso>(`${CRM_API_BASE}/agenda/compromissos`, adminKey);
+  void SEED_TAREFAS; void SEED_COMPROMISSOS;
   const [tab, setTab] = useState("tarefas");
 
   const hoje = todayISO();
@@ -99,7 +100,7 @@ export function AgendaModule() {
 }
 
 // ── Tarefas ─────────────────────────────────────────────────────────────────
-function TarefasTab({ tarefas }: { tarefas: ReturnType<typeof useLocalCollection<Tarefa>> }) {
+function TarefasTab({ tarefas }: { tarefas: ReturnType<typeof useApiCollection<Tarefa>> }) {
   const [filtro, setFiltro] = useState("todas");
   const [modal, setModal] = useState<Tarefa | null>(null);
   const hoje = todayISO();
@@ -206,7 +207,7 @@ function TarefaModal({ tarefa, onClose, onSave }: { tarefa: Tarefa; onClose: () 
 }
 
 // ── Compromissos (timeline) ────────────────────────────────────────────────────
-function CompromissosTab({ compromissos }: { compromissos: ReturnType<typeof useLocalCollection<Compromisso>> }) {
+function CompromissosTab({ compromissos }: { compromissos: ReturnType<typeof useApiCollection<Compromisso>> }) {
   const [modal, setModal] = useState<Compromisso | null>(null);
 
   const ordenados = useMemo(

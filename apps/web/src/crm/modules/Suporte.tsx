@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import {
   uid, dateBR, todayISO,
-  useLocalCollection,
+  useApiCollection, CRM_API_BASE,
   PageHeader, KpiGrid, Kpi,
   Toolbar, SearchInput, Select,
   Badge, DataTable, type Column,
@@ -68,9 +68,10 @@ const emptyTicket = (): Ticket => ({
 });
 const emptyArtigo = (): Artigo => ({ id: "", titulo: "", categoria: "", conteudo: "" });
 
-export function SuporteModule() {
-  const tickets = useLocalCollection<Ticket>("sup_tickets", SEED_TICKETS);
-  const kb = useLocalCollection<Artigo>("sup_kb", SEED_KB);
+export function SuporteModule({ adminKey }: { adminKey: string }) {
+  const tickets = useApiCollection<Ticket>(`${CRM_API_BASE}/sup/tickets`, adminKey);
+  const kb = useApiCollection<Artigo>(`${CRM_API_BASE}/sup/kb`, adminKey);
+  void SEED_TICKETS; void SEED_KB;
   const [tab, setTab] = useState("tickets");
 
   const abertos = tickets.items.filter((t) => t.status === "aberto").length;
@@ -101,7 +102,7 @@ export function SuporteModule() {
 }
 
 // ── Tickets ─────────────────────────────────────────────────────────────────
-function TicketsTab({ tickets }: { tickets: ReturnType<typeof useLocalCollection<Ticket>> }) {
+function TicketsTab({ tickets }: { tickets: ReturnType<typeof useApiCollection<Ticket>> }) {
   const [busca, setBusca] = useState("");
   const [filtroStatus, setFiltroStatus] = useState("todos");
   const [modal, setModal] = useState<Ticket | null>(null);
@@ -198,7 +199,7 @@ function TicketModal({ ticket, onClose, onSave }: { ticket: Ticket; onClose: () 
 }
 
 // ── Base de conhecimento ──────────────────────────────────────────────────────
-function KbTab({ kb }: { kb: ReturnType<typeof useLocalCollection<Artigo>> }) {
+function KbTab({ kb }: { kb: ReturnType<typeof useApiCollection<Artigo>> }) {
   const [modal, setModal] = useState<Artigo | null>(null);
 
   return (

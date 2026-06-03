@@ -168,6 +168,11 @@ textarea.crm-input { resize: vertical; font-family: inherit; }
 .crm-kanban-card .meta { font-size: 0.76rem; color: var(--muted); margin-top: 4px; }
 .crm-kanban-card .val { font-weight: 700; color: var(--success); font-size: 0.9rem; margin-top: 6px; }
 
+/* Login tabs (operador / master) */
+.login-tabs { display: flex; gap: 6px; margin-bottom: 18px; background: var(--bg); padding: 4px; border-radius: 10px; }
+.login-tab { flex: 1; padding: 9px 10px; border-radius: 8px; font-size: 0.84rem; font-weight: 600; color: var(--muted); }
+.login-tab.active { background: var(--card-bg); color: var(--accent); box-shadow: var(--shadow); }
+
 /* Timeline (Agenda) */
 .crm-timeline { display: grid; gap: 10px; }
 .crm-timeline-item { display: flex; gap: 12px; padding: 12px 14px; background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px; }

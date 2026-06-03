@@ -20,6 +20,9 @@ type Bindings = {
 
 type Variables = {
   userId: string;
+  authorized: boolean;
+  isMaster: boolean;
+  crmUser: { id: string; nome: string; perfil: string; areas: string[]; ativo: boolean };
 };
 
 const DEFAULT_FLAGS = [
@@ -142,6 +145,7 @@ const PUBLIC_PATHS = new Set([
   "/v1/feature-flags",
   "/v1/providers",
   "/v1/providers/available",
+  "/v1/crm/auth/login",
 ]);
 
 app.use("/v1/*", async (c, next) => {
@@ -167,6 +171,95 @@ app.use("/v1/*", async (c, next) => {
 
   c.set("userId", user.id);
   return next();
+});
+
+// ── CRM: controle de acesso por área ────────────────────────────────────────
+// Senhas com PBKDF2-SHA256 (Web Crypto, disponível no Workers).
+async function hashSenha(senha: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMat, 256);
+  const toHex = (a: Uint8Array) => [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return `${toHex(salt)}:${toHex(new Uint8Array(bits))}`;
+}
+async function verifySenha(senha: string, stored: string): Promise<boolean> {
+  const [saltHex, hashHex] = (stored || "").split(":");
+  if (!saltHex || !hashHex) return false;
+  const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
+  const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMat, 256);
+  const calc = [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
+  return calc === hashHex;
+}
+function genToken(): string {
+  return [...crypto.getRandomValues(new Uint8Array(32))].map((x) => x.toString(16).padStart(2, "0")).join("");
+}
+
+// Mapeia o caminho da requisição para uma "área" de permissão.
+function areaForPath(path: string): string {
+  const m = path.match(/^\/v1\/admin\/crm\/([^/]+)/);
+  if (m) {
+    const a = m[1];
+    if (a === "leads") return "vendas";
+    if (a === "lancamentos" || a === "faturas") return "financeiro";
+    if (a === "rh") return "rh";
+    if (a === "jur") return "juridico";
+    if (a === "mkt") return "marketing";
+    if (a === "forn") return "fornecedores";
+    if (a === "sup") return "suporte";
+    if (a === "agenda") return "agenda";
+    if (a === "relatorios") return "relatorios";
+    return "operacao";
+  }
+  return "operacao";
+}
+function operatorAllowed(user: any, area: string, method: string): boolean {
+  if (user.perfil === "admin") return true;
+  const areas: string[] = user.areas ?? [];
+  if (areas.includes(area)) return true;
+  // "relatorios" implica leitura de vendas/financeiro (o BI consolida ambos)
+  if (method === "GET" && areas.includes("relatorios") && (area === "vendas" || area === "financeiro")) return true;
+  return false;
+}
+
+// Middleware de autorização para todo /v1/admin/*: aceita a chave master
+// (dono) OU um token de sessão de operador (no mesmo header x-admin-key).
+app.use("/v1/admin/*", async (c, next) => {
+  const path = c.req.path;
+  const method = c.req.method;
+  const key = c.req.header("x-admin-key") ?? "";
+
+  // Dono / master
+  if (c.env.ADMIN_KEY && key === c.env.ADMIN_KEY) {
+    c.set("authorized", true);
+    c.set("isMaster", true);
+    return next();
+  }
+
+  // Operador via token de sessão
+  if (key) {
+    const adminDb = db(c.env);
+    const { data: sess } = await adminDb
+      .from("crm_sessions").select("user_id, expires_at").eq("token", key).maybeSingle();
+    if (sess && new Date(sess.expires_at) > new Date()) {
+      const { data: user } = await adminDb
+        .from("crm_users").select("id, nome, perfil, areas, ativo").eq("id", sess.user_id).maybeSingle();
+      if (user && user.ativo) {
+        c.set("crmUser", user);
+        // Gestão de acessos é exclusiva do master
+        if (path.startsWith("/v1/admin/crm-users")) {
+          return c.json({ message: "Apenas o administrador master gerencia acessos." }, 403);
+        }
+        // Overview liberado para qualquer operador autenticado (KPIs agregados)
+        if (path === "/v1/admin/overview") { c.set("authorized", true); return next(); }
+        if (operatorAllowed(user, areaForPath(path), method)) { c.set("authorized", true); return next(); }
+        return c.json({ message: "Sem permissão para esta área." }, 403);
+      }
+    }
+    return c.json({ message: "Sessão inválida ou expirada." }, 401);
+  }
+
+  return c.json({ message: "Não autorizado." }, 401);
 });
 
 // ── MercadoPago webhook HMAC validation ───────────────────────────────────────
@@ -1738,9 +1831,171 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
 // ═══════════════════════════════════════════════════════════════════════════
 
 function isAdmin(c: any): boolean {
+  // O middleware /v1/admin/* já autorizou (master ou operador com permissão).
+  if (c.get("authorized") === true) return true;
   const key = c.req.header("x-admin-key");
   return !!c.env.ADMIN_KEY && key === c.env.ADMIN_KEY;
 }
+
+function isMaster(c: any): boolean {
+  return c.get("isMaster") === true;
+}
+
+// ── Login de operador do CRM ────────────────────────────────────────────────
+app.post("/v1/crm/auth/login", async (c) => {
+  const { email, senha } = await c.req.json<{ email?: string; senha?: string }>();
+  if (!email || !senha) return c.json({ message: "Informe e-mail e senha." }, 400);
+  const adminDb = db(c.env);
+  const { data: user } = await adminDb
+    .from("crm_users").select("*").eq("email", String(email).toLowerCase().trim()).maybeSingle();
+  if (!user || !user.ativo) return c.json({ message: "Credenciais inválidas." }, 401);
+  if (!(await verifySenha(senha, user.senha_hash))) return c.json({ message: "Credenciais inválidas." }, 401);
+
+  const token = genToken();
+  const expires_at = new Date(Date.now() + 1000 * 60 * 60 * 24 * 30).toISOString();
+  await adminDb.from("crm_sessions").insert({ token, user_id: user.id, expires_at });
+
+  const areas = user.perfil === "admin" ? ["*"] : (user.areas ?? []);
+  return c.json({ token, nome: user.nome, perfil: user.perfil, areas });
+});
+
+// ── Gestão de operadores (somente master) ───────────────────────────────────
+app.get("/v1/admin/crm-users", async (c) => {
+  if (!isMaster(c)) return c.json({ message: "Não autorizado." }, 403);
+  const { data, error } = await db(c.env)
+    .from("crm_users").select("id, nome, email, perfil, areas, ativo, created_at").order("created_at", { ascending: false });
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ items: data ?? [] });
+});
+
+app.post("/v1/admin/crm-users", async (c) => {
+  if (!isMaster(c)) return c.json({ message: "Não autorizado." }, 403);
+  const b = await c.req.json<{ nome?: string; email?: string; senha?: string; perfil?: string; areas?: string[] }>();
+  if (!b.email || !b.senha) return c.json({ message: "E-mail e senha são obrigatórios." }, 400);
+  const row = {
+    nome: b.nome ?? "",
+    email: String(b.email).toLowerCase().trim(),
+    senha_hash: await hashSenha(b.senha),
+    perfil: b.perfil ?? "operador",
+    areas: b.areas ?? [],
+    ativo: true,
+  };
+  const { data, error } = await db(c.env)
+    .from("crm_users").insert(row).select("id, nome, email, perfil, areas, ativo, created_at").maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ item: data });
+});
+
+app.patch("/v1/admin/crm-users/:id", async (c) => {
+  if (!isMaster(c)) return c.json({ message: "Não autorizado." }, 403);
+  const b = await c.req.json<{ nome?: string; email?: string; senha?: string; perfil?: string; areas?: string[]; ativo?: boolean }>();
+  const patch: Record<string, any> = {};
+  if (b.nome !== undefined) patch.nome = b.nome;
+  if (b.email !== undefined) patch.email = String(b.email).toLowerCase().trim();
+  if (b.perfil !== undefined) patch.perfil = b.perfil;
+  if (b.areas !== undefined) patch.areas = b.areas;
+  if (b.ativo !== undefined) patch.ativo = b.ativo;
+  if (b.senha) patch.senha_hash = await hashSenha(b.senha);
+  const { data, error } = await db(c.env)
+    .from("crm_users").update(patch).eq("id", c.req.param("id")).select("id, nome, email, perfil, areas, ativo, created_at").maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ item: data });
+});
+
+app.delete("/v1/admin/crm-users/:id", async (c) => {
+  if (!isMaster(c)) return c.json({ message: "Não autorizado." }, 403);
+  const { error } = await db(c.env).from("crm_users").delete().eq("id", c.req.param("id"));
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+// ── CRM: factory de CRUD admin (Vendas/Financeiro) ──────────────────────────
+function pick(obj: Record<string, any>, fields: string[]): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const f of fields) if (obj[f] !== undefined) out[f] = obj[f];
+  return out;
+}
+
+function registerCrmCrud(
+  path: string,
+  table: string,
+  fields: string[],
+  opts?: { mapIn?: (b: any) => any; mapOut?: (r: any) => any },
+) {
+  const mapOut = opts?.mapOut ?? ((r: any) => r);
+  const mapIn = opts?.mapIn ?? ((b: any) => b);
+
+  app.get(`/v1/admin/crm/${path}`, async (c) => {
+    if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+    const { data, error } = await db(c.env).from(table).select("*").order("created_at", { ascending: false });
+    if (error) return c.json({ message: error.message }, 500);
+    return c.json({ items: (data ?? []).map(mapOut) });
+  });
+
+  app.post(`/v1/admin/crm/${path}`, async (c) => {
+    if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+    const row = pick(mapIn(await c.req.json()), fields);
+    const { data, error } = await db(c.env).from(table).insert(row).select("*").maybeSingle();
+    if (error) return c.json({ message: error.message }, 500);
+    return c.json({ item: mapOut(data) });
+  });
+
+  app.patch(`/v1/admin/crm/${path}/:id`, async (c) => {
+    if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+    const row = pick(mapIn(await c.req.json()), fields);
+    const { data, error } = await db(c.env).from(table).update(row).eq("id", c.req.param("id")).select("*").maybeSingle();
+    if (error) return c.json({ message: error.message }, 500);
+    return c.json({ item: mapOut(data) });
+  });
+
+  app.delete(`/v1/admin/crm/${path}/:id`, async (c) => {
+    if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+    const { error } = await db(c.env).from(table).delete().eq("id", c.req.param("id"));
+    if (error) return c.json({ message: error.message }, 500);
+    return c.json({ ok: true });
+  });
+}
+
+// Vendas — leads (mapeia createdAt <-> created_at)
+registerCrmCrud(
+  "leads",
+  "crm_leads",
+  ["nome", "empresa", "telefone", "email", "valor", "origem", "estagio", "responsavel", "notas", "created_at"],
+  {
+    mapIn: (b) => ({ ...b, created_at: b.createdAt ?? b.created_at }),
+    mapOut: (r) => (r ? { ...r, createdAt: r.created_at } : r),
+  },
+);
+
+// Financeiro — lançamentos e faturas
+registerCrmCrud("lancamentos", "crm_lancamentos", ["data", "descricao", "categoria", "tipo", "valor"]);
+registerCrmCrud("faturas", "crm_faturas", ["parte", "direcao", "valor", "vencimento", "status"]);
+
+// RH — equipe, vagas, ausências
+registerCrmCrud("rh/equipe", "crm_rh_equipe", ["nome", "cargo", "departamento", "salario", "beneficios", "admissao", "status"]);
+registerCrmCrud("rh/vagas", "crm_rh_vagas", ["cargo", "departamento", "candidatos", "status", "abertura"]);
+registerCrmCrud("rh/ausencias", "crm_rh_ausencias", ["colaborador", "tipo", "inicio", "fim", "status"]);
+
+// Jurídico — contratos, compliance, disputas
+registerCrmCrud("jur/contratos", "crm_jur_contratos", ["tipo", "contraparte", "status", "inicio", "fim", "valor", "obs"]);
+registerCrmCrud("jur/compliance", "crm_jur_compliance", ["titulo", "descricao", "status"]);
+registerCrmCrud("jur/disputas", "crm_jur_disputas", ["parte", "tipo", "status", "valor", "advogado", "obs"]);
+
+// Marketing — campanhas
+registerCrmCrud("mkt/campanhas", "crm_mkt_campanhas", ["nome", "canal", "orcamento", "gasto", "leads", "status"]);
+
+// Fornecedores / Estoque / Cotações
+registerCrmCrud("forn/fornecedores", "crm_forn_fornecedores", ["nome", "cnpj", "categoria", "contato", "telefone", "cidade", "avaliacao"]);
+registerCrmCrud("forn/estoque", "crm_forn_estoque", ["item", "categoria", "quantidade", "unidade", "minimo", "custo"]);
+registerCrmCrud("forn/cotacoes", "crm_forn_cotacoes", ["item", "fornecedor", "valor", "prazo", "status"]);
+
+// Suporte — tickets e base de conhecimento
+registerCrmCrud("sup/tickets", "crm_sup_tickets", ["assunto", "solicitante", "canal", "prioridade", "status", "responsavel", "abertura", "resposta"]);
+registerCrmCrud("sup/kb", "crm_sup_kb", ["titulo", "categoria", "conteudo"]);
+
+// Agenda — tarefas e compromissos
+registerCrmCrud("agenda/tarefas", "crm_agenda_tarefas", ["titulo", "responsavel", "prioridade", "prazo", "concluida"]);
+registerCrmCrud("agenda/compromissos", "crm_agenda_compromissos", ["titulo", "data", "hora", "participantes", "tipo", "notas"]);
 
 // ── Overview stats ────────────────────────────────────────────────────────
 app.get("/v1/admin/overview", async (c) => {
