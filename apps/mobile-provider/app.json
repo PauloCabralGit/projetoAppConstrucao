@@ -54,7 +54,8 @@
           "cameraPermission": "Use a câmera para tirar fotos das obras."
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "expo-font"
     ],
     "extra": {
       "router": {
