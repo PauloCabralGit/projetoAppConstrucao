@@ -23,3 +23,6 @@ web-build/
 google-services-key.json
 google-services.json
 GoogleService-Info.plist
+
+# Claude Code local settings (machine-specific)
+.claude/settings.local.json

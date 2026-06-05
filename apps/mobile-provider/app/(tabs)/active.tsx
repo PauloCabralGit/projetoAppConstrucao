@@ -238,35 +238,46 @@ export default function ActiveScreen() {
   }
 
   async function startLocationTracking(userId: string) {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert(
-        'Permissão de localização',
-        'Ative a localização nas configurações do dispositivo para rastreamento em tempo real.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
-    locationSubRef.current?.remove();
-
-    locationSubRef.current = await Location.watchPositionAsync(
-      { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 5 },
-      async (loc) => {
-        const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
-        setProviderCoord(coords);
-        await supabase.from('provider_locations').upsert(
-          {
-            user_id: userId,
-            latitude: loc.coords.latitude,
-            longitude: loc.coords.longitude,
-            heading: loc.coords.heading ?? 0,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'user_id' }
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert(
+          'Permissão de localização',
+          'Ative a localização nas configurações do dispositivo para rastreamento em tempo real.',
+          [{ text: 'OK' }]
         );
+        return;
       }
-    );
+
+      locationSubRef.current?.remove();
+
+      // Accuracy.Balanced evita o diálogo de "alta precisão" do Google Play
+      // Services (que pode entrar em loop quando as configs não o satisfazem).
+      locationSubRef.current = await Location.watchPositionAsync(
+        { accuracy: Location.Accuracy.Balanced, timeInterval: 5000, distanceInterval: 10 },
+        async (loc) => {
+          try {
+            const coords = { latitude: loc.coords.latitude, longitude: loc.coords.longitude };
+            setProviderCoord(coords);
+            await supabase.from('provider_locations').upsert(
+              {
+                user_id: userId,
+                latitude: loc.coords.latitude,
+                longitude: loc.coords.longitude,
+                heading: loc.coords.heading ?? 0,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'user_id' }
+            );
+          } catch (e) {
+            console.warn('[location] falha ao atualizar posição:', e);
+          }
+        }
+      );
+    } catch (e) {
+      // Não trava o fluxo do serviço se a localização não estiver disponível.
+      console.warn('[location] rastreamento indisponível:', e);
+    }
   }
 
   async function loadClientProfile(clientUserId: string) {
