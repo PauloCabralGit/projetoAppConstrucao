@@ -1091,6 +1091,9 @@ export default function TrackingScreen() {
                 {providerCoord && clientCoord
                   ? (() => {
                       const km = calcDistance(providerCoord, clientCoord);
+                      // Distância irrealista (ex.: localização ainda não obtida
+                      // ou inconsistente) → não exibe ETA absurdo.
+                      if (km > 200) return '—';
                       if (km < 0.05) return 'Chegou!';
                       return `~${Math.max(1, Math.ceil((km / 25) * 60))} min`;
                     })()
@@ -1105,6 +1108,7 @@ export default function TrackingScreen() {
                 {providerCoord && clientCoord
                   ? (() => {
                       const km = calcDistance(providerCoord, clientCoord);
+                      if (km > 200) return '—';
                       return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(1)} km`;
                     })()
                   : '—'}
