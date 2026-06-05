@@ -169,7 +169,7 @@ export default function ClientChatScreen() {
         <View style={styles.errorWrap}>
           <Ionicons name="alert-circle-outline" size={48} color={Colors.dangerRed} />
           <Text style={styles.errorTitle}>Chat indisponível</Text>
-          <Text style={styles.errorText}>Execute a migração SQL no Supabase para ativar o chat em tempo real.</Text>
+          <Text style={styles.errorText}>Não foi possível carregar as mensagens agora. Verifique sua conexão e tente novamente.</Text>
           <TouchableOpacity style={styles.retryBtn} onPress={fetchMessages}>
             <Text style={styles.retryBtnText}>Tentar novamente</Text>
           </TouchableOpacity>
