@@ -219,33 +219,34 @@ export default function RootLayout() {
   useEffect(() => {
     setupNotificationChannel();
 
-    SecureStore.getItemAsync(ONBOARDING_KEY).then((done) => {
+    async function bootstrap() {
+      let done: string | null = null;
+      try {
+        done = await SecureStore.getItemAsync(ONBOARDING_KEY);
+      } catch {
+        done = null;
+      }
+
       if (!done) {
         setOnboardingDone(false);
         setLoading(false);
-        router.replace('/onboarding');
         return;
       }
-      supabase.auth.getSession().then(({ data: { session: s } }) => {
+
+      try {
+        const { data: { session: s } } = await supabase.auth.getSession();
         setSession(s);
-        setLoading(false);
         if (s) {
           currentUserId.current = s.user.id;
           registerPushToken();
           setProviderOnline(s.user.id);
         }
-      });
-    }).catch(() => {
-      supabase.auth.getSession().then(({ data: { session: s } }) => {
-        setSession(s);
+      } finally {
         setLoading(false);
-        if (s) {
-          currentUserId.current = s.user.id;
-          registerPushToken();
-          setProviderOnline(s.user.id);
-        }
-      });
-    });
+      }
+    }
+
+    bootstrap();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
@@ -286,22 +287,19 @@ export default function RootLayout() {
     };
   }, []);
 
+  // Navegação centralizada — só roda após o bootstrap (loading=false) e com o
+  // navegador já montado, evitando "Attempted to navigate before mounting the
+  // Root Layout" do expo-router v6.
   useEffect(() => {
-    if (loading || !onboardingDone) return;
-    if (session) {
+    if (loading) return;
+    if (!onboardingDone) {
+      router.replace('/onboarding');
+    } else if (session) {
       router.replace('/(tabs)/jobs');
     } else {
       router.replace('/(auth)/login');
     }
   }, [session, loading, onboardingDone]);
-
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={Colors.primary} />
-      </View>
-    );
-  }
 
   return (
     <FeatureFlagsProvider>
@@ -315,6 +313,11 @@ export default function RootLayout() {
               <Stack.Screen name="onboarding" />
             </Stack>
           </RootLayoutInner>
+          {loading && (
+            <View style={[StyleSheet.absoluteFillObject, styles.loadingContainer]}>
+              <ActivityIndicator size="large" color={Colors.primary} />
+            </View>
+          )}
         </NotificationProvider>
       </ThemeProvider>
     </FeatureFlagsProvider>
