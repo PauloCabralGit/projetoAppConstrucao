@@ -292,10 +292,13 @@ export default function RootLayout() {
   // Root Layout" do expo-router v6.
   useEffect(() => {
     if (loading) return;
-    if (!onboardingDone) {
-      router.replace('/onboarding');
-    } else if (session) {
+    // Sessão tem prioridade: usuário logado vai direto para o app, mesmo que o
+    // estado de onboarding em memória ainda esteja desatualizado (evita o
+    // "bounce" de volta ao onboarding logo após o login).
+    if (session) {
       router.replace('/(tabs)/jobs');
+    } else if (!onboardingDone) {
+      router.replace('/onboarding');
     } else {
       router.replace('/(auth)/login');
     }
