@@ -15,13 +15,12 @@ MERCADOPAGO_PUBLIC_KEY = ""
 MP_APP_ID = ""
 MP_APP_SECRET = ""
 MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
+# Sentry DSN para monitoramento de erros (obter em sentry.io)
+SENTRY_DSN = ""
 
 [[kv_namespaces]]
 binding = "FEATURE_FLAGS"
 id = "17281fd061e64ac0b32c469a8044d980"
-
-# Sentry DSN para monitoramento de erros (obter em sentry.io)
-SENTRY_DSN = ""
 
 # Cron: verifica assinaturas expiradas todo dia às 03h BRT (06h UTC)
 [triggers]
