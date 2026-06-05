@@ -53,6 +53,7 @@ function formatDate(d: string) {
 export default function WithdrawalScreen() {
   const [balance, setBalance] = useState(0);
   const [pending, setPending] = useState(0);
+  const [blocked, setBlocked] = useState(0);
   const [amount, setAmount] = useState('');
   const [pixType, setPixType] = useState(0);
   const [pixKey, setPixKey] = useState('');
@@ -85,9 +86,10 @@ export default function WithdrawalScreen() {
     ]);
 
     if (balRes.ok) {
-      const b = await balRes.json() as { available: number; pending: number };
+      const b = await balRes.json() as { available: number; pending: number; blocked?: number };
       setBalance(b.available);
       setPending(b.pending);
+      setBlocked(b.blocked ?? 0);
     }
 
     if (listRes.ok) {
@@ -154,6 +156,35 @@ export default function WithdrawalScreen() {
     );
   }
 
+  function handleCancelWithdrawal(wid: string) {
+    Alert.alert(
+      'Cancelar saque',
+      'Deseja cancelar este saque? O valor voltará ao seu saldo disponível.',
+      [
+        { text: 'Não', style: 'cancel' },
+        {
+          text: 'Sim, cancelar',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const headers = await getAuthHeader();
+              if (!headers) return;
+              const res = await fetch(`${API_BASE}/providers/${userId}/withdrawal/${wid}`, {
+                method: 'DELETE',
+                headers: headers as any,
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error((data as any).message ?? 'Erro ao cancelar saque.');
+              loadData();
+            } catch (err: any) {
+              Alert.alert('Erro', err.message);
+            }
+          },
+        },
+      ]
+    );
+  }
+
   return (
     <SafeAreaView style={s.container}>
       <ScrollView contentContainerStyle={s.scroll} keyboardShouldPersistTaps="handled">
@@ -177,11 +208,11 @@ export default function WithdrawalScreen() {
               <Text style={s.balanceSub}>Pronto para saque</Text>
             </View>
             <View style={[s.balanceCard, { flex: 1, marginLeft: 10, backgroundColor: '#FFFBEB' }]}>
-              <Text style={s.balanceLabel}>Pendente</Text>
+              <Text style={s.balanceLabel}>Bloqueado</Text>
               <Text style={[s.balanceValue, { fontSize: 16, color: Colors.warningAmber }]}>
-                {formatCurrency(pending)}
+                {formatCurrency(blocked + pending)}
               </Text>
-              <Text style={s.balanceSub}>A confirmar</Text>
+              <Text style={s.balanceSub}>Em saque</Text>
             </View>
           </View>
         )}
@@ -262,8 +293,15 @@ export default function WithdrawalScreen() {
                     <Text style={s.withdrawalKey} numberOfLines={1}>{w.pix_key}</Text>
                     <Text style={s.withdrawalDate}>{formatDate(w.created_at)}</Text>
                   </View>
-                  <View style={[s.statusBadge, { backgroundColor: st.color + '20' }]}>
-                    <Text style={[s.statusText, { color: st.color }]}>{st.label}</Text>
+                  <View style={{ alignItems: 'flex-end', gap: 6 }}>
+                    <View style={[s.statusBadge, { backgroundColor: st.color + '20' }]}>
+                      <Text style={[s.statusText, { color: st.color }]}>{st.label}</Text>
+                    </View>
+                    {w.status === 'requested' && (
+                      <TouchableOpacity onPress={() => handleCancelWithdrawal(w.id)} hitSlop={8}>
+                        <Text style={{ color: Colors.dangerRed, fontSize: 12, fontWeight: '600' }}>Cancelar</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 </View>
               );

@@ -376,16 +376,27 @@ export default function TrackingScreen() {
   async function handleSendPayment() {
     if (!request) return;
     setSendingPayment(true);
+    // Pix e Cartão são confirmados automaticamente pelo sistema (o prestador
+    // não precisa confirmar o recebimento). Apenas Dinheiro exige confirmação
+    // manual do prestador.
+    const autoConfirm = paymentMethod !== 'cash';
+    const newStatus = autoConfirm ? 'confirmed' : 'client_paid';
     try {
       const { data: { user } } = await supabase.auth.getUser();
       const { error } = await supabase
         .from('service_requests')
-        .update({ payment_status: 'client_paid', payment_method: paymentMethod })
+        .update({ payment_status: newStatus, payment_method: paymentMethod })
         .eq('id', id)
         .eq('client_user_id', user?.id)
         .eq('status', 'completed');
       if (!error) {
-        setRequest(prev => prev ? { ...prev, payment_status: 'client_paid', payment_method: paymentMethod } : null);
+        setRequest(prev => prev ? { ...prev, payment_status: newStatus, payment_method: paymentMethod } : null);
+        Alert.alert(
+          autoConfirm ? 'Pagamento confirmado!' : 'Pagamento registrado!',
+          autoConfirm
+            ? 'O pagamento foi confirmado automaticamente e o prestador foi notificado.'
+            : 'Combine o pagamento em dinheiro com o prestador. Ele confirmará o recebimento.'
+        );
       } else {
         Alert.alert('Erro', 'Não foi possível registrar o pagamento. Tente novamente.');
       }
@@ -816,7 +827,7 @@ export default function TrackingScreen() {
                     {sendingPayment ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
                       <>
                         <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                        <Text style={styles.sendPaymentBtnText}>Confirmar pagamento enviado</Text>
+                        <Text style={styles.sendPaymentBtnText}>{paymentMethod === 'card' ? 'Pagar com cartão' : 'Confirmar pagamento enviado'}</Text>
                       </>
                     )}
                   </TouchableOpacity>
@@ -1305,7 +1316,7 @@ export default function TrackingScreen() {
                   ) : (
                     <>
                       <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                      <Text style={styles.sendPaymentBtnText}>Confirmar pagamento enviado</Text>
+                      <Text style={styles.sendPaymentBtnText}>{paymentMethod === 'card' ? 'Pagar com cartão' : 'Confirmar pagamento enviado'}</Text>
                     </>
                   )}
                 </TouchableOpacity>

@@ -2754,7 +2754,7 @@ app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
 async function computeProviderBalance(
   adminDb: ReturnType<typeof db>,
   providerId: string,
-): Promise<{ available: number; pending: number }> {
+): Promise<{ available: number; pending: number; blocked: number }> {
   // Fonte 1: splits explícitos (pagamentos via novo sistema)
   const { data: splits } = await adminDb
     .from("provider_splits")
@@ -2806,18 +2806,24 @@ async function computeProviderBalance(
       return sum + Math.round(gross * (1 - commissionRate) * 100) / 100;
     }, 0);
 
-  // Total sacado
+  // Saques que reservam saldo: solicitados (bloqueados) + em processamento +
+  // concluídos. Reprovados/cancelados ficam de fora → o valor volta ao saldo.
   const { data: withdrawn } = await adminDb
     .from("provider_withdrawals")
-    .select("amount")
+    .select("amount, status")
     .eq("provider_user_id", providerId)
-    .in("status", ["completed", "processing"]);
+    .in("status", ["requested", "processing", "completed"]);
 
-  const totalWithdrawn = (withdrawn ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  const totalReserved = (withdrawn ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
+  // "Bloqueado" = saques ainda não concluídos (aguardando aprovação/processamento).
+  const blocked = (withdrawn ?? [])
+    .filter((r: any) => r.status === "requested" || r.status === "processing")
+    .reduce((s: number, r: any) => s + Number(r.amount), 0);
+
   const totalEarned = totalFromSplits + totalFromOldPayments;
-  const available = Math.max(0, totalEarned - totalWithdrawn);
+  const available = Math.max(0, totalEarned - totalReserved);
 
-  return { available, pending: pendingFromSplits };
+  return { available, pending: pendingFromSplits, blocked };
 }
 
 // ── US-012: Saldo disponível do prestador ─────────────────────────────────────
@@ -2826,8 +2832,8 @@ app.get("/v1/providers/:id/balance", async (c) => {
   const userId = c.get("userId");
   if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
 
-  const { available, pending } = await computeProviderBalance(db(c.env), providerId);
-  return c.json({ available, pending });
+  const { available, pending, blocked } = await computeProviderBalance(db(c.env), providerId);
+  return c.json({ available, pending, blocked });
 });
 
 // ── US-012: Solicitar saque via Pix ──────────────────────────────────────────
@@ -2884,6 +2890,82 @@ app.get("/v1/providers/:id/withdrawals", async (c) => {
 
   if (error) return c.json({ error: error.message }, 500);
   return c.json({ withdrawals: data ?? [] });
+});
+
+// ── Cancelar saque (prestador) ────────────────────────────────────────────────
+// Só é possível cancelar enquanto o saque está "requested" (ainda não
+// processado). Ao cancelar, o registro é removido e o valor volta ao saldo.
+app.delete("/v1/providers/:id/withdrawal/:wid", async (c) => {
+  const providerId = c.req.param("id");
+  const wid = c.req.param("wid");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const adminDb = db(c.env);
+  const { data: w } = await adminDb
+    .from("provider_withdrawals")
+    .select("id, status")
+    .eq("id", wid)
+    .eq("provider_user_id", providerId)
+    .maybeSingle();
+
+  if (!w) return c.json({ message: "Saque não encontrado." }, 404);
+  if (w.status !== "requested") {
+    return c.json({ message: "Só é possível cancelar um saque ainda não processado." }, 400);
+  }
+
+  const { error } = await adminDb
+    .from("provider_withdrawals")
+    .delete()
+    .eq("id", wid)
+    .eq("provider_user_id", providerId)
+    .eq("status", "requested");
+
+  if (error) return c.json({ message: error.message }, 400);
+  return c.json({ message: "Saque cancelado. O valor voltou ao seu saldo." });
+});
+
+// ── Aprovar/Reprovar saque (admin) ────────────────────────────────────────────
+// approve → status "completed" (valor debitado do total).
+// reject  → status "rejected" (valor volta ao saldo disponível).
+app.patch("/v1/admin/withdrawals/:wid", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const wid = c.req.param("wid");
+  const body = await c.req.json<{ action: "approve" | "reject" }>().catch(() => ({} as any));
+  if (body.action !== "approve" && body.action !== "reject") {
+    return c.json({ message: 'action inválida. Use "approve" ou "reject".' }, 400);
+  }
+
+  const adminDb = db(c.env);
+  const { data: w } = await adminDb
+    .from("provider_withdrawals")
+    .select("id, status, amount, provider_user_id")
+    .eq("id", wid)
+    .maybeSingle();
+
+  if (!w) return c.json({ message: "Saque não encontrado." }, 404);
+  if (w.status !== "requested" && w.status !== "processing") {
+    return c.json({ message: "Este saque já foi finalizado." }, 400);
+  }
+
+  const newStatus = body.action === "approve" ? "completed" : "rejected";
+  const { data, error } = await adminDb
+    .from("provider_withdrawals")
+    .update({ status: newStatus, processed_at: new Date().toISOString() })
+    .eq("id", wid)
+    .select("id, amount, pix_key, status, created_at, processed_at")
+    .single();
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  const amountStr = `R$ ${Number(w.amount).toFixed(2).replace(".", ",")}`;
+  if (body.action === "approve") {
+    await sendPush(c.env, w.provider_user_id, "✅ Saque aprovado!", `Seu saque de ${amountStr} foi aprovado e o valor foi debitado do seu saldo.`);
+  } else {
+    await sendPush(c.env, w.provider_user_id, "❌ Saque reprovado", `Seu saque de ${amountStr} foi reprovado. O valor voltou ao seu saldo disponível.`);
+  }
+
+  return c.json({ withdrawal: data });
 });
 
 // ── Retornar chave pública MP para tokenizar cartão no client ─────────────────
