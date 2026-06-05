@@ -2747,14 +2747,14 @@ app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
   return c.json({ message: "Bid aceito. Prestador atribuído ao chamado." });
 });
 
-// ── US-012: Saldo disponível do prestador ─────────────────────────────────────
-app.get("/v1/providers/:id/balance", async (c) => {
-  const providerId = c.req.param("id");
-  const userId = c.get("userId");
-  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
-
-  const adminDb = db(c.env);
-
+// ── US-012: Cálculo de saldo (compartilhado entre /balance e /withdrawal) ──────
+// IMPORTANTE: /balance e /withdrawal DEVEM usar exatamente o mesmo cálculo,
+// senão o app exibe um saldo (ex.: R$ 14.011) mas o saque rejeita com
+// "Saldo insuficiente: R$ 0,00".
+async function computeProviderBalance(
+  adminDb: ReturnType<typeof db>,
+  providerId: string,
+): Promise<{ available: number; pending: number }> {
   // Fonte 1: splits explícitos (pagamentos via novo sistema)
   const { data: splits } = await adminDb
     .from("provider_splits")
@@ -2780,7 +2780,7 @@ app.get("/v1/providers/:id/balance", async (c) => {
 
   const { data: confirmedJobs } = await adminDb
     .from("service_requests")
-    .select("quote_amount")
+    .select("id, quote_amount")
     .eq("provider_user_id", providerId)
     .eq("payment_status", "confirmed")
     .not("quote_amount", "is", null);
@@ -2817,7 +2817,17 @@ app.get("/v1/providers/:id/balance", async (c) => {
   const totalEarned = totalFromSplits + totalFromOldPayments;
   const available = Math.max(0, totalEarned - totalWithdrawn);
 
-  return c.json({ available, pending: pendingFromSplits });
+  return { available, pending: pendingFromSplits };
+}
+
+// ── US-012: Saldo disponível do prestador ─────────────────────────────────────
+app.get("/v1/providers/:id/balance", async (c) => {
+  const providerId = c.req.param("id");
+  const userId = c.get("userId");
+  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+
+  const { available, pending } = await computeProviderBalance(db(c.env), providerId);
+  return c.json({ available, pending });
 });
 
 // ── US-012: Solicitar saque via Pix ──────────────────────────────────────────
@@ -2833,21 +2843,9 @@ app.post("/v1/providers/:id/withdrawal", async (c) => {
 
   const adminDb = db(c.env);
 
-  // Verificar saldo disponível
-  const balanceRes = await adminDb
-    .from("provider_splits")
-    .select("amount")
-    .eq("provider_user_id", providerId)
-    .eq("status", "transferred");
-  const withdrawnRes = await adminDb
-    .from("provider_withdrawals")
-    .select("amount")
-    .eq("provider_user_id", providerId)
-    .in("status", ["completed", "processing"]);
-
-  const totalTransferred = (balanceRes.data ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
-  const totalWithdrawn = (withdrawnRes.data ?? []).reduce((s: number, r: any) => s + Number(r.amount), 0);
-  const available = Math.max(0, totalTransferred - totalWithdrawn);
+  // Verificar saldo disponível — usa o MESMO cálculo do endpoint /balance
+  // para evitar divergência entre o saldo exibido e o saldo de saque.
+  const { available } = await computeProviderBalance(adminDb, providerId);
 
   if (body.amount > available) {
     return c.json({ message: `Saldo insuficiente. Disponível: R$ ${available.toFixed(2).replace(".", ",")}` }, 400);
