@@ -273,10 +273,13 @@ export default function RootLayout() {
     };
     const appStateSub = AppState.addEventListener('change', handleAppState);
 
-    // Verifica bloqueio a cada 20 segundos enquanto o app estiver aberto
+    // Heartbeat a cada 20s enquanto o app está aberto: renova o last_seen_at e
+    // mantém status "available", para o prestador não cair do
+    // /providers/available (que exige last_seen_at nos últimos 3 min). O
+    // setProviderOnline já verifica bloqueio internamente.
     const pollInterval = setInterval(() => {
       if (currentUserId.current) {
-        checkBlock(currentUserId.current);
+        setProviderOnline(currentUserId.current);
       }
     }, 20000);
 
