@@ -2609,6 +2609,127 @@ app.delete("/v1/providers/:id/certifications/:certId", async (c) => {
   return c.json({ message: "Certificação removida." });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// VERIFICAÇÃO DE IDENTIDADE (selfie + documento RG/CNH, revisão manual admin)
+// ═══════════════════════════════════════════════════════════════════════════
+
+function base64ToBytes(d: string): Uint8Array {
+  const b64 = d.includes(",") ? d.split(",")[1] : d;
+  return Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0));
+}
+
+// Submeter verificação (usuário autenticado)
+app.post("/v1/verifications", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<{
+    doc_type: "rg" | "cnh";
+    role?: "client" | "provider";
+    selfie_data: string;
+    document_data: string;
+  }>().catch(() => ({} as any));
+
+  if (body.doc_type !== "rg" && body.doc_type !== "cnh") {
+    return c.json({ message: "doc_type deve ser 'rg' ou 'cnh'." }, 400);
+  }
+  if (!body.selfie_data || !body.document_data) {
+    return c.json({ message: "selfie_data e document_data são obrigatórios." }, 400);
+  }
+
+  const adminDb = db(c.env);
+  // Garante o bucket privado (idempotente)
+  await adminDb.storage.createBucket("verifications", { public: false }).catch(() => {});
+
+  const ts = Date.now();
+  const selfiePath = `${userId}/selfie_${ts}.jpg`;
+  const documentPath = `${userId}/document_${ts}.jpg`;
+
+  const up1 = await adminDb.storage.from("verifications").upload(selfiePath, base64ToBytes(body.selfie_data), { contentType: "image/jpeg", upsert: true });
+  if (up1.error) return c.json({ message: up1.error.message }, 400);
+  const up2 = await adminDb.storage.from("verifications").upload(documentPath, base64ToBytes(body.document_data), { contentType: "image/jpeg", upsert: true });
+  if (up2.error) return c.json({ message: up2.error.message }, 400);
+
+  // Limpa pendências/reprovações anteriores do mesmo usuário (mantém só a nova)
+  await adminDb.from("identity_verifications").delete().eq("user_id", userId).in("status", ["pending", "rejected"]);
+
+  const { data, error } = await adminDb.from("identity_verifications").insert({
+    user_id: userId,
+    role: body.role === "provider" ? "provider" : "client",
+    doc_type: body.doc_type,
+    selfie_path: selfiePath,
+    document_path: documentPath,
+    status: "pending",
+  }).select("id, status, created_at").single();
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  await adminDb.from("app_users").update({ verification_status: "pending" }).eq("id", userId);
+  return c.json({ verification: data, status: "pending" }, 201);
+});
+
+// Status da própria verificação
+app.get("/v1/verifications/me", async (c) => {
+  const userId = c.get("userId");
+  const adminDb = db(c.env);
+  const { data: u } = await adminDb.from("app_users").select("verification_status").eq("id", userId).maybeSingle();
+  const { data: v } = await adminDb.from("identity_verifications")
+    .select("id, doc_type, status, admin_note, created_at, reviewed_at")
+    .eq("user_id", userId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+  return c.json({ status: u?.verification_status ?? "unverified", verification: v ?? null });
+});
+
+// Admin: listar verificações (default: pendentes) com URLs assinadas
+app.get("/v1/admin/verifications", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const status = c.req.query("status") ?? "pending";
+  const adminDb = db(c.env);
+  const { data, error } = await adminDb.from("identity_verifications")
+    .select("id, user_id, role, doc_type, selfie_path, document_path, status, admin_note, created_at, reviewed_at, app_users!inner(full_name, email, phone)")
+    .eq("status", status).order("created_at", { ascending: true }).limit(200);
+  if (error) return c.json({ error: error.message }, 500);
+
+  const rows = await Promise.all((data ?? []).map(async (v: any) => {
+    const [s, d] = await Promise.all([
+      adminDb.storage.from("verifications").createSignedUrl(v.selfie_path, 3600),
+      adminDb.storage.from("verifications").createSignedUrl(v.document_path, 3600),
+    ]);
+    return {
+      id: v.id, user_id: v.user_id, role: v.role, doc_type: v.doc_type, status: v.status,
+      admin_note: v.admin_note, created_at: v.created_at, reviewed_at: v.reviewed_at,
+      full_name: v.app_users?.full_name ?? "", email: v.app_users?.email ?? "", phone: v.app_users?.phone ?? "",
+      selfie_url: s.data?.signedUrl ?? null, document_url: d.data?.signedUrl ?? null,
+    };
+  }));
+  return c.json({ verifications: rows });
+});
+
+// Admin: aprovar/reprovar verificação
+app.patch("/v1/admin/verifications/:id", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const id = c.req.param("id");
+  const body = await c.req.json<{ action: "approve" | "reject"; note?: string }>().catch(() => ({} as any));
+  if (body.action !== "approve" && body.action !== "reject") {
+    return c.json({ message: 'action inválida. Use "approve" ou "reject".' }, 400);
+  }
+  const adminDb = db(c.env);
+  const { data: v } = await adminDb.from("identity_verifications").select("id, user_id, status").eq("id", id).maybeSingle();
+  if (!v) return c.json({ message: "Verificação não encontrada." }, 404);
+
+  const newStatus = body.action === "approve" ? "approved" : "rejected";
+  const { error } = await adminDb.from("identity_verifications").update({
+    status: newStatus, admin_note: body.note ?? null, reviewed_at: new Date().toISOString(),
+  }).eq("id", id);
+  if (error) return c.json({ message: error.message }, 400);
+
+  await adminDb.from("app_users").update({ verification_status: newStatus }).eq("id", v.user_id);
+
+  if (body.action === "approve") {
+    await sendPush(c.env, v.user_id, "✅ Identidade verificada!", "Sua identidade foi aprovada. Você já pode usar o app normalmente.");
+  } else {
+    await sendPush(c.env, v.user_id, "❌ Verificação reprovada", body.note ? `Motivo: ${body.note}. Reenvie seus documentos.` : "Reenvie seus documentos para tentar novamente.");
+  }
+  return c.json({ status: newStatus });
+});
+
 // ── Complaints: submit a formal complaint ─────────────────────────────────
 app.post("/v1/complaints", async (c) => {
   const body = await c.req.json<{

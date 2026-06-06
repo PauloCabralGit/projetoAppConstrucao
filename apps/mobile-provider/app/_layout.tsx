@@ -10,6 +10,7 @@ import { Colors } from '@/constants/colors';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { FeatureFlagsProvider, useFlags } from '@/contexts/FeatureFlagsContext';
+import { VerificationGate } from '@/components/VerificationGate';
 import { ONBOARDING_KEY } from './onboarding';
 
 Notifications.setNotificationHandler({
@@ -324,6 +325,9 @@ export default function RootLayout() {
             <View style={[StyleSheet.absoluteFillObject, styles.loadingContainer]}>
               <ActivityIndicator size="large" color={Colors.primary} />
             </View>
+          )}
+          {!loading && session && (
+            <VerificationGate userId={session.user.id} role="provider" />
           )}
         </NotificationProvider>
       </ThemeProvider>

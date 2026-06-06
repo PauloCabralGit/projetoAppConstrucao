@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { FeatureFlagsProvider, useFlags } from '@/contexts/FeatureFlagsContext';
+import { VerificationGate } from '@/components/VerificationGate';
 import { ONBOARDING_KEY } from './onboarding';
 
 Notifications.setNotificationHandler({
@@ -181,6 +182,7 @@ function RootLayoutInner({ blockedUntil }: { blockedUntil: string | null }) {
 
 export default function RootLayout() {
   const [blockedUntil, setBlockedUntil] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
   const currentUserId = useRef<string | null>(null);
 
   async function updateLastSeen(userId: string) {
@@ -215,6 +217,7 @@ export default function RootLayout() {
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) {
         currentUserId.current = user.id;
+        setAuthUserId(user.id);
         registerPushToken();
         checkBlock(user.id);
         updateLastSeen(user.id);
@@ -224,12 +227,14 @@ export default function RootLayout() {
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
         currentUserId.current = session.user.id;
+        setAuthUserId(session.user.id);
         registerPushToken();
         checkBlock(session.user.id);
         updateLastSeen(session.user.id);
       }
       if (event === 'SIGNED_OUT') {
         currentUserId.current = null;
+        setAuthUserId(null);
         setBlockedUntil(null);
       }
     });
@@ -265,6 +270,7 @@ export default function RootLayout() {
       <ThemeProvider>
         <NotificationProvider>
           <RootLayoutInner blockedUntil={blockedUntil} />
+          {authUserId && <VerificationGate userId={authUserId} role="client" />}
         </NotificationProvider>
       </ThemeProvider>
     </FeatureFlagsProvider>

@@ -14,7 +14,7 @@ import { AuditoriaModule } from "./crm/modules/Auditoria";
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
 type Page =
-  | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags"
+  | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags" | "verifications"
   | "vendas" | "marketing" | "financeiro" | "relatorios"
   | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda"
   | "acesso" | "auditoria";
@@ -22,7 +22,7 @@ type Page =
 // Mapeia cada página para a "área" de permissão correspondente.
 const PAGE_AREA: Record<Page, string> = {
   dashboard: "operacao", requests: "operacao", providers: "operacao", users: "operacao",
-  payments: "operacao", complaints: "operacao", flags: "operacao",
+  payments: "operacao", complaints: "operacao", flags: "operacao", verifications: "operacao",
   vendas: "vendas", marketing: "marketing", financeiro: "financeiro", relatorios: "relatorios",
   juridico: "juridico", rh: "rh", fornecedores: "fornecedores", suporte: "suporte", agenda: "agenda",
   acesso: "__master__",
@@ -1559,6 +1559,127 @@ function FeatureFlagsPage({ adminKey }: { adminKey: string }) {
   );
 }
 
+// ── Verificações de identidade (selfie + documento, revisão manual) ─────────────
+interface VerifRow {
+  id: string; user_id: string; role: string; doc_type: string; status: string;
+  admin_note: string | null; created_at: string; reviewed_at: string | null;
+  full_name: string; email: string; phone: string;
+  selfie_url: string | null; document_url: string | null;
+}
+
+function VerificationsPage({ adminKey }: { adminKey: string }) {
+  const [rows, setRows] = useState<VerifRow[]>([]);
+  const [tab, setTab] = useState<"pending" | "approved" | "rejected">("pending");
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg] = useState("");
+  const [zoom, setZoom] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    apiFetch(`/v1/admin/verifications?status=${tab}`, adminKey)
+      .then((r) => r.json())
+      .then((d: any) => { setRows(d.verifications ?? []); setLoading(false); })
+      .catch(() => setLoading(false));
+  }, [adminKey, tab]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function review(id: string, action: "approve" | "reject") {
+    let note: string | undefined;
+    if (action === "reject") {
+      note = window.prompt("Motivo da reprovação (opcional):") ?? undefined;
+    }
+    try {
+      const r = await apiFetch(`/v1/admin/verifications/${id}`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify({ action, note }),
+      });
+      const j = await r.json() as any;
+      if (!r.ok) throw new Error(j?.message ?? "Erro");
+      setMsg(action === "approve" ? "Verificação aprovada." : "Verificação reprovada.");
+      load();
+    } catch (e: any) { setMsg(`Erro: ${e.message}`); }
+  }
+
+  const TABS: { key: typeof tab; label: string }[] = [
+    { key: "pending", label: "Pendentes" },
+    { key: "approved", label: "Aprovadas" },
+    { key: "rejected", label: "Reprovadas" },
+  ];
+
+  return (
+    <div style={{ padding: 24 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 800, marginBottom: 4 }}>🪪 Verificações de identidade</h1>
+      <p style={{ color: "#64748b", marginBottom: 16 }}>Revise a selfie e o documento (RG/CNH) e aprove ou reprove o cadastro.</p>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setTab(t.key)}
+            style={{
+              padding: "8px 16px", borderRadius: 8, border: "1px solid #e2e8f0", cursor: "pointer",
+              background: tab === t.key ? "#FF6B35" : "#fff", color: tab === t.key ? "#fff" : "#334155", fontWeight: 600,
+            }}
+          >{t.label}</button>
+        ))}
+      </div>
+
+      {msg && <div style={{ marginBottom: 12, padding: 10, background: "#ecfdf5", borderRadius: 8, color: "#065f46" }}>{msg}</div>}
+
+      {loading ? (
+        <p>Carregando…</p>
+      ) : rows.length === 0 ? (
+        <p style={{ color: "#94a3b8" }}>Nenhuma verificação {tab === "pending" ? "pendente" : tab === "approved" ? "aprovada" : "reprovada"}.</p>
+      ) : (
+        <div style={{ display: "grid", gap: 16 }}>
+          {rows.map((v) => (
+            <div key={v.id} style={{ border: "1px solid #e2e8f0", borderRadius: 12, padding: 16, background: "#fff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <strong style={{ fontSize: 16 }}>{v.full_name || "(sem nome)"}</strong>
+                  <div style={{ color: "#64748b", fontSize: 13 }}>{v.email} · {v.phone || "sem telefone"}</div>
+                  <div style={{ color: "#64748b", fontSize: 13 }}>
+                    Perfil: {v.role === "provider" ? "Prestador" : "Cliente"} · Documento: {v.doc_type?.toUpperCase()} ·
+                    {" "}Enviado: {fmtDate(v.created_at)}
+                  </div>
+                  {v.admin_note && <div style={{ color: "#b45309", fontSize: 13 }}>Nota: {v.admin_note}</div>}
+                </div>
+                {v.status === "pending" && (
+                  <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                    <button onClick={() => review(v.id, "approve")} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#16a34a", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Aprovar</button>
+                    <button onClick={() => review(v.id, "reject")} style={{ padding: "8px 14px", borderRadius: 8, border: "none", background: "#dc2626", color: "#fff", fontWeight: 700, cursor: "pointer" }}>Reprovar</button>
+                  </div>
+                )}
+              </div>
+              <div style={{ display: "flex", gap: 16, marginTop: 12, flexWrap: "wrap" }}>
+                {[{ label: "Selfie", url: v.selfie_url }, { label: `Documento (${v.doc_type?.toUpperCase()})`, url: v.document_url }].map((img) => (
+                  <div key={img.label}>
+                    <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{img.label}</div>
+                    {img.url ? (
+                      <img
+                        src={img.url} alt={img.label}
+                        onClick={() => setZoom(img.url)}
+                        style={{ width: 180, height: 180, objectFit: "cover", borderRadius: 8, border: "1px solid #e2e8f0", cursor: "zoom-in" }}
+                      />
+                    ) : <div style={{ width: 180, height: 180, borderRadius: 8, background: "#f1f5f9", display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8" }}>sem imagem</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {zoom && (
+        <div onClick={() => setZoom(null)} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.85)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, cursor: "zoom-out" }}>
+          <img src={zoom} alt="zoom" style={{ maxWidth: "90%", maxHeight: "90%", borderRadius: 8 }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Nav config (agrupada — CRM) ────────────────────────────────────────────────
 const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: string }[] }[] = [
   {
@@ -1570,6 +1691,7 @@ const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: stri
       { key: "users", label: "Usuários", icon: "👥" },
       { key: "payments", label: "Pagamentos", icon: "💰" },
       { key: "complaints", label: "Reclamações", icon: "⚠️" },
+      { key: "verifications", label: "Verificações", icon: "🪪" },
       { key: "flags", label: "Feature Flags", icon: "🚩" },
     ],
   },
@@ -1848,6 +1970,7 @@ export function App() {
           {page === "users" && <UsersPage adminKey={adminKey} />}
           {page === "payments" && <PaymentsPage adminKey={adminKey} />}
           {page === "complaints" && <ComplaintsPage adminKey={adminKey} />}
+          {page === "verifications" && <VerificationsPage adminKey={adminKey} />}
           {page === "flags" && <FeatureFlagsPage adminKey={adminKey} />}
           {page === "vendas" && <VendasModule adminKey={adminKey} />}
           {page === "marketing" && <MarketingModule adminKey={adminKey} />}
