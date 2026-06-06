@@ -214,6 +214,13 @@ export default function RootLayout() {
       if (!done) router.replace('/onboarding');
     }).catch(() => {});
 
+    // Ativa o gate de verificação a partir da sessão local (não depende de
+    // rede). Sem isso, se o getUser() falhasse por rede, o usuário logado
+    // entrava sem passar pela verificação obrigatória.
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) setAuthUserId(session.user.id);
+    });
+
     supabase.auth.getUser().then(({ data: { user } }) => {
       if (user) {
         currentUserId.current = user.id;
