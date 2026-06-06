@@ -129,7 +129,7 @@ export default function PaymentScreen() {
   function pollPixStatus() {
     // Supabase realtime subscription para payment_status
     const subscription = supabase
-      .channel(`payment-${id}`)
+      .channel(`payment-${id}-${Date.now()}`)
       .on('postgres_changes', {
         event: 'UPDATE',
         schema: 'public',

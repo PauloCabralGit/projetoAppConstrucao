@@ -195,8 +195,13 @@ export default function JobsScreen() {
     if (channelRef.current) {
       supabase.removeChannel(channelRef.current);
     }
+    // Nome de canal único por inscrição: evita reaproveitar um canal já
+    // inscrito (o removeChannel acima é assíncrono). Sem isso, num remount
+    // (React 19 / Fast Refresh) o supabase.channel() devolve o canal antigo e
+    // o .on() após subscribe() lança "cannot add postgres_changes callbacks
+    // after subscribe()".
     const channel = supabase
-      .channel('new_service_requests')
+      .channel(`new_service_requests-${Date.now()}`)
       .on(
         'postgres_changes',
         {

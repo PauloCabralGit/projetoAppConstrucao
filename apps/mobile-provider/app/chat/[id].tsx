@@ -44,7 +44,7 @@ export default function ProviderChatScreen() {
     fetchMessages();
 
     const channel = supabase
-      .channel(`chat-provider-${id}`)
+      .channel(`chat-provider-${id}-${Date.now()}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'messages', filter: `request_id=eq.${id}` },
