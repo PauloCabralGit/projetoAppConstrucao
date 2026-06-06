@@ -169,6 +169,7 @@ function RootLayoutInner({ blockedUntil }: { blockedUntil: string | null }) {
       {maintenance_mode && <MaintenanceOverlay />}
       {!maintenance_mode && blockedUntil && <BlockedOverlay blockedUntil={blockedUntil} />}
       <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="index" />
         <Stack.Screen name="(auth)" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="tracking/[id]" />

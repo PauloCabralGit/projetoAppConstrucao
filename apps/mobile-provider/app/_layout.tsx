@@ -310,6 +310,7 @@ export default function RootLayout() {
         <NotificationProvider>
           <RootLayoutInner blockedUntil={blockedUntil} loading={loading}>
             <Stack screenOptions={{ headerShown: false }}>
+              <Stack.Screen name="index" />
               <Stack.Screen name="(auth)" />
               <Stack.Screen name="(tabs)" />
               <Stack.Screen name="job/[id]" />
