@@ -208,6 +208,12 @@ app.use("/v1/*", async (c, next) => {
     /^\/v1\/providers\/[^/]+\/certifications$/.test(path)
   )) return next();
 
+  // GET de avaliações por id é público (reputação do prestador). "me" exige JWT.
+  if (c.req.method === "GET") {
+    const ratingsMatch = path.match(/^\/v1\/providers\/([^/]+)\/ratings$/);
+    if (ratingsMatch && ratingsMatch[1] !== "me") return next();
+  }
+
   const token = c.req.header("Authorization")?.replace("Bearer ", "");
   if (!token) return c.json({ message: "Não autorizado." }, 401);
 
@@ -1499,6 +1505,93 @@ app.post("/v1/service-requests/:id/rate", async (c) => {
     .eq("user_id", req.provider_user_id);
 
   return c.json({ ok: true, average_rating: roundedAvg, blocked: roundedAvg < 4.6 });
+});
+
+// ── Avaliações de um prestador (lista paginada + resumo) ───────────────────
+// Fonte canônica: service_requests.client_rating (de onde sai o average_rating).
+// Comentários vêm do sistema rico de relatórios (service_reports.comments).
+// Atende dois consumidores na mesma rota:
+//   • RatingWidget       → lê `data` (avg_score, total_count, distribution)
+//   • ratings-received   → lê `ratings`/`total` (lista paginada, filtro por nota)
+// ":id" é público (reputação); "me" resolve o prestador pelo JWT.
+app.get("/v1/providers/:id/ratings", async (c) => {
+  let providerId = c.req.param("id");
+  if (providerId === "me") {
+    providerId = c.get("userId");
+    if (!providerId) return c.json({ message: "Não autorizado." }, 401);
+  }
+
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "50", 10) || 50, 1), 100);
+  const offset = Math.max(parseInt(c.req.query("offset") ?? "0", 10) || 0, 0);
+  const scoreParam = c.req.query("score");
+  const score = scoreParam ? Math.round(Number(scoreParam)) : null;
+  const hasScore = score != null && score >= 1 && score <= 5;
+
+  const adminDb = db(c.env);
+
+  // Resumo: sobre TODAS as avaliações do prestador (sem paginação/filtro).
+  const { data: allRated } = await adminDb
+    .from("service_requests")
+    .select("client_rating")
+    .eq("provider_user_id", providerId)
+    .not("client_rating", "is", null);
+
+  const distribution: Record<string, number> = { "1": 0, "2": 0, "3": 0, "4": 0, "5": 0 };
+  let sum = 0;
+  for (const r of allRated ?? []) {
+    const s = Number((r as any).client_rating);
+    if (s >= 1 && s <= 5) { distribution[String(s)]++; sum += s; }
+  }
+  const totalCount = (allRated ?? []).length;
+  const avgScore = totalCount > 0 ? Math.round((sum / totalCount) * 10) / 10 : 0;
+
+  // Lista paginada (aplica filtro de nota, se houver).
+  let listQuery = adminDb
+    .from("service_requests")
+    .select("id, category, client_rating, created_at, app_users!client_user_id(full_name)")
+    .eq("provider_user_id", providerId)
+    .not("client_rating", "is", null)
+    .order("created_at", { ascending: false });
+
+  if (hasScore) listQuery = listQuery.eq("client_rating", score);
+
+  const { data: page } = await listQuery.range(offset, offset + limit - 1);
+
+  // Comentários (relatórios) dos pedidos desta página.
+  const ids = (page ?? []).map((r: any) => r.id);
+  const commentMap: Record<string, string> = {};
+  if (ids.length > 0) {
+    const { data: reports } = await adminDb
+      .from("service_reports")
+      .select("request_id, comments")
+      .in("request_id", ids);
+    for (const rep of reports ?? []) {
+      if ((rep as any).comments) commentMap[(rep as any).request_id] = (rep as any).comments;
+    }
+  }
+
+  const ratings = (page ?? []).map((r: any) => {
+    const u = Array.isArray(r.app_users) ? r.app_users[0] : r.app_users;
+    return {
+      id: r.id,
+      score: Number(r.client_rating),
+      comment: commentMap[r.id] ?? undefined,
+      client_name: u?.full_name ?? "Cliente",
+      service_type: r.category,
+      created_at: r.created_at,
+    };
+  });
+
+  // Total para paginação respeita o filtro de nota; sem filtro = total geral.
+  const total = hasScore ? (distribution[String(score)] ?? 0) : totalCount;
+
+  return c.json({
+    data: { avg_score: avgScore, total_count: totalCount, distribution },
+    ratings,
+    total,
+    offset,
+    limit,
+  });
 });
 
 // ── Provider starts job → status: in_progress ─────────────────────────────

@@ -14,6 +14,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { authHeaders } from '@/lib/api';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -58,7 +59,7 @@ export default function RatingsReceivedScreen() {
 
       const response = await fetch(`${API_BASE}/providers/me/ratings?${params}`, {
         method: 'GET',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
       });
 
       if (!response.ok) {
