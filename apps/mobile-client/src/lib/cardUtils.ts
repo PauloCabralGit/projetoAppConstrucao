@@ -137,4 +137,29 @@ export function nameValid(raw: string): boolean {
   return raw.trim().length >= 3 && raw.trim().includes(' ');
 }
 
+// ── Mensagens amigáveis de recusa (status_detail do Mercado Pago) ────────────
+const STATUS_DETAIL_MESSAGES: Record<string, string> = {
+  cc_rejected_insufficient_amount: 'Saldo ou limite insuficiente neste cartão.',
+  cc_rejected_bad_filled_security_code: 'CVV incorreto. Confira o código de segurança.',
+  cc_rejected_bad_filled_date: 'Data de validade incorreta.',
+  cc_rejected_bad_filled_card_number: 'Número do cartão incorreto.',
+  cc_rejected_bad_filled_other: 'Dados do cartão incorretos. Revise e tente de novo.',
+  cc_rejected_high_risk: 'Pagamento recusado por segurança. Tente outro cartão.',
+  cc_rejected_call_for_authorize: 'Autorize esta compra com seu banco e tente de novo.',
+  cc_rejected_card_disabled: 'Cartão desabilitado. Ligue para o banco emissor.',
+  cc_rejected_duplicated_payment: 'Este pagamento parece duplicado. Verifique antes de repetir.',
+  cc_rejected_card_error: 'Não foi possível processar o cartão. Tente novamente.',
+  cc_rejected_max_attempts: 'Muitas tentativas. Tente outro cartão.',
+  cc_rejected_blacklist: 'Cartão não autorizado. Use outro cartão.',
+  card_token_invalid: 'Não conseguimos validar os dados do cartão. Revise e tente de novo.',
+};
+
+export function statusDetailMessage(detail?: string | null): string {
+  if (!detail) return 'Não conseguimos aprovar a cobrança neste cartão. Tente outro cartão.';
+  return (
+    STATUS_DETAIL_MESSAGES[detail] ??
+    'Não conseguimos aprovar a cobrança neste cartão. Tente outro cartão.'
+  );
+}
+
 export { brandCvvLength, brandMaxDigits };

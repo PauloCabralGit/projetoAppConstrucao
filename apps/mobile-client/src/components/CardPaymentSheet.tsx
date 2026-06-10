@@ -16,11 +16,19 @@ import { Ionicons } from '@expo/vector-icons';
 import type { SavedCard, InstallmentOption, CardPaymentResult } from '@construconnect/shared';
 import { Colors } from '@/constants/colors';
 import {
-  fetchSavedCardsMock,
-  generateInstallmentsMock,
-  payCardMock,
-  type PayOutcome,
-} from '@/lib/cardMocks';
+  AuthError,
+  CardTokenError,
+  fetchSavedCards,
+  deleteSavedCard,
+  setDefaultCard,
+  fetchInstallments,
+  getMpPublicKey,
+  getPayerEmail,
+  tokenizeNewCard,
+  tokenizeSavedCard,
+  createCardPayment,
+  randomUUID,
+} from '@/lib/api';
 import {
   detectBrand,
   BRAND_LABEL,
@@ -35,6 +43,7 @@ import {
   nameValid,
   onlyDigits,
   brandCvvLength,
+  statusDetailMessage,
   type CardFieldErrors,
 } from '@/lib/cardUtils';
 
@@ -43,9 +52,11 @@ type CardType = 'credit' | 'debit';
 
 interface CardPaymentSheetProps {
   visible: boolean;
+  /** ID do service_request — usado em /installments e /create-card-payment. */
+  requestId: string;
   /** Valor do serviço em reais. */
   amount: number;
-  /** E-mail do pagador — usado no payload da Fatia 5 (payer_email). */
+  /** E-mail do pagador (payer_email). Se ausente, é obtido da sessão Supabase. */
   payerEmail?: string;
   onClose: () => void;
   /** Chamado quando a cobrança é aprovada e o usuário toca em "Concluir". */
@@ -54,8 +65,14 @@ interface CardPaymentSheetProps {
 
 const HIT = { top: 8, bottom: 8, left: 8, right: 8 };
 
+/** Tipo de falha de cobrança que não é "recusa de cartão". */
+type PayErrorKind = 'unavailable' | 'token' | null;
+/** Estado de erro ao carregar a lista de cartões. */
+type CardsError = 'network' | 'auth' | null;
+
 export default function CardPaymentSheet({
   visible,
+  requestId,
   amount,
   payerEmail,
   onClose,
@@ -66,9 +83,11 @@ export default function CardPaymentSheet({
   // ── Cartões salvos ──────────────────────────────────────────────────────
   const [cards, setCards] = useState<SavedCard[]>([]);
   const [cardsLoading, setCardsLoading] = useState(true);
-  const [cardsError, setCardsError] = useState(false);
+  const [cardsError, setCardsError] = useState<CardsError>(null);
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [savedCvv, setSavedCvv] = useState(''); // CVV exigido sempre, mesmo no cartão salvo
+  const [manageMode, setManageMode] = useState(false);
+  const [cardActionId, setCardActionId] = useState<string | null>(null);
 
   // ── Novo cartão ─────────────────────────────────────────────────────────
   const [number, setNumber] = useState('');
@@ -83,14 +102,17 @@ export default function CardPaymentSheet({
   // ── Parcelas / revisão / processamento ──────────────────────────────────
   const [installments, setInstallments] = useState<InstallmentOption[]>([]);
   const [installmentsLoading, setInstallmentsLoading] = useState(false);
+  const [installmentsError, setInstallmentsError] = useState(false);
   const [selectedInstallment, setSelectedInstallment] = useState<InstallmentOption | null>(null);
+  // payment_method_id / issuer_id resolvidos pelo /installments — usados na cobrança.
+  const [paymentMethodId, setPaymentMethodId] = useState<string>('');
+  const [issuerId, setIssuerId] = useState<string>('');
   const [usingSaved, setUsingSaved] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [result, setResult] = useState<CardPaymentResult | null>(null);
-  const [payError, setPayError] = useState(false);
-
-  // F4: controla o desfecho do mock de cobrança (somente em desenvolvimento).
-  const [mockOutcome, setMockOutcome] = useState<PayOutcome>('approved');
+  // Desfechos não-aprovados: recusa de cartão (rejectedDetail) ou falha de infra/token.
+  const [rejectedDetail, setRejectedDetail] = useState<string | null>(null);
+  const [payErrorKind, setPayErrorKind] = useState<PayErrorKind>(null);
 
   const brand = detectBrand(number);
   const selectedCard = useMemo(
@@ -100,14 +122,17 @@ export default function CardPaymentSheet({
 
   const loadCards = useCallback(async () => {
     setCardsLoading(true);
-    setCardsError(false);
+    setCardsError(null);
     try {
-      // FATIA 5: GET /v1/cards com authHeaders.
-      const data = await fetchSavedCardsMock('ok');
+      const data = await fetchSavedCards();
       setCards(data);
-      setSelectedCardId(data.find((c) => c.isDefault)?.id ?? data[0]?.id ?? null);
-    } catch {
-      setCardsError(true);
+      setSelectedCardId((prev) => {
+        // Mantém a seleção atual se o cartão ainda existir; senão usa o preferido.
+        if (prev && data.some((c) => c.id === prev)) return prev;
+        return data.find((c) => c.isDefault)?.id ?? data[0]?.id ?? null;
+      });
+    } catch (e) {
+      setCardsError(e instanceof AuthError ? 'auth' : 'network');
     } finally {
       setCardsLoading(false);
     }
@@ -127,12 +152,17 @@ export default function CardPaymentSheet({
     setSaveCard(true);
     setErrors({});
     setInstallments([]);
+    setInstallmentsError(false);
     setSelectedInstallment(null);
+    setPaymentMethodId('');
+    setIssuerId('');
     setUsingSaved(false);
     setProcessing(false);
     setResult(null);
-    setPayError(false);
-    setMockOutcome('approved');
+    setRejectedDetail(null);
+    setPayErrorKind(null);
+    setManageMode(false);
+    setCardActionId(null);
     loadCards();
   }, [visible, loadCards]);
 
@@ -152,33 +182,39 @@ export default function CardPaymentSheet({
     return Object.keys(next).length === 0;
   }
 
-  async function loadInstallments() {
-    setInstallmentsLoading(true);
-    setStep('installments');
-    try {
-      // FATIA 5: GET /v1/installments (juros reais do emissor via MP).
-      const opts = await generateInstallmentsMock(amount);
-      setInstallments(opts);
-    } finally {
-      setInstallmentsLoading(false);
-    }
-  }
+  // Busca parcelas reais (juros do emissor via MP). `saved`=true usa a bandeira
+  // do cartão salvo (payment_method_id); senão usa o BIN (6 primeiros do PAN).
+  const loadInstallments = useCallback(
+    async (saved: boolean, debit: boolean) => {
+      setStep('installments');
+      setInstallmentsLoading(true);
+      setInstallmentsError(false);
+      try {
+        const query = saved
+          ? { paymentMethodId: selectedCard?.brand ?? undefined }
+          : { bin: onlyDigits(number).slice(0, 6) };
+        const resp = await fetchInstallments(requestId, query);
+        const opts = resp.payerCosts ?? [];
+        setInstallments(opts);
+        setPaymentMethodId(resp.paymentMethodId);
+        setIssuerId(resp.issuerId);
+        // Pré-seleciona a 1ª opção (1x sem juros, por convenção do MP).
+        setSelectedInstallment(opts[0] ?? null);
+        // Débito é sempre à vista → pula a seleção de parcelas.
+        if (debit) setStep('review');
+      } catch {
+        setInstallmentsError(true);
+      } finally {
+        setInstallmentsLoading(false);
+      }
+    },
+    [requestId, number, selectedCard]
+  );
 
   function handleContinueFromNew() {
     if (!validateNewCard()) return;
     setUsingSaved(false);
-    if (cardType === 'credit') {
-      loadInstallments();
-    } else {
-      // Débito: à vista, sem parcelas.
-      setSelectedInstallment({
-        installments: 1,
-        installmentAmount: amount,
-        totalAmount: amount,
-        labels: ['débito à vista'],
-      });
-      setStep('review');
-    }
+    loadInstallments(false, cardType === 'debit');
   }
 
   const savedCvvValid = onlyDigits(savedCvv).length === 3;
@@ -191,25 +227,66 @@ export default function CardPaymentSheet({
     setErrors({});
     setUsingSaved(true);
     // Cartões salvos são de crédito (só crédito é salvo) → parcelas.
-    loadInstallments();
+    loadInstallments(true, false);
   }
 
   async function handlePay() {
     if (!selectedInstallment) return;
     setProcessing(true);
-    setPayError(false);
+    setRejectedDetail(null);
+    setPayErrorKind(null);
     try {
-      // FATIA 5: aqui ocorre a tokenização no device (createCardToken do Mercado Pago)
-      // e em seguida o POST create-card-payment com authHeaders + idempotency_key.
-      const res = await payCardMock({
-        amount: selectedInstallment.totalAmount,
+      const pk = await getMpPublicKey();
+
+      // Tokenização no device (PCI). Re-tokeniza a cada tentativa porque o token
+      // do MP é de uso único — isso cobre também o caso de token expirado.
+      let token: string;
+      if (usingSaved) {
+        if (!selectedCard) throw new Error('no_card');
+        token = await tokenizeSavedCard(pk, selectedCard.id, onlyDigits(savedCvv));
+      } else {
+        const [mm, yy] = expiry.split('/');
+        token = await tokenizeNewCard(pk, {
+          number: onlyDigits(number),
+          securityCode: onlyDigits(cvv),
+          expMonth: Number(mm),
+          expYear: Number(`20${yy}`),
+          name: holder.trim().toUpperCase(),
+          cpf: onlyDigits(cpf),
+        });
+      }
+
+      const email = payerEmail || (await getPayerEmail());
+      const outcome = await createCardPayment(requestId, {
+        token,
         installments: selectedInstallment.installments,
-        outcome: mockOutcome,
+        payment_method_id: paymentMethodId || (usingSaved ? selectedCard?.brand ?? '' : ''),
+        issuer_id: issuerId || undefined,
+        payer_email: email,
+        // save_card só no crédito de cartão novo (débito nunca salva).
+        save_card: !usingSaved && cardType === 'credit' && saveCard,
+        idempotency_key: randomUUID(), // um por tentativa
       });
-      setResult(res);
+
+      if (outcome.kind === 'approved') {
+        setResult(outcome.result);
+      } else if (outcome.kind === 'rejected') {
+        setResult(outcome.result);
+        setRejectedDetail(outcome.statusDetail);
+      } else if (outcome.kind === 'token_expired') {
+        setPayErrorKind('token');
+      } else {
+        setPayErrorKind('unavailable');
+      }
       setStep('result');
-    } catch {
-      setPayError(true);
+    } catch (e) {
+      // Falha na tokenização (dados de cartão) ou na obtenção da public key.
+      if (e instanceof CardTokenError) {
+        setResult(null);
+        setRejectedDetail('card_token_invalid');
+      } else {
+        setPayErrorKind('unavailable');
+      }
       setStep('result');
     } finally {
       setProcessing(false);
@@ -218,8 +295,38 @@ export default function CardPaymentSheet({
 
   function resetToPaymentStart() {
     setResult(null);
-    setPayError(false);
+    setRejectedDetail(null);
+    setPayErrorKind(null);
     setStep(cards.length > 0 ? 'list' : 'new');
+  }
+
+  // ── Gerenciar cartões (remover / preferido) ─────────────────────────────────
+  async function handleSetDefault(cardId: string) {
+    setCardActionId(cardId);
+    try {
+      await setDefaultCard(cardId);
+      await loadCards();
+    } catch {
+      // Mantém a lista atual; o erro é silencioso (ação reversível).
+    } finally {
+      setCardActionId(null);
+    }
+  }
+
+  async function handleRemoveCard(cardId: string) {
+    setCardActionId(cardId);
+    try {
+      await deleteSavedCard(cardId);
+      if (selectedCardId === cardId) {
+        setSelectedCardId(null);
+        setSavedCvv('');
+      }
+      await loadCards();
+    } catch {
+      // Erro silencioso; a lista permanece como está.
+    } finally {
+      setCardActionId(null);
+    }
   }
 
   const headerTitle: Record<CardStep, string> = {
@@ -305,6 +412,11 @@ export default function CardPaymentSheet({
                 cvvError={errors.cvv}
                 onRetry={loadCards}
                 onAddNew={() => { setErrors({}); setStep('new'); }}
+                manageMode={manageMode}
+                onToggleManage={() => setManageMode((m) => !m)}
+                onSetDefault={handleSetDefault}
+                onRemove={handleRemoveCard}
+                cardActionId={cardActionId}
               />
             )}
 
@@ -332,9 +444,11 @@ export default function CardPaymentSheet({
             {step === 'installments' && (
               <StepInstallments
                 loading={installmentsLoading}
+                error={installmentsError}
                 options={installments}
                 selected={selectedInstallment}
                 onSelect={setSelectedInstallment}
+                onRetry={() => loadInstallments(usingSaved, !usingSaved && cardType === 'debit')}
               />
             )}
 
@@ -349,14 +463,13 @@ export default function CardPaymentSheet({
                 }
                 cardType={usingSaved ? 'credit' : cardType}
                 processing={processing}
-                mockOutcome={mockOutcome}
-                onChangeMockOutcome={setMockOutcome}
               />
             )}
 
             {step === 'result' && (
               <StepResult
-                error={payError}
+                payErrorKind={payErrorKind}
+                rejectedDetail={rejectedDetail}
                 result={result}
                 onConcluir={() => { if (result) onApproved(result); onClose(); }}
                 onRetry={handlePay}
@@ -377,7 +490,7 @@ export default function CardPaymentSheet({
           </ScrollView>
 
           {/* Rodapé com CTA por passo */}
-          {step === 'list' && !cardsLoading && !cardsError && (
+          {step === 'list' && !cardsLoading && !cardsError && !manageMode && cards.length > 0 && (
             <Footer
               label="Continuar"
               disabled={!selectedCardId || !savedCvvValid}
@@ -419,9 +532,10 @@ export default function CardPaymentSheet({
 function StepList({
   loading, error, cards, selectedCardId, onSelect,
   savedCvv, onChangeCvv, cvvError, onRetry, onAddNew,
+  manageMode, onToggleManage, onSetDefault, onRemove, cardActionId,
 }: {
   loading: boolean;
-  error: boolean;
+  error: CardsError;
   cards: SavedCard[];
   selectedCardId: string | null;
   onSelect: (id: string) => void;
@@ -430,6 +544,11 @@ function StepList({
   cvvError?: string;
   onRetry: () => void;
   onAddNew: () => void;
+  manageMode: boolean;
+  onToggleManage: () => void;
+  onSetDefault: (id: string) => void;
+  onRemove: (id: string) => void;
+  cardActionId: string | null;
 }) {
   if (loading) {
     return (
@@ -448,14 +567,32 @@ function StepList({
   }
 
   if (error) {
+    const isAuth = error === 'auth';
     return (
       <View style={styles.centerBox}>
-        <Ionicons name="cloud-offline-outline" size={40} color={Colors.warningAmber} />
-        <Text style={styles.emptyTitle}>Não foi possível carregar seus cartões</Text>
-        <Text style={styles.emptyDesc}>Verifique sua conexão e tente novamente.</Text>
-        <TouchableOpacity style={styles.outlineBtn} onPress={onRetry} accessibilityRole="button">
-          <Ionicons name="refresh" size={16} color={Colors.darkNavy} />
-          <Text style={styles.outlineBtnText}>Tentar de novo</Text>
+        <Ionicons
+          name={isAuth ? 'lock-closed-outline' : 'cloud-offline-outline'}
+          size={40}
+          color={Colors.warningAmber}
+        />
+        <Text style={styles.emptyTitle}>
+          {isAuth ? 'Sessão expirada' : 'Não foi possível carregar seus cartões'}
+        </Text>
+        <Text style={styles.emptyDesc}>
+          {isAuth
+            ? 'Faça login novamente para usar seus cartões salvos.'
+            : 'Verifique sua conexão e tente novamente.'}
+        </Text>
+        {!isAuth && (
+          <TouchableOpacity style={styles.outlineBtn} onPress={onRetry} accessibilityRole="button">
+            <Ionicons name="refresh" size={16} color={Colors.darkNavy} />
+            <Text style={styles.outlineBtnText}>Tentar de novo</Text>
+          </TouchableOpacity>
+        )}
+        {/* Mesmo sem cartões salvos, o usuário pode pagar com um cartão novo. */}
+        <TouchableOpacity style={styles.addCardBtn} onPress={onAddNew} accessibilityRole="button">
+          <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
+          <Text style={styles.addCardText}>Pagar com novo cartão</Text>
         </TouchableOpacity>
       </View>
     );
@@ -470,46 +607,105 @@ function StepList({
           <Text style={styles.emptyDesc}>Adicione um cartão para pagar com mais rapidez.</Text>
         </View>
       ) : (
-        cards.map((c) => {
-          const selected = c.id === selectedCardId;
-          return (
+        <>
+          {/* Alterna entre seleção (pagar) e gerenciamento (preferido/remover). */}
+          <View style={styles.manageHeader}>
+            <Text style={styles.manageHeaderLabel}>
+              {manageMode ? 'Gerenciar cartões' : 'Seus cartões'}
+            </Text>
             <TouchableOpacity
-              key={c.id}
-              style={[styles.savedCard, selected && styles.savedCardActive]}
-              onPress={() => onSelect(c.id)}
-              accessibilityRole="radio"
-              accessibilityState={{ selected }}
-              accessibilityLabel={
-                `${BRAND_LABEL[(c.brand as never) ?? 'unknown'] ?? 'Cartão'} final ${c.last4}` +
-                (c.isDefault ? ', cartão preferido' : '')
-              }
+              onPress={onToggleManage}
+              hitSlop={HIT}
+              accessibilityRole="button"
+              accessibilityLabel={manageMode ? 'Concluir gerenciamento' : 'Gerenciar cartões'}
             >
-              <Ionicons
-                name={selected ? 'radio-button-on' : 'radio-button-off'}
-                size={20}
-                color={selected ? Colors.primary : Colors.textSecondary}
-              />
-              <Ionicons name="card" size={22} color={Colors.darkNavy} />
-              <View style={{ flex: 1 }}>
-                <Text style={styles.savedCardBrand}>
-                  {BRAND_LABEL[(c.brand as never) ?? 'unknown'] ?? 'Cartão'} ••••{c.last4}
-                </Text>
-                <Text style={styles.savedCardExp}>
-                  Expira {String(c.expMonth).padStart(2, '0')}/{String(c.expYear).slice(-2)}
-                </Text>
-              </View>
-              {c.isDefault && (
-                <View style={styles.preferBadge}>
-                  <Text style={styles.preferBadgeText}>Preferido</Text>
-                </View>
-              )}
+              <Text style={styles.manageHeaderAction}>{manageMode ? 'Concluir' : 'Gerenciar'}</Text>
             </TouchableOpacity>
-          );
-        })
+          </View>
+
+          {cards.map((c) => {
+            const selected = c.id === selectedCardId;
+            const busy = cardActionId === c.id;
+            const brandText = BRAND_LABEL[(c.brand as never) ?? 'unknown'] ?? 'Cartão';
+            return (
+              <View
+                key={c.id}
+                style={[styles.savedCard, !manageMode && selected && styles.savedCardActive]}
+              >
+                <TouchableOpacity
+                  style={styles.savedCardMain}
+                  onPress={manageMode ? undefined : () => onSelect(c.id)}
+                  disabled={manageMode || busy}
+                  accessibilityRole={manageMode ? undefined : 'radio'}
+                  accessibilityState={{ selected }}
+                  accessibilityLabel={
+                    `${brandText} final ${c.last4}` + (c.isDefault ? ', cartão preferido' : '')
+                  }
+                >
+                  {!manageMode && (
+                    <Ionicons
+                      name={selected ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={selected ? Colors.primary : Colors.textSecondary}
+                    />
+                  )}
+                  <Ionicons name="card" size={22} color={Colors.darkNavy} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.savedCardBrand}>
+                      {brandText} ••••{c.last4}
+                    </Text>
+                    <Text style={styles.savedCardExp}>
+                      Expira {String(c.expMonth).padStart(2, '0')}/{String(c.expYear).slice(-2)}
+                    </Text>
+                  </View>
+                  {c.isDefault && !manageMode && (
+                    <View style={styles.preferBadge}>
+                      <Text style={styles.preferBadgeText}>Preferido</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+
+                {manageMode && (
+                  <View style={styles.manageActions}>
+                    {busy ? (
+                      <ActivityIndicator size="small" color={Colors.primary} />
+                    ) : (
+                      <>
+                        <TouchableOpacity
+                          onPress={() => onSetDefault(c.id)}
+                          disabled={c.isDefault}
+                          hitSlop={HIT}
+                          accessibilityRole="button"
+                          accessibilityLabel={
+                            c.isDefault ? 'Já é o cartão preferido' : `Tornar ${brandText} final ${c.last4} preferido`
+                          }
+                        >
+                          <Ionicons
+                            name={c.isDefault ? 'star' : 'star-outline'}
+                            size={22}
+                            color={c.isDefault ? Colors.warningAmber : Colors.textSecondary}
+                          />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => onRemove(c.id)}
+                          hitSlop={HIT}
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remover ${brandText} final ${c.last4}`}
+                        >
+                          <Ionicons name="trash-outline" size={22} color={Colors.dangerRed} />
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </>
       )}
 
       {/* CVV exigido sempre, inclusive em cartão salvo, antes de cobrar. */}
-      {cards.length > 0 && selectedCardId && (
+      {!manageMode && cards.length > 0 && selectedCardId && (
         <View style={styles.field}>
           <Text style={styles.fieldLabel}>CVV do cartão selecionado</Text>
           <TextInput
@@ -527,15 +723,17 @@ function StepList({
         </View>
       )}
 
-      <TouchableOpacity
-        style={styles.addCardBtn}
-        onPress={onAddNew}
-        accessibilityRole="button"
-        accessibilityLabel="Adicionar novo cartão"
-      >
-        <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
-        <Text style={styles.addCardText}>Adicionar novo cartão</Text>
-      </TouchableOpacity>
+      {!manageMode && (
+        <TouchableOpacity
+          style={styles.addCardBtn}
+          onPress={onAddNew}
+          accessibilityRole="button"
+          accessibilityLabel="Adicionar novo cartão"
+        >
+          <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
+          <Text style={styles.addCardText}>Adicionar novo cartão</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -680,18 +878,46 @@ function StepNewCard({
 }
 
 function StepInstallments({
-  loading, options, selected, onSelect,
+  loading, error, options, selected, onSelect, onRetry,
 }: {
   loading: boolean;
+  error: boolean;
   options: InstallmentOption[];
   selected: InstallmentOption | null;
   onSelect: (opt: InstallmentOption) => void;
+  onRetry: () => void;
 }) {
   if (loading) {
     return (
       <View style={styles.centerBox}>
         <ActivityIndicator color={Colors.primary} />
         <Text style={styles.emptyDesc}>Calculando opções...</Text>
+      </View>
+    );
+  }
+  if (error) {
+    return (
+      <View style={styles.centerBox}>
+        <Ionicons name="cloud-offline-outline" size={40} color={Colors.warningAmber} />
+        <Text style={styles.emptyTitle}>Não foi possível calcular as parcelas</Text>
+        <Text style={styles.emptyDesc}>Verifique sua conexão e tente novamente.</Text>
+        <TouchableOpacity style={styles.outlineBtn} onPress={onRetry} accessibilityRole="button">
+          <Ionicons name="refresh" size={16} color={Colors.darkNavy} />
+          <Text style={styles.outlineBtnText}>Tentar de novo</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+  if (options.length === 0) {
+    return (
+      <View style={styles.centerBox}>
+        <Ionicons name="card-outline" size={40} color={Colors.textSecondary} />
+        <Text style={styles.emptyTitle}>Nenhuma opção de parcelamento</Text>
+        <Text style={styles.emptyDesc}>Este cartão não retornou condições de pagamento.</Text>
+        <TouchableOpacity style={styles.outlineBtn} onPress={onRetry} accessibilityRole="button">
+          <Ionicons name="refresh" size={16} color={Colors.darkNavy} />
+          <Text style={styles.outlineBtnText}>Tentar de novo</Text>
+        </TouchableOpacity>
       </View>
     );
   }
@@ -736,15 +962,13 @@ function StepInstallments({
 }
 
 function StepReview({
-  amount, installment, cardDescription, cardType, processing, mockOutcome, onChangeMockOutcome,
+  amount, installment, cardDescription, cardType, processing,
 }: {
   amount: number;
   installment: InstallmentOption | null;
   cardDescription: string;
   cardType: CardType;
   processing: boolean;
-  mockOutcome: PayOutcome;
-  onChangeMockOutcome: (o: PayOutcome) => void;
 }) {
   const total = installment?.totalAmount ?? amount;
   const juros = Math.max(0, Math.round((total - amount) * 100) / 100);
@@ -786,36 +1010,22 @@ function StepReview({
         <Text style={styles.totalValue}>{formatBRL(total)}</Text>
       </View>
 
-      {/* F4: controle de simulação visível somente em desenvolvimento. */}
-      {__DEV__ && (
-        <View style={styles.devBox}>
-          <Text style={styles.devLabel}>Simular resultado (F4 — apenas dev)</Text>
-          <View style={styles.segmented}>
-            {(['approved', 'rejected', 'error'] as const).map((o) => {
-              const active = mockOutcome === o;
-              return (
-                <TouchableOpacity
-                  key={o}
-                  style={[styles.segment, active && styles.segmentActive]}
-                  onPress={() => onChangeMockOutcome(o)}
-                >
-                  <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
-                    {o === 'approved' ? 'Aprovar' : o === 'rejected' ? 'Recusar' : 'Falha'}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-      )}
+      <View style={styles.secureNote}>
+        <Ionicons name="lock-closed" size={13} color={Colors.textSecondary} />
+        <Text style={styles.secureNoteText}>
+          Os dados do cartão são protegidos e processados pelo Mercado Pago.
+        </Text>
+      </View>
     </View>
   );
 }
 
 function StepResult({
-  error, result, onConcluir, onRetry, onTryAnotherCard, onUseOtherMethod, onShareReceipt,
+  payErrorKind, rejectedDetail, result,
+  onConcluir, onRetry, onTryAnotherCard, onUseOtherMethod, onShareReceipt,
 }: {
-  error: boolean;
+  payErrorKind: PayErrorKind;
+  rejectedDetail: string | null;
   result: CardPaymentResult | null;
   onConcluir: () => void;
   onRetry: () => void;
@@ -823,8 +1033,8 @@ function StepResult({
   onUseOtherMethod: () => void;
   onShareReceipt: () => void;
 }) {
-  // 503 / offline
-  if (error) {
+  // 503 / offline — infra indisponível.
+  if (payErrorKind === 'unavailable') {
     return (
       <View style={styles.centerBox}>
         <View style={[styles.resultIcon, { backgroundColor: '#FFFBEB' }]}>
@@ -844,17 +1054,47 @@ function StepResult({
     );
   }
 
-  const approved = result?.status === 'approved';
-
-  if (approved) {
+  // Token de uso único expirou entre a revisão e a cobrança.
+  if (payErrorKind === 'token') {
     return (
       <View style={styles.centerBox}>
-        <View style={[styles.resultIcon, { backgroundColor: '#ECFDF5' }]}>
-          <Ionicons name="checkmark-circle" size={48} color={Colors.successGreen} />
+        <View style={[styles.resultIcon, { backgroundColor: '#FFFBEB' }]}>
+          <Ionicons name="time-outline" size={48} color={Colors.warningAmber} />
         </View>
-        <Text style={styles.resultTitle}>Pagamento aprovado!</Text>
+        <Text style={styles.resultTitle}>Sessão do cartão expirou</Text>
         <Text style={styles.emptyDesc}>
-          {formatBRL(result!.amount)} · {result!.installments}x
+          Por segurança, o pagamento expira após alguns minutos. Toque para gerar uma nova
+          autorização e tentar de novo.
+        </Text>
+        <TouchableOpacity style={styles.primaryBtn} onPress={onRetry} accessibilityRole="button">
+          <Text style={styles.primaryBtnText}>Tentar de novo</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.textBtn} onPress={onUseOtherMethod} accessibilityRole="button">
+          <Text style={styles.textBtnLabel}>Usar outro método</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  const approved = result?.status === 'approved' || result?.status === 'authorized' || result?.status === 'in_process';
+
+  if (approved && result) {
+    const pending = result.status === 'in_process';
+    return (
+      <View style={styles.centerBox}>
+        <View style={[styles.resultIcon, { backgroundColor: pending ? '#FFFBEB' : '#ECFDF5' }]}>
+          <Ionicons
+            name={pending ? 'hourglass-outline' : 'checkmark-circle'}
+            size={48}
+            color={pending ? Colors.warningAmber : Colors.successGreen}
+          />
+        </View>
+        <Text style={styles.resultTitle}>
+          {pending ? 'Pagamento em processamento' : 'Pagamento aprovado!'}
+        </Text>
+        <Text style={styles.emptyDesc}>
+          {formatBRL(result.amount)} · {result.installments}x
+          {pending ? '\nVocê será notificado assim que for confirmado.' : ''}
         </Text>
         <TouchableOpacity style={styles.primaryBtn} onPress={onConcluir} accessibilityRole="button">
           <Text style={styles.primaryBtnText}>Concluir</Text>
@@ -867,16 +1107,14 @@ function StepResult({
     );
   }
 
-  // Recusado
+  // Recusado — mensagem amigável a partir do status_detail do MP.
   return (
     <View style={styles.centerBox}>
       <View style={[styles.resultIcon, { backgroundColor: '#FEF2F2' }]}>
         <Ionicons name="close-circle" size={48} color={Colors.dangerRed} />
       </View>
       <Text style={styles.resultTitle}>Pagamento recusado</Text>
-      <Text style={styles.emptyDesc}>
-        Não conseguimos aprovar a cobrança neste cartão. Tente novamente ou use outro cartão.
-      </Text>
+      <Text style={styles.emptyDesc}>{statusDetailMessage(rejectedDetail)}</Text>
       <TouchableOpacity style={styles.primaryBtn} onPress={onRetry} accessibilityRole="button">
         <Text style={styles.primaryBtnText}>Tentar de novo</Text>
       </TouchableOpacity>
@@ -1005,6 +1243,22 @@ const styles = StyleSheet.create({
   },
   addCardText: { fontSize: 14, fontWeight: '700', color: Colors.primary },
 
+  // Gerenciar cartões
+  manageHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  manageHeaderLabel: { fontSize: 13, fontWeight: '700', color: Colors.textSecondary },
+  manageHeaderAction: { fontSize: 14, fontWeight: '700', color: Colors.primary, minHeight: 24 },
+  savedCardMain: { flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 },
+  manageActions: { flexDirection: 'row', alignItems: 'center', gap: 18, paddingLeft: 8 },
+
+  // Nota de segurança (revisão)
+  secureNote: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  secureNoteText: { flex: 1, fontSize: 12, color: Colors.textSecondary, lineHeight: 16 },
+
   // Formulário
   field: { gap: 6 },
   fieldLabel: { fontSize: 13, fontWeight: '600', color: Colors.textSecondary },
@@ -1093,17 +1347,6 @@ const styles = StyleSheet.create({
   totalLabel: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
   totalValue: { fontSize: 24, fontWeight: '800', color: Colors.textPrimary },
   processingTitle: { fontSize: 17, fontWeight: '700', color: Colors.textPrimary },
-
-  devBox: {
-    gap: 8,
-    padding: 12,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    borderStyle: 'dashed',
-    backgroundColor: Colors.background,
-  },
-  devLabel: { fontSize: 12, fontWeight: '700', color: Colors.textSecondary },
 
   // Resultado
   resultIcon: {

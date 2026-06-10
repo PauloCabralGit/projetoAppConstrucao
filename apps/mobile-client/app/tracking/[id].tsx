@@ -955,17 +955,21 @@ export default function TrackingScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* Bottom-sheet de pagamento com cartão (F4 — mocks, atrás da flag) */}
+        {/* Bottom-sheet de pagamento com cartão (F5 — integração real, atrás da flag) */}
         {flags.card_saved_cards && (
           <CardPaymentSheet
             visible={showCardSheet}
+            requestId={String(id)}
             amount={Number(request.quote_amount ?? 0)}
             onClose={() => setShowCardSheet(false)}
             onApproved={() => {
               setShowCardSheet(false);
-              // Persiste o pagamento como cartão (silencioso: o sheet já mostrou o sucesso).
-              // FATIA 5: a confirmação virá do backend (create-card-payment), não daqui.
-              handleSendPayment(true);
+              // F5: a cobrança já foi confirmada no backend (create-card-payment).
+              // Aqui só refletimos o estado localmente; o Realtime traz a confirmação
+              // definitiva (payment_status). NÃO escrevemos no banco daqui.
+              setRequest((prev) =>
+                prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
+              );
             }}
           />
         )}
