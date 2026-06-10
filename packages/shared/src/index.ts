@@ -58,3 +58,20 @@ export interface DashboardMetric {
   value: string;
   trend: string;
 }
+
+// Formato de erro padronizado da API.
+// Durante a transição, a API faz dual-write: { error: {...}, message } —
+// o `message` no topo é legado e será removido após os apps migrarem.
+export type ApiErrorCode =
+  | "UNAUTHORIZED"
+  | "FORBIDDEN"
+  | "NOT_FOUND"
+  | "CONFLICT"
+  | "VALIDATION"
+  | "PLAN_LIMIT_REACHED"
+  | "RATE_LIMITED"
+  | "INTERNAL";
+
+export interface ApiError {
+  error: { code: ApiErrorCode; message: string; details?: unknown };
+}

@@ -63,7 +63,9 @@ app.use(cors({
       "http://localhost:5173",
       "http://localhost:8081", // Expo web dev
     ];
-    return allowed.includes(origin ?? "") ? origin! : allowed[0];
+    // Origem desconhecida → não ecoar header (Hono omite Access-Control-Allow-Origin).
+    // Apps mobile nativos não enviam Origin e não são afetados.
+    return allowed.includes(origin ?? "") ? origin! : undefined;
   },
   allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowHeaders: ["Content-Type", "Authorization", "x-admin-key"],
@@ -71,6 +73,49 @@ app.use(cors({
 
 const db = (env: Bindings) =>
   createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
+
+// ── Resposta de erro padronizada ─────────────────────────────────────────────
+// Dual-write transitório: novo formato { error: { code, message } } + legado
+// { message } no topo, até os apps em produção migrarem para ler `error`.
+function err(c: any, status: number, code: string, message: string, details?: unknown) {
+  return c.json(
+    { error: { code, message, ...(details !== undefined ? { details } : {}) }, message },
+    status,
+  );
+}
+
+// ── Rate limit de autenticação via KV (durável entre isolates) ────────────────
+// Usado nas rotas públicas de auth/registro, onde o rate limit em memória
+// (por isolate) é insuficiente contra brute force. Janela: 10 tentativas / 10 min
+// por IP+rota. Reusa o KV FEATURE_FLAGS com prefixo "rl:auth:" para não colidir
+// com as chaves de feature flags.
+async function checkAuthRateLimit(
+  kv: KVNamespace,
+  route: string,
+  ip: string,
+  limit = 10,
+  windowMs = 10 * 60 * 1000,
+): Promise<boolean> {
+  if (!kv) return true; // sem KV configurado, não bloqueia
+  const key = `rl:auth:${route}:${ip}`;
+  const now = Date.now();
+  const entry = (await kv.get(key, "json")) as { count: number; resetAt: number } | null;
+  if (!entry || now > entry.resetAt) {
+    await kv.put(key, JSON.stringify({ count: 1, resetAt: now + windowMs }), {
+      expirationTtl: Math.ceil(windowMs / 1000),
+    });
+    return true;
+  }
+  if (entry.count >= limit) return false;
+  await kv.put(key, JSON.stringify({ count: entry.count + 1, resetAt: entry.resetAt }), {
+    expirationTtl: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+  });
+  return true;
+}
+
+function clientIp(c: any): string {
+  return c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
+}
 
 // ── Sentry error reporting via REST API ───────────────────────────────────────
 async function reportError(env: Bindings, err: unknown, context?: Record<string, unknown>) {
@@ -457,16 +502,15 @@ app.get("/v1/providers/available", async (c) => {
 
 app.patch("/v1/service-requests/:id/accept", async (c) => {
   const jobId = c.req.param("id");
-  const body = await c.req.json<{ provider_user_id: string }>();
-
-  if (!jobId || !body.provider_user_id) {
-    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
-  }
+  // Segurança: o prestador é derivado do JWT, nunca do body (evita IDOR).
+  const providerId = c.get("userId");
+  if (!providerId) return err(c, 401, "UNAUTHORIZED", "Não autorizado.");
+  if (!jobId) return err(c, 400, "VALIDATION", "Parâmetros obrigatórios ausentes.");
 
   // US-016: Verificar limite mensal do plano Free
-  const limitCheck = await enforceJobLimit(c.env, body.provider_user_id);
+  const limitCheck = await enforceJobLimit(c.env, providerId);
   if (!limitCheck.allowed) {
-    return c.json({ message: limitCheck.message, code: "PLAN_LIMIT_REACHED" }, 403);
+    return err(c, 403, "PLAN_LIMIT_REACHED", limitCheck.message ?? "Limite do plano atingido.");
   }
 
   const adminDb = db(c.env);
@@ -475,32 +519,31 @@ app.patch("/v1/service-requests/:id/accept", async (c) => {
   // Ensure the row exists before accepting (provider may have registered before this table was populated)
   await adminDb
     .from("provider_profiles")
-    .upsert({ user_id: body.provider_user_id, description: "" }, { onConflict: "user_id" });
+    .upsert({ user_id: providerId, description: "" }, { onConflict: "user_id" });
 
   const { data, error } = await adminDb
     .from("service_requests")
-    .update({ status: "accepted", provider_user_id: body.provider_user_id })
+    .update({ status: "accepted", provider_user_id: providerId })
     .eq("id", jobId)
     .eq("status", "requested")
     .select("id")
     .maybeSingle();
 
-  if (error) return c.json({ message: error.message }, 400);
-  if (!data) return c.json({ message: "Chamado não disponível ou já aceito." }, 409);
+  if (error) return err(c, 400, "VALIDATION", error.message);
+  if (!data) return err(c, 409, "CONFLICT", "Chamado não disponível ou já aceito.");
 
   // Incrementar contador mensal do plano
-  await incrementJobCount(c.env, body.provider_user_id);
+  await incrementJobCount(c.env, providerId);
 
   return c.json({ id: data.id, message: "Chamado aceito com sucesso." });
 });
 
 app.patch("/v1/service-requests/:id/complete", async (c) => {
   const jobId = c.req.param("id");
-  const body = await c.req.json<{ provider_user_id: string }>();
-
-  if (!jobId || !body.provider_user_id) {
-    return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
-  }
+  // Segurança: prestador derivado do JWT; o .eq abaixo garante pertencimento.
+  const providerId = c.get("userId");
+  if (!providerId) return err(c, 401, "UNAUTHORIZED", "Não autorizado.");
+  if (!jobId) return err(c, 400, "VALIDATION", "Parâmetros obrigatórios ausentes.");
 
   const { data: req } = await db(c.env)
     .from("service_requests")
@@ -512,9 +555,9 @@ app.patch("/v1/service-requests/:id/complete", async (c) => {
     .from("service_requests")
     .update({ status: "completed" })
     .eq("id", jobId)
-    .eq("provider_user_id", body.provider_user_id);
+    .eq("provider_user_id", providerId);
 
-  if (error) return c.json({ message: error.message }, 400);
+  if (error) return err(c, 400, "VALIDATION", error.message);
 
   if (req?.client_user_id) {
     await sendPush(c.env, req.client_user_id, "✅ Serviço concluído!", "O prestador concluiu o serviço. Confira as fotos de evidência.");
@@ -525,8 +568,10 @@ app.patch("/v1/service-requests/:id/complete", async (c) => {
 
 app.post("/v1/service-requests/:id/reject", async (c) => {
   const jobId = c.req.param("id");
-  const body = await c.req.json<{ provider_user_id: string; reason?: string }>().catch(() => ({} as any));
-  if (!jobId || !body.provider_user_id) return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
+  // Segurança: prestador derivado do JWT; o .eq abaixo garante pertencimento.
+  const providerId = c.get("userId");
+  if (!providerId) return err(c, 401, "UNAUTHORIZED", "Não autorizado.");
+  if (!jobId) return err(c, 400, "VALIDATION", "Parâmetros obrigatórios ausentes.");
 
   const adminDb = db(c.env);
 
@@ -537,7 +582,7 @@ app.post("/v1/service-requests/:id/reject", async (c) => {
     .eq("id", jobId)
     .maybeSingle();
 
-  if (!req) return c.json({ message: "Chamado não encontrado." }, 404);
+  if (!req) return err(c, 404, "NOT_FOUND", "Chamado não encontrado.");
 
   // Resetar chamado: remover prestador e voltar para "requested" para outros aceitarem
   const { error } = await adminDb
@@ -549,9 +594,9 @@ app.post("/v1/service-requests/:id/reject", async (c) => {
       quote_status: null,
     })
     .eq("id", jobId)
-    .eq("provider_user_id", body.provider_user_id);
+    .eq("provider_user_id", providerId);
 
-  if (error) return c.json({ message: error.message }, 400);
+  if (error) return err(c, 400, "VALIDATION", error.message);
 
   // Notificar cliente que o prestador recusou
   if (req.client_user_id) {
@@ -757,6 +802,9 @@ app.get("/v1/requests", async (c) => {
 });
 
 app.post("/v1/register", async (c) => {
+  if (!(await checkAuthRateLimit(c.env.FEATURE_FLAGS, "register", clientIp(c)))) {
+    return err(c, 429, "RATE_LIMITED", "Muitas tentativas. Aguarde alguns minutos.");
+  }
   const payload = (await c.req.json()) as RegistrationPayload;
 
   if (!payload.fullName || !payload.email || !payload.password) {
@@ -1088,7 +1136,7 @@ app.post("/v1/auth/webauthn/verify-registration", async (c) => {
 app.post("/v1/photos/upload", async (c) => {
   const body = await c.req.json<{
     request_id: string;
-    photo_type: "client_request" | "provider_start" | "provider_end";
+    photo_type: "client_request" | "provider_arrival" | "provider_start" | "provider_end";
     file_data: string;
     file_name?: string;
     mime_type?: string;
@@ -1098,6 +1146,38 @@ app.post("/v1/photos/upload", async (c) => {
   if (!body.request_id || !fileData || !body.photo_type) {
     return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
   }
+
+  // Segurança: validar autenticação, pertencimento ao chamado e papel×etapa.
+  const userId = c.get("userId");
+  if (!userId) return err(c, 401, "UNAUTHORIZED", "Não autorizado.");
+
+  const { data: sr } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id, provider_user_id")
+    .eq("id", body.request_id)
+    .maybeSingle();
+  if (!sr) return err(c, 404, "NOT_FOUND", "Chamado não encontrado.");
+
+  const isClient = userId === sr.client_user_id;
+  const isProvider = userId === sr.provider_user_id;
+  if (!isClient && !isProvider) return err(c, 403, "FORBIDDEN", "Sem acesso a este chamado.");
+
+  const clientStages = ["client_request"];
+  const providerStages = ["provider_arrival", "provider_start", "provider_end"];
+  if (isProvider && !providerStages.includes(body.photo_type)) {
+    return err(c, 403, "FORBIDDEN", "Etapa inválida para prestador.");
+  }
+  if (isClient && !clientStages.includes(body.photo_type)) {
+    return err(c, 403, "FORBIDDEN", "Etapa inválida para cliente.");
+  }
+
+  // Limite de 5 fotos por etapa (validado na API; o Storage usa service key).
+  const { count } = await db(c.env)
+    .from("request_photos")
+    .select("id", { count: "exact", head: true })
+    .eq("request_id", body.request_id)
+    .eq("photo_type", body.photo_type);
+  if ((count ?? 0) >= 5) return err(c, 400, "VALIDATION", "Limite de 5 fotos por etapa.");
 
   const binaryStr = atob(fileData);
   const bytes = new Uint8Array(binaryStr.length);
@@ -1127,6 +1207,26 @@ app.post("/v1/photos/upload", async (c) => {
   });
 
   if (error) return c.json({ message: error.message }, 400);
+
+  // S13: a foto de chegada marca "prestador chegou" — grava o timestamp (apenas
+  // na primeira chegada) e notifica o cliente.
+  if (body.photo_type === "provider_arrival" && isProvider) {
+    const { data: updated } = await db(c.env)
+      .from("service_requests")
+      .update({ provider_arrived_at: new Date().toISOString() })
+      .eq("id", body.request_id)
+      .is("provider_arrived_at", null)
+      .select("id")
+      .maybeSingle();
+    if (updated && sr.client_user_id) {
+      await sendPush(
+        c.env,
+        sr.client_user_id,
+        "📍 O profissional chegou!",
+        "O profissional chegou ao local e registrou a chegada com foto.",
+      );
+    }
+  }
 
   return c.json({ url: publicUrl });
 });
@@ -1517,21 +1617,25 @@ app.get("/v1/providers/:id/mp-status", async (c) => {
 app.patch("/v1/providers/:id/status", async (c) => {
   const providerId = c.req.param("id");
   const userId = c.get("userId");
-  const body = await c.req.json<{ status: "available" | "busy" | "offline" }>().catch(() => ({} as any));
+  // 'busy' é derivado dos chamados ativos (trigger sync_provider_busy) e nunca
+  // é definido manualmente: o toggle do app só alterna available↔offline.
+  const body = await c.req.json<{ status: "available" | "offline" }>().catch(() => ({} as any));
 
-  if (!body.status || !["available", "busy", "offline"].includes(body.status)) {
-    return c.json({ message: "Status inválido. Use: available, busy ou offline." }, 400);
+  if (!body.status || !["available", "offline"].includes(body.status)) {
+    return err(c, 400, "VALIDATION", "Status inválido. Use: available ou offline.");
   }
 
   // Prestador só pode atualizar o próprio status
-  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
+  if (userId !== providerId) return err(c, 403, "FORBIDDEN", "Não autorizado.");
 
+  // Não sobrescreve 'busy': quem está em serviço continua ocupado até concluir.
   const { error } = await db(c.env)
     .from("provider_profiles")
     .update({ status: body.status, last_seen_at: new Date().toISOString() })
-    .eq("user_id", providerId);
+    .eq("user_id", providerId)
+    .neq("status", "busy");
 
-  if (error) return c.json({ message: error.message }, 400);
+  if (error) return err(c, 400, "VALIDATION", error.message);
   return c.json({ message: "Status atualizado.", status: body.status });
 });
 
@@ -1799,8 +1903,14 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     let body: { type?: string; data?: { id?: string } };
     try { body = JSON.parse(rawBody); } catch { return c.json({ ok: true }); }
 
-    // Validar assinatura HMAC antes de processar
-    if (c.env.MERCADOPAGO_WEBHOOK_SECRET) {
+    // Validar assinatura HMAC ANTES de qualquer processamento que credite dinheiro.
+    // A assinatura é obrigatória: sem o segredo configurado, recusamos para não
+    // creditar pagamentos não verificados.
+    if (!c.env.MERCADOPAGO_WEBHOOK_SECRET) {
+      console.error("[Webhook MP] MERCADOPAGO_WEBHOOK_SECRET ausente — webhook recusado.");
+      return c.json({ ok: false }, 401);
+    }
+    {
       const xSignature = c.req.header("x-signature");
       const xRequestId = c.req.header("x-request-id");
       const isValid = await validateMPWebhookSignature(
@@ -1811,7 +1921,7 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       );
       if (!isValid) {
         console.warn("[Webhook MP] Assinatura inválida rejeitada.");
-        return c.json({ ok: false }, 400);
+        return c.json({ ok: false }, 401);
       }
     }
 
@@ -1892,6 +2002,9 @@ function isMaster(c: any): boolean {
 
 // ── Login de operador do CRM ────────────────────────────────────────────────
 app.post("/v1/crm/auth/login", async (c) => {
+  if (!(await checkAuthRateLimit(c.env.FEATURE_FLAGS, "crm-login", clientIp(c)))) {
+    return err(c, 429, "RATE_LIMITED", "Muitas tentativas. Aguarde alguns minutos.");
+  }
   const { email, senha } = await c.req.json<{ email?: string; senha?: string }>();
   if (!email || !senha) return c.json({ message: "Informe e-mail e senha." }, 400);
   const adminDb = db(c.env);
@@ -2769,21 +2882,23 @@ app.post("/v1/complaints", async (c) => {
 // ── Bids: provider submits a bid ──────────────────────────────────────────
 app.post("/v1/service-requests/:id/bids", async (c) => {
   const requestId = c.req.param("id");
+  // Segurança: prestador derivado do JWT, nunca do body (evita IDOR).
+  const providerId = c.get("userId");
+  if (!providerId) return err(c, 401, "UNAUTHORIZED", "Não autorizado.");
   const body = await c.req.json<{
-    provider_user_id: string;
     amount: number;
     notes?: string;
   }>().catch(() => ({} as any));
 
-  if (!body.provider_user_id || !body.amount) {
-    return c.json({ message: "Campos obrigatórios ausentes." }, 400);
+  if (!body.amount) {
+    return err(c, 400, "VALIDATION", "Campos obrigatórios ausentes.");
   }
 
   const { data, error } = await db(c.env)
     .from("bids")
     .upsert({
       request_id: requestId,
-      provider_user_id: body.provider_user_id,
+      provider_user_id: providerId,
       amount: body.amount,
       notes: body.notes ?? null,
       status: "pending",
@@ -2791,7 +2906,7 @@ app.post("/v1/service-requests/:id/bids", async (c) => {
     .select("id, amount, notes, status, created_at")
     .single();
 
-  if (error) return c.json({ message: error.message }, 400);
+  if (error) return err(c, 400, "VALIDATION", error.message);
 
   // Notify the client
   const { data: req } = await db(c.env)
