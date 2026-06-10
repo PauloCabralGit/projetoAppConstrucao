@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { useFlags } from '@/contexts/FeatureFlagsContext';
+import CardPaymentSheet from '@/components/CardPaymentSheet';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -120,6 +121,8 @@ export default function TrackingScreen() {
   const [generatingPix, setGeneratingPix] = useState(false);
   const [pixQrCode, setPixQrCode] = useState<string | null>(null);
   const [pixCopiaECola, setPixCopiaECola] = useState<string | null>(null);
+  // Bottom-sheet de pagamento com cartão (atrás da flag card_saved_cards).
+  const [showCardSheet, setShowCardSheet] = useState(false);
 
   // Complaint state
   const [complaintModal, setComplaintModal] = useState(false);
@@ -373,7 +376,7 @@ export default function TrackingScreen() {
     setGeneratingPix(false);
   }
 
-  async function handleSendPayment() {
+  async function handleSendPayment(silent = false) {
     if (!request) return;
     setSendingPayment(true);
     // Pix e Cartão são confirmados automaticamente pelo sistema (o prestador
@@ -391,12 +394,14 @@ export default function TrackingScreen() {
         .eq('status', 'completed');
       if (!error) {
         setRequest(prev => prev ? { ...prev, payment_status: newStatus, payment_method: paymentMethod } : null);
-        Alert.alert(
-          autoConfirm ? 'Pagamento confirmado!' : 'Pagamento registrado!',
-          autoConfirm
-            ? 'O pagamento foi confirmado automaticamente e o prestador foi notificado.'
-            : 'Combine o pagamento em dinheiro com o prestador. Ele confirmará o recebimento.'
-        );
+        if (!silent) {
+          Alert.alert(
+            autoConfirm ? 'Pagamento confirmado!' : 'Pagamento registrado!',
+            autoConfirm
+              ? 'O pagamento foi confirmado automaticamente e o prestador foi notificado.'
+              : 'Combine o pagamento em dinheiro com o prestador. Ele confirmará o recebimento.'
+          );
+        }
       } else {
         Alert.alert('Erro', 'Não foi possível registrar o pagamento. Tente novamente.');
       }
@@ -821,7 +826,15 @@ export default function TrackingScreen() {
                   )}
                   <TouchableOpacity
                     style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-                    onPress={handleSendPayment}
+                    onPress={() => {
+                      // Flag ON + método cartão → abre o bottom-sheet (F4 mocks).
+                      // Caso contrário, mantém o comportamento atual (confirmação direta).
+                      if (paymentMethod === 'card' && flags.card_saved_cards) {
+                        setShowCardSheet(true);
+                      } else {
+                        handleSendPayment();
+                      }
+                    }}
                     disabled={sendingPayment}
                   >
                     {sendingPayment ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
@@ -941,6 +954,21 @@ export default function TrackingScreen() {
             </View>
           </KeyboardAvoidingView>
         </Modal>
+
+        {/* Bottom-sheet de pagamento com cartão (F4 — mocks, atrás da flag) */}
+        {flags.card_saved_cards && (
+          <CardPaymentSheet
+            visible={showCardSheet}
+            amount={Number(request.quote_amount ?? 0)}
+            onClose={() => setShowCardSheet(false)}
+            onApproved={() => {
+              setShowCardSheet(false);
+              // Persiste o pagamento como cartão (silencioso: o sheet já mostrou o sucesso).
+              // FATIA 5: a confirmação virá do backend (create-card-payment), não daqui.
+              handleSendPayment(true);
+            }}
+          />
+        )}
       </View>
     );
   }
@@ -1308,7 +1336,7 @@ export default function TrackingScreen() {
                 )}
                 <TouchableOpacity
                   style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-                  onPress={handleSendPayment}
+                  onPress={() => handleSendPayment()}
                   disabled={sendingPayment}
                 >
                   {sendingPayment ? (

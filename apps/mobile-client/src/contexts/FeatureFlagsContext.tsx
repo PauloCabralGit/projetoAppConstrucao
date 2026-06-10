@@ -14,6 +14,7 @@ export type Flags = {
   ratings: boolean;
   formal_complaints: boolean;
   provider_tracking: boolean;
+  card_saved_cards: boolean;
 };
 
 const DEFAULTS: Flags = {
@@ -28,6 +29,8 @@ const DEFAULTS: Flags = {
   ratings: true,
   formal_complaints: true,
   provider_tracking: true,
+  // Cartão salvo / bottom-sheet de pagamento com cartão — OFF por padrão (rollout controlado).
+  card_saved_cards: false,
 };
 
 const FeatureFlagsContext = createContext<Flags>(DEFAULTS);
