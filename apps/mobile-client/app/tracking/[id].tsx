@@ -25,7 +25,7 @@ import { Colors } from '@/constants/colors';
 import { useFlags } from '@/contexts/FeatureFlagsContext';
 import CardPaymentSheet from '@/components/CardPaymentSheet';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 type RequestStatus =
   | 'draft'

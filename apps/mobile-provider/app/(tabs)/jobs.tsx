@@ -18,6 +18,7 @@ import { rejectedJobIds, loadRejectedJobIds } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { API_BASE } from '@/lib/config';
 
 interface ServiceRequest {
   id: string;
@@ -85,7 +86,6 @@ export default function JobsScreen() {
   // Bumped whenever the rejected set may have changed (e.g. on focus) so the
   // memoized visible list re-applies the rejected filter against the Set.
   const [rejectedVersion, setRejectedVersion] = useState(0);
-  const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
   const fetchJobs = useCallback(async () => {
     const { data, error } = await supabase

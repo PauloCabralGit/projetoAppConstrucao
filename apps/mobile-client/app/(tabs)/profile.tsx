@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { useTheme } from '@/contexts/ThemeContext';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 interface UserProfile {
   full_name: string;

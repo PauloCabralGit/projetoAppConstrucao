@@ -13,8 +13,10 @@ import type {
   CardPaymentResult,
 } from '@construconnect/shared';
 import { supabase } from './supabase';
+import { API_BASE } from '@/lib/config';
 
-export const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+// Re-exporta para compatibilidade com quem importa API_BASE de '@/lib/api'.
+export { API_BASE };
 
 /** Falha de sessão/permissão (sem login ou 401 do backend). */
 export class AuthError extends Error {

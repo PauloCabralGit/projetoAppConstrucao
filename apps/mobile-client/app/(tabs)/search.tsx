@@ -19,7 +19,7 @@ import * as SecureStore from 'expo-secure-store';
 import { Colors } from '@/constants/colors';
 import { useTheme } from '@/contexts/ThemeContext';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 const FAVORITES_KEY = 'client_favorite_providers';
 
 interface Provider {

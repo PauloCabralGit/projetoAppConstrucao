@@ -17,7 +17,7 @@ import * as Clipboard from 'expo-clipboard';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 type PaymentMethod = 'pix' | 'card' | 'cash';
 

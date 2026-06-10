@@ -36,7 +36,7 @@ const speechAvailable = (() => {
 
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 const CATEGORIES = [
   { key: 'alvenaria', label: 'Alvenaria', icon: 'layers-outline' },
