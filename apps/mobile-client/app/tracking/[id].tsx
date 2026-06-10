@@ -309,14 +309,12 @@ export default function TrackingScreen() {
     setAcceptingQuote(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      const { error, data: updated } = await supabase
-        .from('service_requests')
-        .update({ status: 'accepted', quote_status: 'accepted' })
-        .eq('id', id)
-        .eq('client_user_id', user?.id)
-        .eq('quote_status', 'quoted')
-        .select('id');
-      if (!error && updated && updated.length > 0) {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/accept-quote`, {
+        method: 'PATCH',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ client_user_id: user?.id }),
+      });
+      if (res.ok) {
         setRequest(prev => prev ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted' } : null);
       } else {
         Alert.alert('Erro', 'Não foi possível aceitar o orçamento. Tente novamente.');
@@ -386,13 +384,12 @@ export default function TrackingScreen() {
     const newStatus = autoConfirm ? 'confirmed' : 'client_paid';
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      const { error } = await supabase
-        .from('service_requests')
-        .update({ payment_status: newStatus, payment_method: paymentMethod })
-        .eq('id', id)
-        .eq('client_user_id', user?.id)
-        .eq('status', 'completed');
-      if (!error) {
+      const res = await fetch(`${API_BASE}/service-requests/${id}/payment-send`, {
+        method: 'PATCH',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ client_user_id: user?.id, payment_method: paymentMethod }),
+      });
+      if (res.ok) {
         setRequest(prev => prev ? { ...prev, payment_status: newStatus, payment_method: paymentMethod } : null);
         Alert.alert(
           autoConfirm ? 'Pagamento confirmado!' : 'Pagamento registrado!',
@@ -422,12 +419,12 @@ export default function TrackingScreen() {
             setCancelling(true);
             try {
               const { data: { user } } = await supabase.auth.getUser();
-              const { error } = await supabase
-                .from('service_requests')
-                .update({ status: 'cancelled' })
-                .eq('id', id)
-                .eq('client_user_id', user?.id);
-              if (error) {
+              const res = await fetch(`${API_BASE}/service-requests/${id}/cancel`, {
+                method: 'PATCH',
+                headers: await authHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ client_user_id: user?.id }),
+              });
+              if (!res.ok) {
                 Alert.alert('Erro', 'Não foi possível cancelar o pedido.');
               } else {
                 router.back();
@@ -528,21 +525,15 @@ export default function TrackingScreen() {
         return;
       }
 
-      await supabase.from('bids').update({ status: 'accepted' }).eq('id', bidId);
-      await supabase.from('bids').update({ status: 'rejected' }).eq('request_id', id).neq('id', bidId);
+      // Toda a transição (aceitar bid, rejeitar os demais, atribuir o prestador
+      // ao chamado e notificar) acontece no endpoint com a service key. Sob RLS
+      // o app não escreve direto em bids/service_requests.
+      const res = await fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, {
+        method: 'PATCH',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+      });
 
-      const { error, data: updated } = await supabase
-        .from('service_requests')
-        .update({
-          provider_user_id: bid.provider_user_id,
-          quote_amount: bid.amount,
-          status: 'accepted',
-          quote_status: 'accepted',
-        })
-        .eq('id', id)
-        .select('id');
-
-      if (error || !updated || updated.length === 0) {
+      if (!res.ok) {
         Alert.alert('Erro', 'Não foi possível aceitar o orçamento.');
       } else {
         setRequest(prev =>
@@ -551,10 +542,6 @@ export default function TrackingScreen() {
             : null
         );
         await loadBids();
-        // Notifica o prestador via API (sem bloquear o fluxo)
-        authHeaders().then((headers) =>
-          fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH', headers })
-        ).catch(() => {});
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet.');

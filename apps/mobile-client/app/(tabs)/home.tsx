@@ -303,61 +303,38 @@ export default function HomeScreen() {
     }
 
     try {
-      const { data: profile } = await supabase
-        .from('app_users')
-        .select('city')
-        .eq('id', user.id)
-        .maybeSingle();
-      const city = profile?.city ?? '';
-
       const scheduledStr = scheduledDate
         ? scheduledDate.toISOString().split('T')[0]
         : new Date().toISOString().split('T')[0];
 
-      const { data: reqData, error: reqError } = await supabase
-        .from('service_requests')
-        .insert({
+      // Criação via API (service key): sob RLS a tabela service_requests é
+      // somente-leitura para o app. O endpoint resolve a cidade pelo perfil e
+      // já dispara as notificações aos prestadores (preferido + próximos).
+      const res = await fetch(`${API_BASE}/service-requests`, {
+        method: 'POST',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
           client_user_id: user.id,
           category: selectedCategory,
           description: description.trim(),
-          status: 'requested',
-          city,
-          budget_min: 0,
-          budget_max: 0,
-          scheduled_date: scheduledStr,
           latitude: region.latitude,
           longitude: region.longitude,
-        })
-        .select('id')
-        .single();
-
-      if (reqError) {
-        Alert.alert('Erro', reqError.message);
+          scheduled_date: scheduledStr,
+          ...(providerId ? { preferred_provider_id: providerId } : {}),
+        }),
+      });
+      const reqJson = (await res.json()) as { id?: string; message?: string };
+      if (!res.ok || !reqJson.id) {
+        Alert.alert('Erro', reqJson.message ?? 'Não foi possível criar o pedido.');
         setSubmitting(false);
         return;
       }
 
-      const requestId = reqData.id;
+      const requestId = reqJson.id;
 
       if (photos.length > 0) {
         await uploadPhotos(requestId);
       }
-
-      // Notifica prestadores via API (fire and forget)
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData.session?.access_token;
-      fetch(`${API_BASE}/service-requests/${requestId}/notify-providers`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        body: JSON.stringify({
-          category: selectedCategory,
-          city,
-          ...(providerId ? { preferred_provider_id: providerId } : {}),
-        }),
-      }).catch(() => {});
 
       setSubmitting(false);
       setSelectedCategory('');

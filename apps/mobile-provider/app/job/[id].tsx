@@ -238,21 +238,17 @@ export default function JobDetailScreen() {
     }
     setSubmittingQuote(true);
     try {
-      const { error, data: updated } = await supabase
-        .from('service_requests')
-        .update({
+      const res = await fetch(`${API_BASE}/service-requests/${job!.id}/quote`, {
+        method: 'POST',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({
           provider_user_id: userIdRef.current,
           quote_amount: amount,
-          quote_notes: quoteNotes.trim() || null,
-          quote_status: 'quoted',
-        })
-        .eq('id', job!.id)
-        .eq('status', 'requested')
-        .is('quote_status', null)
-        .is('provider_user_id', null)
-        .select('id');
+          quote_notes: quoteNotes.trim() || undefined,
+        }),
+      });
 
-      if (error || !updated || updated.length === 0) {
+      if (!res.ok) {
         Alert.alert('Indisponível', 'Este chamado já possui um orçamento ou não está mais disponível.');
       } else {
         setJob(prev => prev ? { ...prev, quote_status: 'quoted', quote_amount: amount, quote_notes: quoteNotes.trim() } : null);

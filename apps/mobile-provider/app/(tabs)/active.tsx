@@ -354,23 +354,14 @@ export default function ActiveScreen() {
 
     setStarting(true);
     try {
-      const { error } = await supabase
-        .from('service_requests')
-        .update({ status: 'in_progress' })
-        .eq('id', activeJob.id)
-        .eq('provider_user_id', userIdRef.current)
-        .eq('status', 'accepted');
+      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
+        method: 'PATCH',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ provider_user_id: userIdRef.current }),
+      });
 
-      if (!error) {
+      if (res.ok) {
         setActiveJob((prev) => (prev ? { ...prev, status: 'in_progress' } : null));
-        // Push notification via API (fire and forget)
-        authHeaders({ 'Content-Type': 'application/json' }).then((headers) =>
-          fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify({ provider_user_id: userIdRef.current }),
-          })
-        ).catch(() => {});
         Alert.alert('Serviço iniciado!', 'O cliente foi notificado. Bom trabalho!');
       } else {
         Alert.alert('Erro', 'Não foi possível iniciar o serviço.');
@@ -391,23 +382,15 @@ export default function ActiveScreen() {
 
     setCompleting(true);
     try {
-      const { error } = await supabase
-        .from('service_requests')
-        .update({ status: 'completed' })
-        .eq('id', activeJob.id)
-        .eq('provider_user_id', userIdRef.current);
+      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
+        method: 'PATCH',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ provider_user_id: userIdRef.current }),
+      });
 
       setCompleting(false);
-      if (!error) {
+      if (res.ok) {
         setActiveJob((prev) => (prev ? { ...prev, status: 'completed' } : null));
-        // Push notification via API (fire and forget)
-        authHeaders({ 'Content-Type': 'application/json' }).then((headers) =>
-          fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
-            method: 'PATCH',
-            headers,
-            body: JSON.stringify({ provider_user_id: userIdRef.current }),
-          })
-        ).catch(() => {});
         Alert.alert('Serviço concluído!', 'Parabéns! Aguarde o pagamento do cliente.');
       } else {
         Alert.alert('Erro', 'Não foi possível concluir o serviço.');
@@ -470,15 +453,13 @@ export default function ActiveScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setConfirmingPayment(false); return; }
 
-      const { error, data: updated } = await supabase
-        .from('service_requests')
-        .update({ payment_status: 'confirmed' })
-        .eq('id', activeJob.id)
-        .eq('provider_user_id', user.id)
-        .in('payment_status', ['client_paid', 'confirmed'])
-        .select('id');
+      const res = await fetch(`${API_BASE}/service-requests/${activeJob.id}/payment-confirm`, {
+        method: 'PATCH',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ provider_user_id: user.id }),
+      });
 
-      if (!error && updated && updated.length > 0) {
+      if (res.ok) {
         locationSubRef.current?.remove();
         locationSubRef.current = null;
         dismissedJobIds.add(activeJob.id);

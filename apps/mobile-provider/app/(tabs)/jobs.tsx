@@ -211,29 +211,19 @@ export default function JobsScreen() {
     if (!userId) return;
     setBiddingJob(jobId);
     try {
-      const { error: bidError } = await supabase
-        .from('bids')
-        .upsert(
-          { request_id: jobId, provider_user_id: userId, amount, status: 'pending' },
-          { onConflict: 'request_id,provider_user_id' }
-        );
+      // Sob RLS o app não escreve direto em bids. O endpoint grava com a service
+      // key (prestador derivado do JWT) e já notifica o cliente.
+      const res = await fetch(`${API_BASE}/service-requests/${jobId}/bids`, {
+        method: 'POST',
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ amount }),
+      });
 
-      if (bidError) {
-        Alert.alert('Erro', bidError.message);
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { message?: string };
+        Alert.alert('Erro', j.message ?? 'Não foi possível enviar o orçamento.');
         return;
       }
-
-      const amtStr = `R$ ${amount.toFixed(2).replace('.', ',')}`;
-      authHeaders({ 'Content-Type': 'application/json' }).then((headers) =>
-        fetch(`${API_BASE}/service-requests/${jobId}/notify-client`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            title: '💰 Novo orçamento recebido!',
-            body: `Um profissional enviou um orçamento de ${amtStr}. Toque para comparar.`,
-          }),
-        })
-      ).catch(() => {});
 
       setSubmittedBids((prev) => new Set([...prev, jobId]));
       setBidAmounts((prev) => ({ ...prev, [jobId]: '' }));
