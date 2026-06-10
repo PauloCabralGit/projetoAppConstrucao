@@ -21,6 +21,7 @@ import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native
 import { useLocalSearchParams, router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { authHeaders } from '@/lib/api';
 import { Colors } from '@/constants/colors';
 import { useFlags } from '@/contexts/FeatureFlagsContext';
 
@@ -228,7 +229,9 @@ export default function TrackingScreen() {
 
   async function loadPhotos() {
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${id}/photos`);
+      const res = await fetch(`${API_BASE}/service-requests/${id}/photos`, {
+        headers: await authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         setPhotos(data.photos ?? []);
@@ -335,7 +338,7 @@ export default function TrackingScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       const res = await fetch(`${API_BASE}/service-requests/${id}/counter`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ client_user_id: user?.id, counter_amount: amount }),
       });
       if (res.ok) {
@@ -356,7 +359,7 @@ export default function TrackingScreen() {
     try {
       const res = await fetch(`${API_BASE}/service-requests/${id}/create-pix`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
       });
       const data = await res.json() as any;
       if (res.ok && data.qrCode) {
@@ -549,7 +552,9 @@ export default function TrackingScreen() {
         );
         await loadBids();
         // Notifica o prestador via API (sem bloquear o fluxo)
-        fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH' }).catch(() => {});
+        authHeaders().then((headers) =>
+          fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH', headers })
+        ).catch(() => {});
       }
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet.');
@@ -565,7 +570,7 @@ export default function TrackingScreen() {
       const { data: { user } } = await supabase.auth.getUser();
       const res = await fetch(`${API_BASE}/complaints`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           request_id: id,
           client_user_id: user?.id,
@@ -620,6 +625,7 @@ export default function TrackingScreen() {
   const markerScale = markerAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.3] });
 
   const clientPhotos = photos.filter((p) => p.photo_type === 'client_request');
+  const providerArrivalPhotos = photos.filter((p) => p.photo_type === 'provider_arrival');
   const providerStartPhotos = photos.filter((p) => p.photo_type === 'provider_start');
   const providerEndPhotos = photos.filter((p) => p.photo_type === 'provider_end');
 
@@ -842,6 +848,18 @@ export default function TrackingScreen() {
               <Text style={styles.photosSectionLabel}>Fotos do pedido</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
                 {clientPhotos.map((p, i) => (
+                  <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                    <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+          {providerArrivalPhotos.length > 0 && (
+            <View style={styles.photosSection}>
+              <Text style={styles.photosSectionLabel}>📍 Profissional chegou ao local</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+                {providerArrivalPhotos.map((p, i) => (
                   <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
                     <Image source={{ uri: p.url }} style={styles.photoThumb} />
                   </TouchableOpacity>
@@ -1331,6 +1349,19 @@ export default function TrackingScreen() {
             <Text style={styles.photosSectionLabel}>Fotos do pedido</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
               {clientPhotos.map((p, i) => (
+                <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+                  <Image source={{ uri: p.url }} style={styles.photoThumb} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+        {providerArrivalPhotos.length > 0 && (
+          <View style={styles.photosSection}>
+            <Text style={styles.photosSectionLabel}>📍 Profissional chegou ao local</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+              {providerArrivalPhotos.map((p, i) => (
                 <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
                   <Image source={{ uri: p.url }} style={styles.photoThumb} />
                 </TouchableOpacity>

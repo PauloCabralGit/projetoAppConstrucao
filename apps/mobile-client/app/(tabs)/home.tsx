@@ -20,6 +20,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import { authHeaders } from '@/lib/api';
 import { useTheme } from '@/contexts/ThemeContext';
 let ExpoSpeechRecognitionModule: any = null;
 let useSpeechRecognitionEvent: (event: string, handler: any) => void = () => {};
@@ -214,7 +215,7 @@ export default function HomeScreen() {
       try {
         const res = await fetch(`${API_BASE}/photos/upload`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: await authHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify({
             request_id: requestId,
             photo_type: 'client_request',
@@ -572,14 +573,20 @@ export default function HomeScreen() {
           </View>
         )}
         {!loadingProviders && (
-          <View style={styles.providersCountRow}>
+          <TouchableOpacity
+            style={styles.providersCountRow}
+            onPress={() => router.push('/providers')}
+            accessibilityRole="button"
+            accessibilityLabel="Ver lista de profissionais disponíveis"
+          >
             <View style={[styles.onlineDot, providers.length === 0 && { backgroundColor: Colors.textSecondary }]} />
             <Text style={styles.providersCountText}>
               {providers.length > 0
                 ? `${providers.length} profissional${providers.length !== 1 ? 'is' : ''} disponível${providers.length !== 1 ? 'is' : ''}`
                 : 'Nenhum profissional disponível no momento'}
             </Text>
-          </View>
+            <Ionicons name="chevron-forward" size={16} color={Colors.textSecondary} style={{ marginLeft: 'auto' }} />
+          </TouchableOpacity>
         )}
       </View>
 
