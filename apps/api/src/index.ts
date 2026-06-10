@@ -3705,6 +3705,26 @@ app.post("/v1/service-requests/:id/report", async (c) => {
 
   if (error) return c.json({ message: error.message }, 500);
 
+  // Unificação dos dois sistemas de avaliação: o relatório também alimenta a
+  // nota simples (service_requests.client_rating), que é a fonte canônica da
+  // média do prestador. Sem isso, avaliar pelo /report não atualizava a média
+  // nem limpava o banner "Avalie o profissional" no tracking.
+  const overall = Math.round(Number(body.overall_rating));
+  if (overall >= 1 && overall <= 5) {
+    await adminDb
+      .from("service_requests")
+      .update({
+        client_rating: overall,
+        client_rating_comment: body.comments?.trim() || null,
+        client_rated_at: new Date().toISOString(),
+      })
+      .eq("id", serviceRequestId);
+
+    if (request.provider_user_id) {
+      await recomputeProviderRating(c.env, request.provider_user_id);
+    }
+  }
+
   return c.json({ ok: true, message: "Relatório salvo com sucesso." });
 });
 
