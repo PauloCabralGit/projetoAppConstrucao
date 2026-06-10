@@ -27,7 +27,7 @@ compatibility_date = "2026-05-16"
 [vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-MERCADOPAGO_PUBLIC_KEY = ""   # APP_USR-... (produção)
+MERCADOPAGO_PUBLIC_KEY = "APP_USR-0c6078fb-429e-4125-8010-26a17b5cb02e"   # produção (chave pública, segura p/ expor)
 MP_APP_ID = ""
 MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
 
@@ -67,7 +67,7 @@ name = "construconnect-api"
 [env.production.vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-MERCADOPAGO_PUBLIC_KEY = ""   # APP_USR-... (produção)
+MERCADOPAGO_PUBLIC_KEY = "APP_USR-0c6078fb-429e-4125-8010-26a17b5cb02e"   # produção (chave pública, segura p/ expor)
 MP_APP_ID = ""
 MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
 
