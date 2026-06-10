@@ -1,0 +1,16 @@
+# Variáveis/segredos para `wrangler dev` (desenvolvimento local).
+# Copie para `.dev.vars` (que está no .gitignore) e preencha. NÃO commite o .dev.vars.
+#
+# Para testar pagamento com cartão use as credenciais de SANDBOX (TEST-...).
+
+# Mercado Pago — sandbox
+MERCADOPAGO_ACCESS_TOKEN="TEST-0000000000000000-000000-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-000000000"
+MERCADOPAGO_PUBLIC_KEY="TEST-00000000-0000-0000-0000-000000000000"
+MERCADOPAGO_WEBHOOK_SECRET=""
+
+# Supabase — service role (ignora RLS; usada pela API)
+SUPABASE_SERVICE_KEY=""
+
+# Opcionais
+MP_APP_SECRET=""
+SENTRY_DSN=""
