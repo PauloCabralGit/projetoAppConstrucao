@@ -1447,6 +1447,45 @@ app.patch("/v1/service-requests/:id/payment-confirm", async (c) => {
   return c.json({ message: "Pagamento confirmado." });
 });
 
+// ── Recalcula a média do prestador a partir de todas as notas (client_rating)
+// e aplica a suspensão automática (<4.6⭐ → 30 dias offline). Compartilhado por
+// POST /service-requests/:id/rate e POST /ratings para não divergir.
+async function recomputeProviderRating(
+  env: Bindings,
+  providerId: string,
+): Promise<{ average_rating: number; blocked: boolean }> {
+  const adminDb = db(env);
+  const { data: allRatings } = await adminDb
+    .from("service_requests")
+    .select("client_rating")
+    .eq("provider_user_id", providerId)
+    .not("client_rating", "is", null);
+
+  const values = (allRatings ?? []).map((r: any) => Number(r.client_rating));
+  if (values.length === 0) return { average_rating: 0, blocked: false };
+
+  const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
+  const roundedAvg = Math.round(avg * 10) / 10;
+  const blocked = roundedAvg < 4.6;
+
+  const providerUpdate: Record<string, unknown> = { average_rating: roundedAvg };
+  if (blocked) {
+    const blockedUntil = new Date();
+    blockedUntil.setMonth(blockedUntil.getMonth() + 1);
+    providerUpdate.blocked_until = blockedUntil.toISOString();
+    providerUpdate.status = "offline";
+    await sendPush(
+      env,
+      providerId,
+      "⚠️ Conta suspensa",
+      `Sua avaliação média é ${roundedAvg}⭐. Você foi suspenso por 30 dias da plataforma.`
+    );
+  }
+
+  await adminDb.from("provider_profiles").update(providerUpdate).eq("user_id", providerId);
+  return { average_rating: roundedAvg, blocked };
+}
+
 // ── Client rates provider ──────────────────────────────────────────────────
 app.post("/v1/service-requests/:id/rate", async (c) => {
   const id = c.req.param("id");
@@ -1470,41 +1509,98 @@ app.post("/v1/service-requests/:id/rate", async (c) => {
 
   await db(c.env)
     .from("service_requests")
-    .update({ client_rating: rating })
+    .update({ client_rating: rating, client_rated_at: new Date().toISOString() })
     .eq("id", id);
 
-  // Recalculate provider average from all rated completed jobs
-  const { data: allRatings } = await db(c.env)
+  const { average_rating, blocked } = await recomputeProviderRating(c.env, req.provider_user_id!);
+  return c.json({ ok: true, average_rating, blocked });
+});
+
+// ── Client rates provider (fluxo simples com comentário) ───────────────────
+// Mesma regra/scoring do /rate, mas deriva o cliente do JWT (não do body) e
+// aceita um comentário curto (client_rating_comment). Consumido por useRating.
+app.post("/v1/ratings", async (c) => {
+  const clientId = c.get("userId");
+  if (!clientId) return c.json({ message: "Não autorizado." }, 401);
+
+  const body = await c.req.json<{ service_request_id: string; score: number; comment?: string }>()
+    .catch(() => ({} as any));
+
+  if (!body.service_request_id) return c.json({ message: "service_request_id obrigatório." }, 400);
+  if (!body.score || body.score < 1 || body.score > 5) {
+    return c.json({ message: "Avaliação inválida (1 a 5 estrelas)." }, 400);
+  }
+  const score = Math.round(body.score);
+  const comment = body.comment?.trim() || null;
+
+  const { data: req } = await db(c.env)
     .from("service_requests")
-    .select("client_rating")
-    .eq("provider_user_id", req.provider_user_id)
+    .select("provider_user_id, client_rating, status, client_user_id")
+    .eq("id", body.service_request_id)
+    .maybeSingle();
+
+  if (!req) return c.json({ message: "Pedido não encontrado." }, 404);
+  if (req.client_user_id !== clientId) return c.json({ message: "Não autorizado." }, 403);
+  if (req.status !== "completed") return c.json({ message: "Serviço não concluído." }, 400);
+  if (req.client_rating != null) return c.json({ message: "Pedido já avaliado." }, 400);
+
+  const ratedAt = new Date().toISOString();
+  const { error } = await db(c.env)
+    .from("service_requests")
+    .update({ client_rating: score, client_rating_comment: comment, client_rated_at: ratedAt })
+    .eq("id", body.service_request_id);
+
+  if (error) return c.json({ message: error.message }, 400);
+
+  await recomputeProviderRating(c.env, req.provider_user_id!);
+
+  return c.json({
+    id: body.service_request_id,
+    score,
+    comment: comment ?? undefined,
+    created_at: ratedAt,
+  }, 201);
+});
+
+// ── Histórico de avaliações dadas pelo cliente (paginado) ──────────────────
+// Consumido por ratings-history. Cliente derivado do JWT.
+app.get("/v1/ratings/given", async (c) => {
+  const clientId = c.get("userId");
+  if (!clientId) return c.json({ message: "Não autorizado." }, 401);
+
+  const limit = Math.min(Math.max(parseInt(c.req.query("limit") ?? "50", 10) || 50, 1), 100);
+  const offset = Math.max(parseInt(c.req.query("offset") ?? "0", 10) || 0, 0);
+
+  const adminDb = db(c.env);
+
+  const { count } = await adminDb
+    .from("service_requests")
+    .select("id", { count: "exact", head: true })
+    .eq("client_user_id", clientId)
     .not("client_rating", "is", null);
 
-  const values = (allRatings ?? []).map((r: any) => Number(r.client_rating));
-  const avg = values.reduce((a: number, b: number) => a + b, 0) / values.length;
-  const roundedAvg = Math.round(avg * 10) / 10;
+  const { data: page } = await adminDb
+    .from("service_requests")
+    .select("id, category, client_rating, client_rating_comment, client_rated_at, created_at, app_users!provider_user_id(full_name)")
+    .eq("client_user_id", clientId)
+    .not("client_rating", "is", null)
+    .order("created_at", { ascending: false })
+    .range(offset, offset + limit - 1);
 
-  const providerUpdate: Record<string, unknown> = { average_rating: roundedAvg };
+  const ratings = (page ?? []).map((r: any) => {
+    const u = Array.isArray(r.app_users) ? r.app_users[0] : r.app_users;
+    return {
+      id: r.id,
+      service_request_id: r.id,
+      score: Number(r.client_rating),
+      comment: r.client_rating_comment ?? undefined,
+      provider_name: u?.full_name ?? "Profissional",
+      service_category: r.category,
+      created_at: r.client_rated_at ?? r.created_at,
+    };
+  });
 
-  if (roundedAvg < 4.6) {
-    const blockedUntil = new Date();
-    blockedUntil.setMonth(blockedUntil.getMonth() + 1);
-    providerUpdate.blocked_until = blockedUntil.toISOString();
-    providerUpdate.status = "offline";
-    await sendPush(
-      c.env,
-      req.provider_user_id!,
-      "⚠️ Conta suspensa",
-      `Sua avaliação média é ${roundedAvg}⭐. Você foi suspenso por 30 dias da plataforma.`
-    );
-  }
-
-  await db(c.env)
-    .from("provider_profiles")
-    .update(providerUpdate)
-    .eq("user_id", req.provider_user_id);
-
-  return c.json({ ok: true, average_rating: roundedAvg, blocked: roundedAvg < 4.6 });
+  return c.json({ ratings, total: count ?? 0, offset, limit });
 });
 
 // ── Avaliações de um prestador (lista paginada + resumo) ───────────────────
@@ -1548,7 +1644,7 @@ app.get("/v1/providers/:id/ratings", async (c) => {
   // Lista paginada (aplica filtro de nota, se houver).
   let listQuery = adminDb
     .from("service_requests")
-    .select("id, category, client_rating, created_at, app_users!client_user_id(full_name)")
+    .select("id, category, client_rating, client_rating_comment, client_rated_at, created_at, app_users!client_user_id(full_name)")
     .eq("provider_user_id", providerId)
     .not("client_rating", "is", null)
     .order("created_at", { ascending: false });
@@ -1575,10 +1671,10 @@ app.get("/v1/providers/:id/ratings", async (c) => {
     return {
       id: r.id,
       score: Number(r.client_rating),
-      comment: commentMap[r.id] ?? undefined,
+      comment: r.client_rating_comment ?? commentMap[r.id] ?? undefined,
       client_name: u?.full_name ?? "Cliente",
       service_type: r.category,
-      created_at: r.created_at,
+      created_at: r.client_rated_at ?? r.created_at,
     };
   });
 

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { authHeaders } from '@/lib/api';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -36,9 +37,7 @@ export function useRating() {
 
       const response = await fetch(`${API_BASE}/ratings`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify(payload),
       });
 

@@ -13,6 +13,7 @@ import {
 import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
+import { authHeaders } from '@/lib/api';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
 
@@ -50,7 +51,7 @@ export default function RatingsHistoryScreen() {
         `${API_BASE}/ratings/given?limit=${limit}&offset=${pageOffset}`,
         {
           method: 'GET',
-          headers: { 'Content-Type': 'application/json' },
+          headers: await authHeaders({ 'Content-Type': 'application/json' }),
         }
       );
 
