@@ -146,6 +146,7 @@ const PUBLIC_PATHS = new Set([
   "/v1/feature-flags",
   "/v1/providers",
   "/v1/providers/available",
+  "/v1/mp-public-key",
   "/v1/crm/auth/login",
 ]);
 
