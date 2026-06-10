@@ -1725,6 +1725,24 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   // Comissão da plataforma incide sobre o BRUTO (decisão de produto).
   const platformFee = round2(amount * commissionRate);
 
+  // save_card sem reusar o token (one-shot, consumido na cobrança): associamos o
+  // customer ao pagamento; o MP devolve o cartão salvo em payment.card e nós
+  // persistimos a ref após a aprovação. Se o customer falhar, seguimos a cobrança
+  // sem salvar (best-effort — nunca derruba o pagamento por causa do "salvar").
+  let saveCustomerId: string | null = null;
+  if (body.save_card === true) {
+    try {
+      const cust = await ensureMpCustomer(c.env, clientId);
+      if (cust.ok) saveCustomerId = cust.customerId;
+      else console.warn("[card-payment] save_card: customer indisponivel, segue sem salvar", cust.status);
+    } catch (e) {
+      console.error("[card-payment] save_card: ensureMpCustomer lançou", clientId, e);
+    }
+  }
+
+  const payer: Record<string, unknown> = { email: body.payer_email };
+  if (saveCustomerId) { payer.type = "customer"; payer.id = saveCustomerId; }
+
   const payload: Record<string, unknown> = {
     transaction_amount: amount,
     token: body.token,
@@ -1732,7 +1750,7 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     installments: body.installments,
     payment_method_id: body.payment_method_id,
     external_reference: id,
-    payer: { email: body.payer_email },
+    payer,
   };
   if (body.issuer_id) payload.issuer_id = body.issuer_id;
 
@@ -1766,6 +1784,13 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     payment_type_id?: string;
     fee_details?: Array<{ type?: string; amount?: number; fee_payer?: string }>;
     transaction_details?: { net_received_amount?: number };
+    card?: {
+      id?: string;
+      last_four_digits?: string;
+      expiration_month?: number;
+      expiration_year?: number;
+      cardholder?: { name?: string };
+    };
   };
   const mpPaymentId = String(mpPayment.id);
 
@@ -1856,13 +1881,27 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
       }, { onConflict: "payment_id" });
     }
 
-    // save_card opt-in e best-effort: só crédito, só após aprovar; nunca falha
-    // a cobrança. NOTA: token do MP é one-shot — se já consumido na cobrança,
-    // o save pode falhar (apenas logamos). Ver pendência de staging no resumo.
-    if (body.save_card === true && mpPayment.payment_type_id === "credit_card") {
+    // save_card opt-in e best-effort: só crédito, só após aprovar; nunca derruba
+    // a cobrança. O cartão já foi salvo no MP via associação do customer no
+    // pagamento (o token one-shot NÃO é reusado); aqui só persistimos a ref a
+    // partir de payment.card. Exige mês de validade válido (CHECK 1..12).
+    if (
+      saveCustomerId &&
+      mpPayment.payment_type_id === "credit_card" &&
+      mpPayment.card?.id &&
+      mpPayment.card?.expiration_month
+    ) {
       try {
-        const saved = await saveCardForUser(c.env, clientId, body.token, false);
-        if (!saved.ok) {
+        const card = mpPayment.card;
+        const saved = await persistSavedCard(c.env, clientId, saveCustomerId, {
+          mpCardId: card.id!,
+          brand: body.payment_method_id ?? null,
+          last4: card.last_four_digits ?? "",
+          expMonth: Number(card.expiration_month),
+          expYear: Number(card.expiration_year ?? 0),
+          cardholderName: card.cardholder?.name ?? null,
+        }, false);
+        if (!saved.ok && saved.status !== 409) {
           console.warn("[card-payment] save_card best-effort falhou", { clientId, status: saved.status, message: saved.message });
         }
       } catch (e) {
@@ -1916,17 +1955,11 @@ type SaveCardResult =
   | { ok: true; card: ReturnType<typeof toSavedCard> }
   | { ok: false; status: number; message: string; code?: string };
 
-// saveCardForUser — extrai a lógica da F1 (MP Customer + Cards + saved_cards).
-// Reusado pelo POST /v1/cards e pelo create-card-payment (save_card opt-in).
-// Authz por dono é responsabilidade do CHAMADOR (userId deriva do JWT).
-// NOTA: o token do MP é one-shot; se já foi consumido numa cobrança, o save
-// pode falhar no MP — por isso aqui é best-effort no fluxo de pagamento.
-async function saveCardForUser(
+// ensureMpCustomer — garante o customer 1:1 do usuário no MP (cria/recupera/grava).
+async function ensureMpCustomer(
   env: Bindings,
   userId: string,
-  token: string,
-  setDefault: boolean,
-): Promise<SaveCardResult> {
+): Promise<{ ok: true; customerId: string } | { ok: false; status: number; message: string }> {
   if (!env.MERCADOPAGO_ACCESS_TOKEN) {
     return { ok: false, status: 503, message: "Integração com Mercado Pago não configurada." };
   }
@@ -1938,67 +1971,53 @@ async function saveCardForUser(
   if (uErr) return { ok: false, status: 500, message: uErr.message };
   if (!user) return { ok: false, status: 404, message: "Usuário não encontrado." };
 
-  // 1) Garante o customer no MP (1:1 com o usuário)
   let customerId = (user.mp_customer_id ?? null) as string | null;
-  if (!customerId) {
-    const custRes = await fetch("https://api.mercadopago.com/v1/customers", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: auth },
-      body: JSON.stringify({ email: user.email }),
-    });
-    if (!custRes.ok) {
-      const detail = await custRes.text();
-      console.error("[cards] criar customer MP falhou", custRes.status, detail);
-      // MP recusa email já cadastrado como customer → recupera o existente
-      if (custRes.status === 409 || /already exist|customer.*exist/i.test(detail)) {
-        const searchRes = await fetch(
-          `https://api.mercadopago.com/v1/customers/search?email=${encodeURIComponent(user.email)}`,
-          { headers: { Authorization: auth } },
-        );
-        if (searchRes.ok) {
-          const sr = await searchRes.json() as { results?: Array<{ id: string }> };
-          customerId = sr.results?.[0]?.id ?? null;
-        }
-      }
-      if (!customerId) {
-        return { ok: false, status: 503, message: "Falha ao registrar cliente no provedor de pagamento." };
-      }
-    } else {
-      const cust = await custRes.json() as { id: string };
-      customerId = cust.id;
-    }
-    await adminDb.from("app_users").update({ mp_customer_id: customerId }).eq("id", userId);
-  }
+  if (customerId) return { ok: true, customerId };
 
-  // 2) Salva o cartão no MP (token one-shot vindo do device)
-  const cardRes = await fetch(`https://api.mercadopago.com/v1/customers/${customerId}/cards`, {
+  const custRes = await fetch("https://api.mercadopago.com/v1/customers", {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: auth },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ email: user.email }),
   });
-  if (!cardRes.ok) {
-    const detail = await cardRes.text();
-    console.error("[cards] salvar cartão MP falhou", cardRes.status, detail);
-    if (cardRes.status >= 400 && cardRes.status < 500) {
-      return {
-        ok: false,
-        status: 400,
-        message: "Não foi possível validar o cartão. Verifique os dados e tente novamente.",
-        code: "CARD_TOKEN_INVALID",
-      };
+  if (!custRes.ok) {
+    const detail = await custRes.text();
+    console.error("[cards] criar customer MP falhou", custRes.status, detail);
+    // MP recusa email já cadastrado como customer → recupera o existente
+    if (custRes.status === 409 || /already exist|customer.*exist/i.test(detail)) {
+      const searchRes = await fetch(
+        `https://api.mercadopago.com/v1/customers/search?email=${encodeURIComponent(user.email)}`,
+        { headers: { Authorization: auth } },
+      );
+      if (searchRes.ok) {
+        const sr = await searchRes.json() as { results?: Array<{ id: string }> };
+        customerId = sr.results?.[0]?.id ?? null;
+      }
     }
-    return { ok: false, status: 503, message: "Provedor de pagamento indisponível. Tente novamente." };
+    if (!customerId) {
+      return { ok: false, status: 503, message: "Falha ao registrar cliente no provedor de pagamento." };
+    }
+  } else {
+    const cust = await custRes.json() as { id: string };
+    customerId = cust.id;
   }
-  const mpCard = await cardRes.json() as {
-    id: string;
-    last_four_digits: string;
-    expiration_month: number;
-    expiration_year: number;
-    cardholder?: { name?: string };
-    payment_method?: { id?: string };
-  };
+  await adminDb.from("app_users").update({ mp_customer_id: customerId }).eq("id", userId);
+  return { ok: true, customerId };
+}
 
-  // 3) Decide se vira preferido (1º cartão sempre vira default)
+// persistSavedCard — grava a ref não sensível de um cartão que JÁ existe no MP
+// como cartão do customer (tratando o preferido). Usado pelo POST /v1/cards
+// (cartão recém-criado via token) e pelo create-card-payment (cartão salvo
+// durante a cobrança → vem de payment.card, sem reusar o token one-shot).
+async function persistSavedCard(
+  env: Bindings,
+  userId: string,
+  customerId: string,
+  card: { mpCardId: string; brand: string | null; last4: string; expMonth: number; expYear: number; cardholderName: string | null },
+  setDefault: boolean,
+): Promise<SaveCardResult> {
+  const adminDb = db(env);
+
+  // 1º cartão sempre vira default.
   const { count } = await adminDb
     .from("saved_cards").select("id", { count: "exact", head: true }).eq("user_id", userId);
   const makeDefault = setDefault === true || (count ?? 0) === 0;
@@ -2010,12 +2029,12 @@ async function saveCardForUser(
     .insert({
       user_id: userId,
       mp_customer_id: customerId,
-      mp_card_id: mpCard.id,
-      brand: mpCard.payment_method?.id ?? null,
-      last4: mpCard.last_four_digits,
-      exp_month: mpCard.expiration_month,
-      exp_year: mpCard.expiration_year,
-      cardholder_name: mpCard.cardholder?.name ?? null,
+      mp_card_id: card.mpCardId,
+      brand: card.brand,
+      last4: card.last4,
+      exp_month: card.expMonth,
+      exp_year: card.expYear,
+      cardholder_name: card.cardholderName,
       is_default: false,
     })
     .select(SAVED_CARD_COLS)
@@ -2043,6 +2062,60 @@ async function saveCardForUser(
   }
 
   return { ok: true, card: toSavedCard(inserted) };
+}
+
+// saveCardForUser — cria o cartão no MP a partir de um token (one-shot, NÃO
+// consumido) e persiste a ref. Usado pelo POST /v1/cards (token fresco do device).
+// Authz por dono é responsabilidade do CHAMADOR (userId deriva do JWT).
+async function saveCardForUser(
+  env: Bindings,
+  userId: string,
+  token: string,
+  setDefault: boolean,
+): Promise<SaveCardResult> {
+  if (!env.MERCADOPAGO_ACCESS_TOKEN) {
+    return { ok: false, status: 503, message: "Integração com Mercado Pago não configurada." };
+  }
+  const auth = `Bearer ${env.MERCADOPAGO_ACCESS_TOKEN}`;
+
+  const cust = await ensureMpCustomer(env, userId);
+  if (!cust.ok) return cust;
+
+  const cardRes = await fetch(`https://api.mercadopago.com/v1/customers/${cust.customerId}/cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: auth },
+    body: JSON.stringify({ token }),
+  });
+  if (!cardRes.ok) {
+    const detail = await cardRes.text();
+    console.error("[cards] salvar cartão MP falhou", cardRes.status, detail);
+    if (cardRes.status >= 400 && cardRes.status < 500) {
+      return {
+        ok: false,
+        status: 400,
+        message: "Não foi possível validar o cartão. Verifique os dados e tente novamente.",
+        code: "CARD_TOKEN_INVALID",
+      };
+    }
+    return { ok: false, status: 503, message: "Provedor de pagamento indisponível. Tente novamente." };
+  }
+  const mpCard = await cardRes.json() as {
+    id: string;
+    last_four_digits: string;
+    expiration_month: number;
+    expiration_year: number;
+    cardholder?: { name?: string };
+    payment_method?: { id?: string };
+  };
+
+  return persistSavedCard(env, userId, cust.customerId, {
+    mpCardId: mpCard.id,
+    brand: mpCard.payment_method?.id ?? null,
+    last4: mpCard.last_four_digits,
+    expMonth: mpCard.expiration_month,
+    expYear: mpCard.expiration_year,
+    cardholderName: mpCard.cardholder?.name ?? null,
+  }, setDefault);
 }
 
 // GET /v1/cards → cartões do usuário (preferido primeiro, depois mais recentes)
