@@ -5,15 +5,18 @@ compatibility_date = "2026-05-16"
 # ════════════════════════════════════════════════════════════════════════════
 # AMBIENTES (Mercado Pago: sandbox vs produção)
 #
-#   • TESTE / sandbox  ->  wrangler deploy --env staging      (credenciais TEST-...)
-#   • PRODUÇÃO         ->  wrangler deploy --env production   (credenciais APP_USR-...)
+#   • TESTE / sandbox  ->  wrangler deploy --env staging      (credenciais de TESTE do MP)
+#   • PRODUÇÃO         ->  wrangler deploy --env production   (credenciais de PRODUÇÃO do MP)
+#   Obs.: no modelo novo do Mercado Pago, TANTO teste quanto produção usam o
+#   prefixo APP_USR-. O que define o ambiente é o CONJUNTO de credenciais
+#   (painel: "Credenciais de teste" vs "Credenciais de produção"), não o prefixo.
 #
 #   `wrangler deploy` SEM --env usa a config de topo (= produção), para manter
 #   compatibilidade com `npm run deploy:api`.
 #
 # ── SEGREDOS (NUNCA neste arquivo — ele é versionado no git) ─────────────────
 # Defina por ambiente com `wrangler secret put <NOME> --env <staging|production>`:
-#   MERCADOPAGO_ACCESS_TOKEN     (TEST-...  no staging / APP_USR-...  na produção)
+#   MERCADOPAGO_ACCESS_TOKEN     (access token de TESTE no staging / de PRODUÇÃO na production)
 #   MERCADOPAGO_WEBHOOK_SECRET   (gerado no painel MP > Webhooks)
 #   MP_APP_SECRET                (painel MP > Aplicações — só se usar MP Connect)
 #   SUPABASE_SERVICE_KEY         (service role do Supabase)
@@ -27,7 +30,7 @@ compatibility_date = "2026-05-16"
 [vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-MERCADOPAGO_PUBLIC_KEY = "APP_USR-0c6078fb-429e-4125-8010-26a17b5cb02e"   # produção (chave pública, segura p/ expor)
+MERCADOPAGO_PUBLIC_KEY = ""   # APP_USR-... (produção — preencher com a public key de PRODUÇÃO)
 MP_APP_ID = ""
 MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
 
@@ -38,14 +41,14 @@ id = "17281fd061e64ac0b32c469a8044d980"
 [triggers]
 crons = ["0 6 * * *"]
 
-# ── STAGING — sandbox Mercado Pago (credenciais TEST-...) ────────────────────
+# ── STAGING — sandbox Mercado Pago (credenciais de TESTE) ────────────────────
 [env.staging]
 name = "construconnect-api-staging"
 
 [env.staging.vars]
 APP_NAME = "ConstruConnect (staging)"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-MERCADOPAGO_PUBLIC_KEY = ""   # TEST-... (sandbox)
+MERCADOPAGO_PUBLIC_KEY = "APP_USR-0c6078fb-429e-4125-8010-26a17b5cb02e"   # teste/sandbox (no modelo novo do MP, a credencial de teste tb usa prefixo APP_USR-)
 MP_APP_ID = ""
 MP_REDIRECT_URI = "https://construconnect-api-staging.orionsystem.workers.dev/v1/auth/mp-callback"
 
@@ -67,7 +70,7 @@ name = "construconnect-api"
 [env.production.vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-MERCADOPAGO_PUBLIC_KEY = "APP_USR-0c6078fb-429e-4125-8010-26a17b5cb02e"   # produção (chave pública, segura p/ expor)
+MERCADOPAGO_PUBLIC_KEY = ""   # APP_USR-... (produção — preencher com a public key de PRODUÇÃO)
 MP_APP_ID = ""
 MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
 
