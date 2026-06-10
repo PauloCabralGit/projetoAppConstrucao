@@ -117,7 +117,7 @@ export function FinanceiroModule({ adminKey }: { adminKey: string }) {
     let alive = true;
     (async () => {
       try {
-        const res = await fetch("https://construconnect-api.orionsystem.workers.dev/v1/admin/overview", {
+        const res = await fetch(`${import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev"}/v1/admin/overview`, {
           headers: { "x-admin-key": adminKey },
         });
         if (!res.ok) return;

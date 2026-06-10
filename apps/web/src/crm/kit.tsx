@@ -116,7 +116,7 @@ export function useApiCollection<T extends { id: string }>(base: string, adminKe
   return { items, add, update, remove, setAll, loading, reload };
 }
 
-export const CRM_API_BASE = "https://construconnect-api.orionsystem.workers.dev/v1/admin/crm";
+export const CRM_API_BASE = `${import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev"}/v1/admin/crm`;
 
 // ── Componentes ───────────────────────────────────────────────────────────────
 

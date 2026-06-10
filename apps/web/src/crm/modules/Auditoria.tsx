@@ -9,7 +9,7 @@ import { AREAS } from "./Acesso";
 // Auditoria — registro de quem fez cada alteração no CRM (somente master)
 // ════════════════════════════════════════════════════════════════════════════
 
-const AUDIT_URL = "https://construconnect-api.orionsystem.workers.dev/v1/admin/audit";
+const AUDIT_URL = `${import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev"}/v1/admin/audit`;
 
 const AREA_LABEL: Record<string, string> = {
   ...Object.fromEntries(AREAS.map((a) => [a.key, a.label])),

@@ -97,7 +97,7 @@ export function RelatoriosModule({ adminKey }: { adminKey: string }) {
 
   useEffect(() => {
     let alive = true;
-    const API = "https://construconnect-api.orionsystem.workers.dev/v1/admin";
+    const API = `${import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev"}/v1/admin`;
     const h = { "x-admin-key": adminKey };
     (async () => {
       try {
