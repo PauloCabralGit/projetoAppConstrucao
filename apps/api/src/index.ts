@@ -1386,9 +1386,14 @@ app.patch("/v1/service-requests/:id/payment-send", async (c) => {
     .eq("id", id)
     .maybeSingle();
 
+  const method = body.payment_method ?? "pix";
+  // Pix e Cartão são confirmados automaticamente pelo sistema; Dinheiro exige
+  // a confirmação manual do prestador (payment-confirm).
+  const newStatus = method === "cash" ? "client_paid" : "confirmed";
+
   const { error } = await db(c.env)
     .from("service_requests")
-    .update({ payment_status: "client_paid", payment_method: body.payment_method ?? "pix" })
+    .update({ payment_status: newStatus, payment_method: method })
     .eq("id", id)
     .eq("client_user_id", body.client_user_id)
     .eq("status", "completed");
@@ -1397,7 +1402,11 @@ app.patch("/v1/service-requests/:id/payment-send", async (c) => {
 
   if (req?.provider_user_id) {
     const amountStr = req.quote_amount ? `R$ ${Number(req.quote_amount).toFixed(2).replace(".", ",")}` : "";
-    await sendPush(c.env, req.provider_user_id, "💳 Pagamento enviado!", `O cliente informou que enviou o pagamento${amountStr ? ` de ${amountStr}` : ""}. Confirme o recebimento no app.`);
+    if (newStatus === "confirmed") {
+      await sendPush(c.env, req.provider_user_id, "✅ Pagamento recebido!", `O cliente pagou${amountStr ? ` ${amountStr}` : ""} via ${method === "card" ? "cartão" : "Pix"}. O valor foi confirmado automaticamente.`);
+    } else {
+      await sendPush(c.env, req.provider_user_id, "💳 Pagamento enviado!", `O cliente informou que enviou o pagamento${amountStr ? ` de ${amountStr}` : ""}. Confirme o recebimento no app.`);
+    }
   }
 
   return c.json({ message: "Pagamento registrado." });
@@ -2944,6 +2953,19 @@ app.get("/v1/service-requests/:id/bids", async (c) => {
 app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
   const requestId = c.req.param("id");
   const bidId = c.req.param("bidId");
+
+  // Segurança: só o cliente dono do chamado pode aceitar um orçamento.
+  const clientId = c.get("userId");
+  if (!clientId) return c.json({ message: "Não autorizado." }, 401);
+
+  const { data: reqRow } = await db(c.env)
+    .from("service_requests")
+    .select("client_user_id")
+    .eq("id", requestId)
+    .maybeSingle();
+
+  if (!reqRow) return c.json({ message: "Chamado não encontrado." }, 404);
+  if (reqRow.client_user_id !== clientId) return c.json({ message: "Não autorizado." }, 403);
 
   // Fetch the winning bid
   const { data: bid, error: bidErr } = await db(c.env)
