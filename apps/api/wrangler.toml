@@ -58,7 +58,7 @@ MP_REDIRECT_URI = "https://construconnect-api-staging.orionsystem.workers.dev/v1
 # acima, mas as flags ficarão compartilhadas com produção):
 [[env.staging.kv_namespaces]]
 binding = "FEATURE_FLAGS"
-id = "PREENCHER_KV_ID_STAGING"
+id = "f7c497bf60ef418585890eba3b2a359b"
 
 [env.staging.triggers]
 crons = ["0 6 * * *"]
