@@ -1793,6 +1793,287 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   });
 });
 
+// ── F1: Cartões salvos (Mercado Pago) ─────────────────────────────────────────
+// Persistimos só refs não sensíveis (PCI-DSS). Token é one-shot (tokenizado no
+// device); PAN/CVV nunca chegam ao backend. Authz por dono em TODAS as rotas
+// (deriva do JWT, nunca do body). saved_cards/app_users.mp_customer_id criados
+// na migration 20260615_saved_cards.sql.
+
+// Forma de resposta = SavedCard (packages/shared). Montado na mão p/ não acoplar.
+function toSavedCard(r: any) {
+  return {
+    id: r.id as string,
+    brand: (r.brand ?? null) as string | null,
+    last4: r.last4 as string,
+    expMonth: r.exp_month as number,
+    expYear: r.exp_year as number,
+    cardholderName: (r.cardholder_name ?? null) as string | null,
+    isDefault: !!r.is_default,
+  };
+}
+const SAVED_CARD_COLS = "id, brand, last4, exp_month, exp_year, cardholder_name, is_default";
+
+// GET /v1/cards → cartões do usuário (preferido primeiro, depois mais recentes)
+app.get("/v1/cards", async (c) => {
+  const userId = c.get("userId");
+  const { data, error } = await db(c.env)
+    .from("saved_cards")
+    .select(SAVED_CARD_COLS)
+    .eq("user_id", userId)
+    .order("is_default", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) {
+    console.error("[cards] erro ao listar", userId, error.message);
+    return c.json({ message: error.message }, 500);
+  }
+  return c.json({ cards: (data ?? []).map(toSavedCard) });
+});
+
+// POST /v1/cards { token, setDefault? } → tokeniza no MP e persiste a ref
+app.post("/v1/cards", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<{ token?: string; setDefault?: boolean }>().catch(() => ({} as any));
+  if (!body.token || typeof body.token !== "string") {
+    return c.json({ message: "Campo obrigatório: token." }, 400);
+  }
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
+  }
+
+  const adminDb = db(c.env);
+  const auth = `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`;
+
+  const { data: user, error: uErr } = await adminDb
+    .from("app_users").select("email, mp_customer_id").eq("id", userId).maybeSingle();
+  if (uErr) return c.json({ message: uErr.message }, 500);
+  if (!user) return c.json({ message: "Usuário não encontrado." }, 404);
+
+  // 1) Garante o customer no MP (1:1 com o usuário)
+  let customerId = (user.mp_customer_id ?? null) as string | null;
+  if (!customerId) {
+    const custRes = await fetch("https://api.mercadopago.com/v1/customers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: auth },
+      body: JSON.stringify({ email: user.email }),
+    });
+    if (!custRes.ok) {
+      const detail = await custRes.text();
+      console.error("[cards] criar customer MP falhou", custRes.status, detail);
+      // MP recusa email já cadastrado como customer → recupera o existente
+      if (custRes.status === 409 || /already exist|customer.*exist/i.test(detail)) {
+        const searchRes = await fetch(
+          `https://api.mercadopago.com/v1/customers/search?email=${encodeURIComponent(user.email)}`,
+          { headers: { Authorization: auth } },
+        );
+        if (searchRes.ok) {
+          const sr = await searchRes.json() as { results?: Array<{ id: string }> };
+          customerId = sr.results?.[0]?.id ?? null;
+        }
+      }
+      if (!customerId) return c.json({ message: "Falha ao registrar cliente no provedor de pagamento." }, 503);
+    } else {
+      const cust = await custRes.json() as { id: string };
+      customerId = cust.id;
+    }
+    await adminDb.from("app_users").update({ mp_customer_id: customerId }).eq("id", userId);
+  }
+
+  // 2) Salva o cartão no MP (token one-shot vindo do device)
+  const cardRes = await fetch(`https://api.mercadopago.com/v1/customers/${customerId}/cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: auth },
+    body: JSON.stringify({ token: body.token }),
+  });
+  if (!cardRes.ok) {
+    const detail = await cardRes.text();
+    console.error("[cards] salvar cartão MP falhou", cardRes.status, detail);
+    if (cardRes.status >= 400 && cardRes.status < 500) {
+      return c.json({ message: "Não foi possível validar o cartão. Verifique os dados e tente novamente.", code: "CARD_TOKEN_INVALID" }, 400);
+    }
+    return c.json({ message: "Provedor de pagamento indisponível. Tente novamente." }, 503);
+  }
+  const mpCard = await cardRes.json() as {
+    id: string;
+    last_four_digits: string;
+    expiration_month: number;
+    expiration_year: number;
+    cardholder?: { name?: string };
+    payment_method?: { id?: string };
+  };
+
+  // 3) Decide se vira preferido (1º cartão sempre vira default)
+  const { count } = await adminDb
+    .from("saved_cards").select("id", { count: "exact", head: true }).eq("user_id", userId);
+  const makeDefault = body.setDefault === true || (count ?? 0) === 0;
+
+  // Insere SEM default primeiro: evita violar uq_saved_cards_default e evita
+  // deixar o usuário sem preferido caso o insert caia no UNIQUE(user_id,mp_card_id).
+  const { data: inserted, error: insErr } = await adminDb
+    .from("saved_cards")
+    .insert({
+      user_id: userId,
+      mp_customer_id: customerId,
+      mp_card_id: mpCard.id,
+      brand: mpCard.payment_method?.id ?? null,
+      last4: mpCard.last_four_digits,
+      exp_month: mpCard.expiration_month,
+      exp_year: mpCard.expiration_year,
+      cardholder_name: mpCard.cardholder?.name ?? null,
+      is_default: false,
+    })
+    .select(SAVED_CARD_COLS)
+    .maybeSingle();
+  if (insErr) {
+    if ((insErr as any).code === "23505") {
+      return c.json({ message: "Este cartão já está salvo." }, 409);
+    }
+    console.error("[cards] insert falhou", userId, insErr.message);
+    return c.json({ message: insErr.message }, 500);
+  }
+
+  if (makeDefault && inserted) {
+    // zera os demais antes de marcar este (índice parcial exige no máx. 1 true)
+    await adminDb.from("saved_cards")
+      .update({ is_default: false, updated_at: new Date().toISOString() })
+      .eq("user_id", userId).neq("id", inserted.id).eq("is_default", true);
+    await adminDb.from("saved_cards")
+      .update({ is_default: true, updated_at: new Date().toISOString() })
+      .eq("id", inserted.id);
+    inserted.is_default = true;
+  }
+
+  return c.json({ card: toSavedCard(inserted) }, 201);
+});
+
+// DELETE /v1/cards/:id → confere dono, apaga no MP e remove; promove o + recente
+app.delete("/v1/cards/:id", async (c) => {
+  const userId = c.get("userId");
+  const cardId = c.req.param("id");
+  const adminDb = db(c.env);
+
+  const { data: card } = await adminDb
+    .from("saved_cards")
+    .select("id, mp_customer_id, mp_card_id, is_default")
+    .eq("id", cardId).eq("user_id", userId).maybeSingle();
+  if (!card) return c.json({ message: "Cartão não encontrado." }, 404);
+
+  if (c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    const delRes = await fetch(
+      `https://api.mercadopago.com/v1/customers/${card.mp_customer_id}/cards/${card.mp_card_id}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` } },
+    );
+    // 404 no MP = já não existe lá; seguimos para limpar a ref local.
+    if (!delRes.ok && delRes.status !== 404) {
+      const detail = await delRes.text();
+      console.error("[cards] remover no MP falhou", delRes.status, detail);
+      return c.json({ message: "Provedor de pagamento indisponível. Tente novamente." }, 503);
+    }
+  } else {
+    // Sem MP configurado: ainda assim removemos a ref local (direito do dono, LGPD).
+    console.warn("[cards] MP não configurado; removendo apenas a ref local", cardId);
+  }
+
+  const { error: delErr } = await adminDb.from("saved_cards").delete().eq("id", cardId).eq("user_id", userId);
+  if (delErr) return c.json({ message: delErr.message }, 500);
+
+  if (card.is_default) {
+    const { data: next } = await adminDb
+      .from("saved_cards")
+      .select("id")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (next) {
+      await adminDb.from("saved_cards")
+        .update({ is_default: true, updated_at: new Date().toISOString() })
+        .eq("id", next.id);
+    }
+  }
+
+  return c.body(null, 204);
+});
+
+// PATCH /v1/cards/:id/default → confere dono; zera os demais e marca o alvo
+app.patch("/v1/cards/:id/default", async (c) => {
+  const userId = c.get("userId");
+  const cardId = c.req.param("id");
+  const adminDb = db(c.env);
+
+  const { data: card } = await adminDb
+    .from("saved_cards").select("id").eq("id", cardId).eq("user_id", userId).maybeSingle();
+  if (!card) return c.json({ message: "Cartão não encontrado." }, 404);
+
+  await adminDb.from("saved_cards")
+    .update({ is_default: false, updated_at: new Date().toISOString() })
+    .eq("user_id", userId).neq("id", cardId).eq("is_default", true);
+  const { data: updated, error } = await adminDb
+    .from("saved_cards")
+    .update({ is_default: true, updated_at: new Date().toISOString() })
+    .eq("id", cardId).eq("user_id", userId)
+    .select(SAVED_CARD_COLS).maybeSingle();
+  if (error) {
+    console.error("[cards] set default falhou", userId, error.message);
+    return c.json({ message: error.message }, 500);
+  }
+  return c.json({ card: toSavedCard(updated) });
+});
+
+// ── F2: Parcelas (consulta de payer_costs no MP) ──────────────────────────────
+// GET /v1/service-requests/:id/installments?bin=123456
+// Valor lido da SR NO SERVIDOR (nunca do client). Só o cliente dono da SR.
+app.get("/v1/service-requests/:id/installments", async (c) => {
+  const userId = c.get("userId");
+  const id = c.req.param("id");
+  const bin = c.req.query("bin");
+
+  if (!bin || !/^\d{6,8}$/.test(bin)) {
+    return c.json({ message: "Parâmetro bin inválido (6 a 8 dígitos)." }, 400);
+  }
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
+  }
+
+  const adminDb = db(c.env);
+  const { data: sr } = await adminDb
+    .from("service_requests").select("quote_amount, client_user_id").eq("id", id).maybeSingle();
+  if (!sr) return c.json({ message: "Serviço não encontrado." }, 404);
+  if (sr.client_user_id !== userId) return c.json({ message: "Não autorizado." }, 403);
+  if (!sr.quote_amount || Number(sr.quote_amount) <= 0) {
+    return c.json({ message: "Valor do serviço não definido." }, 400);
+  }
+  const amount = Number(sr.quote_amount);
+
+  const mpRes = await fetch(
+    `https://api.mercadopago.com/v1/payment_methods/installments?amount=${amount}&bin=${bin}`,
+    { headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` } },
+  );
+  if (!mpRes.ok) {
+    const detail = await mpRes.text();
+    console.error("[installments] consulta MP falhou", mpRes.status, detail);
+    return c.json({ message: "Não foi possível consultar as parcelas. Tente novamente." }, 503);
+  }
+  const arr = await mpRes.json() as Array<{
+    payment_method_id: string;
+    issuer?: { id?: string | number };
+    payer_costs?: Array<{ installments: number; installment_amount: number; total_amount: number; labels?: string[] }>;
+  }>;
+  const first = Array.isArray(arr) ? arr[0] : undefined;
+  if (!first) return c.json({ message: "Nenhuma opção de parcelamento para este cartão." }, 404);
+
+  // Forma de resposta = InstallmentsResponse (packages/shared)
+  return c.json({
+    paymentMethodId: first.payment_method_id,
+    issuerId: first.issuer?.id != null ? String(first.issuer.id) : "",
+    payerCosts: (first.payer_costs ?? []).map((pc) => ({
+      installments: pc.installments,
+      installmentAmount: pc.installment_amount,
+      totalAmount: pc.total_amount,
+      labels: pc.labels ?? [],
+    })),
+  });
+});
+
 // ── Webhook Mercado Pago (pagamento aprovado) ─────────────────────────────
 app.post("/v1/webhooks/mercadopago", async (c) => {
   try {
