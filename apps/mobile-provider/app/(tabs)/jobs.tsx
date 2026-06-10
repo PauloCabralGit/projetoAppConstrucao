@@ -17,6 +17,7 @@ import { router } from 'expo-router';
 import { rejectedJobIds, loadRejectedJobIds } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { authHeaders } from '@/lib/api';
 import { Colors } from '@/constants/colors';
 
 interface ServiceRequest {
@@ -74,7 +75,10 @@ export default function JobsScreen() {
   const [jobs, setJobs] = useState<ServiceRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [online, setOnline] = useState(false);
+  // Status REAL do prestador (provider_profiles.status). 'busy' é derivado dos
+  // chamados ativos pelo trigger do banco — o toggle só alterna available↔offline.
+  const [status, setStatus] = useState<'available' | 'busy' | 'offline'>('offline');
+  const [statusLoading, setStatusLoading] = useState(true);
   const [providerName, setProviderName] = useState('Prestador');
   const [userId, setUserId] = useState<string>('');
   const channelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
@@ -131,17 +135,64 @@ export default function JobsScreen() {
     useCallback(() => {
       setRejectedVersion(v => v + 1);
       fetchJobs();
-    }, [fetchJobs])
+      if (userId) loadStatus(userId);
+    }, [fetchJobs, userId])
   );
 
   useEffect(() => {
-    onlineRef.current = online;
-  }, [online]);
+    // Só alerta de novos chamados quando realmente disponível.
+    onlineRef.current = status === 'available';
+  }, [status]);
+
+  // Reflete em tempo real o status definido pelo banco (ex.: 'busy' setado pelo
+  // trigger ao aceitar um chamado, ou 'available' ao concluir).
+  useEffect(() => {
+    if (!userId) return;
+    const ch = supabase
+      .channel(`provider_status-${userId}-${Date.now()}`)
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'provider_profiles', filter: `user_id=eq.${userId}` },
+        (payload) => {
+          const s = (payload.new as { status?: 'available' | 'busy' | 'offline' })?.status;
+          if (s) setStatus(s);
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [userId]);
+
+  async function loadStatus(uid: string) {
+    const { data } = await supabase
+      .from('provider_profiles')
+      .select('status')
+      .eq('user_id', uid)
+      .maybeSingle();
+    if (data?.status) setStatus(data.status as 'available' | 'busy' | 'offline');
+    setStatusLoading(false);
+  }
+
+  async function handleToggleStatus(next: boolean) {
+    if (status === 'busy') return; // ocupado não muda manualmente
+    const target = next ? 'available' : 'offline';
+    const previous = status;
+    setStatus(target); // otimista
+    const { error } = await supabase
+      .from('provider_profiles')
+      .update({ status: target, last_seen_at: new Date().toISOString() })
+      .eq('user_id', userId)
+      .neq('status', 'busy');
+    if (error) {
+      setStatus(previous); // rollback
+      Alert.alert('Erro', 'Não foi possível atualizar seu status. Tente novamente.');
+    }
+  }
 
   async function loadProvider() {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return;
     setUserId(user.id);
+    loadStatus(user.id);
     const { data } = await supabase
       .from('app_users')
       .select('full_name')
@@ -173,14 +224,16 @@ export default function JobsScreen() {
       }
 
       const amtStr = `R$ ${amount.toFixed(2).replace('.', ',')}`;
-      fetch(`${API_BASE}/service-requests/${jobId}/notify-client`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: '💰 Novo orçamento recebido!',
-          body: `Um profissional enviou um orçamento de ${amtStr}. Toque para comparar.`,
-        }),
-      }).catch(() => {});
+      authHeaders({ 'Content-Type': 'application/json' }).then((headers) =>
+        fetch(`${API_BASE}/service-requests/${jobId}/notify-client`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            title: '💰 Novo orçamento recebido!',
+            body: `Um profissional enviou um orçamento de ${amtStr}. Toque para comparar.`,
+          }),
+        })
+      ).catch(() => {});
 
       setSubmittedBids((prev) => new Set([...prev, jobId]));
       setBidAmounts((prev) => ({ ...prev, [jobId]: '' }));
@@ -319,6 +372,9 @@ export default function JobsScreen() {
     );
   }
 
+  const online = status === 'available';
+  const busy = status === 'busy';
+
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <View style={styles.header}>
@@ -330,23 +386,37 @@ export default function JobsScreen() {
             </Text>
           </View>
           <View style={styles.onlineToggle}>
-            <Text style={[styles.onlineLabel, online && styles.onlineLabelActive]}>
-              {online ? 'Online' : 'Offline'}
+            <Text style={[
+              styles.onlineLabel,
+              online && styles.onlineLabelActive,
+              busy && styles.onlineLabelBusy,
+            ]}>
+              {busy ? 'Ocupado' : online ? 'Online' : 'Offline'}
             </Text>
             <Switch
               value={online}
-              onValueChange={setOnline}
+              onValueChange={handleToggleStatus}
+              disabled={busy || statusLoading}
               trackColor={{ false: Colors.border, true: Colors.successGreen }}
               thumbColor={Colors.cardWhite}
             />
           </View>
         </View>
 
-        {online && (
+        {busy ? (
+          <TouchableOpacity style={styles.busyBanner} onPress={() => router.push('/(tabs)/active')}>
+            <Ionicons name="construct" size={16} color={Colors.warningAmber} />
+            <Text style={styles.busyText}>
+              Em um serviço — você não recebe novos chamados até concluir. Ver serviço →
+            </Text>
+          </TouchableOpacity>
+        ) : online ? (
           <View style={styles.listeningBanner}>
             <View style={styles.pulsingDot} />
             <Text style={styles.listeningText}>Recebendo novos chamados em tempo real</Text>
           </View>
+        ) : (
+          <Text style={styles.offlineHint}>Online ao abrir o app · offline ao fechar</Text>
         )}
       </View>
 
@@ -380,8 +450,8 @@ export default function JobsScreen() {
                   ? 'Você receberá uma notificação quando surgir um novo chamado.'
                   : 'Fique online para receber chamados em tempo real.'}
               </Text>
-              {!online && (
-                <TouchableOpacity style={styles.goOnlineButton} onPress={() => setOnline(true)}>
+              {!online && !busy && (
+                <TouchableOpacity style={styles.goOnlineButton} onPress={() => handleToggleStatus(true)}>
                   <Text style={styles.goOnlineButtonText}>Ficar online</Text>
                 </TouchableOpacity>
               )}
@@ -431,6 +501,29 @@ const styles = StyleSheet.create({
   },
   onlineLabelActive: {
     color: Colors.successGreen,
+  },
+  onlineLabelBusy: {
+    color: Colors.warningAmber,
+  },
+  busyBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    borderRadius: 8,
+    padding: 10,
+  },
+  busyText: {
+    flex: 1,
+    fontSize: 12,
+    color: Colors.warningAmber,
+    fontWeight: '600',
+  },
+  offlineHint: {
+    marginTop: 12,
+    fontSize: 12,
+    color: '#94A3B8',
   },
   listeningBanner: {
     flexDirection: 'row',

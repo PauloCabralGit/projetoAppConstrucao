@@ -14,6 +14,7 @@ import {
 import { useLocalSearchParams, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { authHeaders } from '@/lib/api';
 import { Colors } from '@/constants/colors';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
@@ -68,7 +69,9 @@ export default function ProviderChatScreen() {
   async function fetchMessages() {
     setFetchError(false);
     try {
-      const res = await fetch(`${API_BASE}/service-requests/${id}/messages`);
+      const res = await fetch(`${API_BASE}/service-requests/${id}/messages`, {
+        headers: await authHeaders(),
+      });
       if (res.ok) {
         const data = await res.json();
         setMessages(data.messages ?? []);
@@ -103,7 +106,7 @@ export default function ProviderChatScreen() {
     try {
       const res = await fetch(`${API_BASE}/service-requests/${id}/messages`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ sender_id: userIdRef.current, sender_role: 'provider', content: text }),
       });
       if (!res.ok) {

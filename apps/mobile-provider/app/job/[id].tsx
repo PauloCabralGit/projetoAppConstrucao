@@ -20,6 +20,7 @@ import { useLocalSearchParams, router } from 'expo-router';
 import { addRejectedJobId } from '@/lib/rejectedJobs';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { authHeaders } from '@/lib/api';
 import { Colors } from '@/constants/colors';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
@@ -268,7 +269,7 @@ export default function JobDetailScreen() {
     try {
       const res = await fetch(`${API_BASE}/service-requests/${job!.id}/accept-counter`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ provider_user_id: userIdRef.current }),
       });
       if (res.ok) {
@@ -299,7 +300,7 @@ export default function JobDetailScreen() {
     try {
       await fetch(`${API_BASE}/service-requests/${id}/reject`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ provider_user_id: userIdRef.current, reason: finalReason }),
       }).catch(() => {});
     } finally {

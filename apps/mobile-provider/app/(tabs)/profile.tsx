@@ -8,6 +8,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { supabase } from '@/lib/supabase';
+import { authHeaders } from '@/lib/api';
 import { Colors } from '@/constants/colors';
 import { useTheme } from '@/contexts/ThemeContext';
 
@@ -253,7 +254,7 @@ export default function ProviderProfileScreen() {
     try {
       const res = await fetch(`${API_BASE}/providers/${userId}/portfolio`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ file_data: result.assets[0].base64, file_name: `portfolio_${Date.now()}.jpg`, mime_type: 'image/jpeg' }),
       });
       if (res.ok) {
@@ -298,7 +299,7 @@ export default function ProviderProfileScreen() {
     try {
       const res = await fetch(`${API_BASE}/providers/${userId}/certifications`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           file_data: certImageBase64,
           file_name: certImageName,
@@ -331,7 +332,10 @@ export default function ProviderProfileScreen() {
       {
         text: 'Remover', style: 'destructive',
         onPress: async () => {
-          await fetch(`${API_BASE}/providers/${userId}/certifications/${certId}`, { method: 'DELETE' }).catch(() => {});
+          await fetch(`${API_BASE}/providers/${userId}/certifications/${certId}`, {
+            method: 'DELETE',
+            headers: await authHeaders(),
+          }).catch(() => {});
           setCertifications((prev) => prev.filter((c) => c.id !== certId));
         },
       },
@@ -345,7 +349,10 @@ export default function ProviderProfileScreen() {
       {
         text: 'Remover', style: 'destructive',
         onPress: async () => {
-          await fetch(`${API_BASE}/providers/${userId}/portfolio/${photoId}`, { method: 'DELETE' }).catch(() => {});
+          await fetch(`${API_BASE}/providers/${userId}/portfolio/${photoId}`, {
+            method: 'DELETE',
+            headers: await authHeaders(),
+          }).catch(() => {});
           setPortfolio((prev) => prev.filter((p) => p.id !== photoId));
         },
       },

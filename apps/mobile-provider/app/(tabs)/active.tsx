@@ -18,6 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
+import { authHeaders } from '@/lib/api';
 import { Colors } from '@/constants/colors';
 
 const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
@@ -96,7 +97,8 @@ export default function ActiveScreen() {
   const [activeJob, setActiveJob] = useState<ActiveJob | null>(null);
   const [clientProfile, setClientProfile] = useState<ClientProfile | null>(null);
   const [providerCoord, setProviderCoord] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [jobPhotos, setJobPhotos] = useState<string[]>([]);
+  const [jobPhotos, setJobPhotos] = useState<{ url: string; photo_type: string }[]>([]);
+  const [uploadingStage, setUploadingStage] = useState<string | null>(null);
   const [photoViewer, setPhotoViewer] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
@@ -117,17 +119,21 @@ export default function ActiveScreen() {
     };
   }, []);
 
-  // Load photos when job is completed
-  useEffect(() => {
-    if (!activeJob?.id || activeJob.status !== 'completed') return;
-    supabase
+  // Carrega as fotos (com a etapa) sempre que há um serviço ativo, para exibir
+  // as galerias por etapa e calcular o que já foi enviado.
+  const loadPhotos = useCallback(async (jobId: string) => {
+    const { data } = await supabase
       .from('request_photos')
-      .select('url')
-      .eq('request_id', activeJob.id)
-      .then(({ data }) => {
-        if (data) setJobPhotos(data.map((p: any) => p.url));
-      });
-  }, [activeJob?.id, activeJob?.status]);
+      .select('url, photo_type')
+      .eq('request_id', jobId)
+      .order('created_at');
+    if (data) setJobPhotos(data as { url: string; photo_type: string }[]);
+  }, []);
+
+  useEffect(() => {
+    if (!activeJob?.id) { setJobPhotos([]); return; }
+    loadPhotos(activeJob.id);
+  }, [activeJob?.id, activeJob?.status, loadPhotos]);
 
   // Realtime subscription for the active job
   // Usa timestamp no nome do canal para evitar conflito ao re-subscrever o mesmo job
@@ -289,11 +295,15 @@ export default function ActiveScreen() {
     if (data) setClientProfile(data as ClientProfile);
   }
 
-  async function uploadJobPhoto(jobId: string, type: 'provider_start' | 'provider_end', base64: string) {
+  async function uploadJobPhoto(
+    jobId: string,
+    type: 'provider_arrival' | 'provider_start' | 'provider_end',
+    base64: string,
+  ): Promise<boolean> {
     try {
-      await fetch(`${API_BASE}/photos/upload`, {
+      const res = await fetch(`${API_BASE}/photos/upload`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: await authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           request_id: jobId,
           photo_type: type,
@@ -302,23 +312,47 @@ export default function ActiveScreen() {
           mime_type: 'image/jpeg',
         }),
       });
-    } catch {}
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
+  // Captura e envia uma foto para uma etapa (até 5 por etapa). Recarrega a
+  // galeria e, na chegada, avisa que o cliente foi notificado.
+  async function captureForStage(type: 'provider_arrival' | 'provider_start' | 'provider_end') {
+    if (!activeJob) return;
+    const count = jobPhotos.filter((p) => p.photo_type === type).length;
+    if (count >= 5) {
+      Alert.alert('Limite atingido', 'Você pode enviar até 5 fotos por etapa.');
+      return;
+    }
+    const canUseCamera = await requestCameraPermission();
+    if (!canUseCamera) return;
+    const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
+    if (result.canceled || !result.assets[0].base64) return;
+    setUploadingStage(type);
+    const ok = await uploadJobPhoto(activeJob.id, type, result.assets[0].base64);
+    if (ok) {
+      await loadPhotos(activeJob.id);
+      if (type === 'provider_arrival') {
+        Alert.alert('Chegada registrada', 'O cliente foi avisado de que você chegou.');
+      }
+    } else {
+      Alert.alert('Falha no envio', 'Não foi possível enviar a foto. Tente novamente.');
+    }
+    setUploadingStage(null);
   }
 
   async function handleStartJob() {
     if (!activeJob || !userIdRef.current) return;
-
-    const canUseCamera = await requestCameraPermission();
-    if (!canUseCamera) return;
-
-    const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
-    if (result.canceled) return;
-
-    setStarting(true);
-    if (result.assets[0].base64) {
-      await uploadJobPhoto(activeJob.id, 'provider_start', result.assets[0].base64);
+    const startCount = jobPhotos.filter((p) => p.photo_type === 'provider_start').length;
+    if (startCount === 0) {
+      Alert.alert('Foto obrigatória', 'Adicione ao menos 1 foto de início para começar o serviço.');
+      return;
     }
 
+    setStarting(true);
     try {
       const { error } = await supabase
         .from('service_requests')
@@ -330,11 +364,13 @@ export default function ActiveScreen() {
       if (!error) {
         setActiveJob((prev) => (prev ? { ...prev, status: 'in_progress' } : null));
         // Push notification via API (fire and forget)
-        fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider_user_id: userIdRef.current }),
-        }).catch(() => {});
+        authHeaders({ 'Content-Type': 'application/json' }).then((headers) =>
+          fetch(`${API_BASE}/service-requests/${activeJob.id}/start`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ provider_user_id: userIdRef.current }),
+          })
+        ).catch(() => {});
         Alert.alert('Serviço iniciado!', 'O cliente foi notificado. Bom trabalho!');
       } else {
         Alert.alert('Erro', 'Não foi possível iniciar o serviço.');
@@ -347,53 +383,83 @@ export default function ActiveScreen() {
 
   async function handleCompleteJob() {
     if (!activeJob || !userIdRef.current) return;
+    const endCount = jobPhotos.filter((p) => p.photo_type === 'provider_end').length;
+    if (endCount === 0) {
+      Alert.alert('Foto obrigatória', 'Adicione ao menos 1 foto do término para concluir o serviço.');
+      return;
+    }
 
-    const canUseCamera = await requestCameraPermission();
-    if (!canUseCamera) return;
+    setCompleting(true);
+    try {
+      const { error } = await supabase
+        .from('service_requests')
+        .update({ status: 'completed' })
+        .eq('id', activeJob.id)
+        .eq('provider_user_id', userIdRef.current);
 
-    Alert.alert(
-      'Concluir serviço',
-      'Tire uma foto como evidência da conclusão antes de confirmar.',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Tirar foto',
-          onPress: async () => {
-            const result = await ImagePicker.launchCameraAsync({ quality: 0.7, base64: true });
-            if (result.canceled) return;
+      setCompleting(false);
+      if (!error) {
+        setActiveJob((prev) => (prev ? { ...prev, status: 'completed' } : null));
+        // Push notification via API (fire and forget)
+        authHeaders({ 'Content-Type': 'application/json' }).then((headers) =>
+          fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
+            method: 'PATCH',
+            headers,
+            body: JSON.stringify({ provider_user_id: userIdRef.current }),
+          })
+        ).catch(() => {});
+        Alert.alert('Serviço concluído!', 'Parabéns! Aguarde o pagamento do cliente.');
+      } else {
+        Alert.alert('Erro', 'Não foi possível concluir o serviço.');
+      }
+    } catch {
+      setCompleting(false);
+      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
+    }
+  }
 
-            setCompleting(true);
-            if (result.assets[0].base64) {
-              await uploadJobPhoto(activeJob.id, 'provider_end', result.assets[0].base64);
-            }
-
-            try {
-              const { error } = await supabase
-                .from('service_requests')
-                .update({ status: 'completed' })
-                .eq('id', activeJob.id)
-                .eq('provider_user_id', userIdRef.current);
-
-              setCompleting(false);
-              if (!error) {
-                setActiveJob((prev) => (prev ? { ...prev, status: 'completed' } : null));
-                // Push notification via API (fire and forget)
-                fetch(`${API_BASE}/service-requests/${activeJob.id}/complete`, {
-                  method: 'PATCH',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ provider_user_id: userIdRef.current }),
-                }).catch(() => {});
-                Alert.alert('Serviço concluído!', 'Parabéns! Aguarde o pagamento do cliente.');
-              } else {
-                Alert.alert('Erro', 'Não foi possível concluir o serviço.');
-              }
-            } catch {
-              setCompleting(false);
-              Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
-            }
-          },
-        },
-      ]
+  function renderStageSection(
+    type: 'provider_arrival' | 'provider_start' | 'provider_end',
+    label: string,
+    required: boolean,
+  ) {
+    const stagePhotos = jobPhotos.filter((p) => p.photo_type === type);
+    const uploading = uploadingStage === type;
+    return (
+      <View style={styles.stageSection}>
+        <View style={styles.stageHeader}>
+          <Text style={styles.stageLabel}>
+            {label}{' '}
+            {required
+              ? <Text style={styles.stageRequired}>* obrigatória</Text>
+              : <Text style={styles.stageOptional}>(opcional)</Text>}
+          </Text>
+          <Text style={styles.stageCount}>{stagePhotos.length}/5</Text>
+        </View>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.photosRow}>
+          {stagePhotos.map((p, i) => (
+            <TouchableOpacity key={i} onPress={() => setPhotoViewer(p.url)} activeOpacity={0.85}>
+              <Image source={{ uri: p.url }} style={styles.stageThumb} />
+            </TouchableOpacity>
+          ))}
+          {stagePhotos.length < 5 && (
+            <TouchableOpacity
+              style={styles.addStagePhotoBtn}
+              onPress={() => captureForStage(type)}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel={`Adicionar foto de ${label}`}
+            >
+              {uploading
+                ? <ActivityIndicator size="small" color={Colors.primary} />
+                : <Ionicons name="camera-outline" size={22} color={Colors.primary} />}
+            </TouchableOpacity>
+          )}
+        </ScrollView>
+        {required && stagePhotos.length === 0 && (
+          <Text style={styles.stageHint}>Adicione ao menos 1 foto para liberar o próximo passo.</Text>
+        )}
+      </View>
     );
   }
 
@@ -475,6 +541,8 @@ export default function ActiveScreen() {
   const isAccepted = activeJob.status === 'accepted';
   const isInProgress = activeJob.status === 'in_progress';
   const isCompleted = activeJob.status === 'completed';
+  const startReady = jobPhotos.some((p) => p.photo_type === 'provider_start');
+  const endReady = jobPhotos.some((p) => p.photo_type === 'provider_end');
   const paymentClientPaid = activeJob.payment_status === 'client_paid';
   const paymentConfirmed = activeJob.payment_status === 'confirmed';
 
@@ -527,13 +595,13 @@ export default function ActiveScreen() {
               contentContainerStyle={styles.photosRow}
               style={styles.photosScroll}
             >
-              {jobPhotos.map((url, i) => (
+              {jobPhotos.map((p, i) => (
                 <TouchableOpacity
                   key={i}
-                  onPress={() => setPhotoViewer(url)}
+                  onPress={() => setPhotoViewer(p.url)}
                   activeOpacity={0.85}
                 >
-                  <Image source={{ uri: url }} style={styles.photoThumb} />
+                  <Image source={{ uri: p.url }} style={styles.photoThumb} />
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -718,51 +786,44 @@ export default function ActiveScreen() {
         )}
 
         {isAccepted && (
-          <View style={styles.actionHint}>
-            <Ionicons name="camera-outline" size={14} color={Colors.textSecondary} />
-            <Text style={styles.actionHintText}>Tire uma foto ao chegar como evidência</Text>
-          </View>
-        )}
-
-        {isAccepted && (
-          <TouchableOpacity
-            style={[styles.startBtn, starting && styles.disabled]}
-            onPress={handleStartJob}
-            disabled={starting}
-          >
-            {starting ? (
-              <ActivityIndicator color={Colors.cardWhite} />
-            ) : (
-              <>
-                <Ionicons name="camera-outline" size={18} color={Colors.cardWhite} />
-                <Text style={styles.startBtnText}>Cheguei! Iniciar serviço</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          <>
+            {renderStageSection('provider_arrival', 'Chegada ao cliente', false)}
+            {renderStageSection('provider_start', 'Início do serviço', true)}
+            <TouchableOpacity
+              style={[styles.startBtn, (starting || !startReady) && styles.disabled]}
+              onPress={handleStartJob}
+              disabled={starting || !startReady}
+            >
+              {starting ? (
+                <ActivityIndicator color={Colors.cardWhite} />
+              ) : (
+                <>
+                  <Ionicons name="play-circle-outline" size={18} color={Colors.cardWhite} />
+                  <Text style={styles.startBtnText}>Iniciar serviço</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </>
         )}
 
         {isInProgress && (
-          <View style={styles.actionHint}>
-            <Ionicons name="camera-outline" size={14} color={Colors.textSecondary} />
-            <Text style={styles.actionHintText}>Tire uma foto do trabalho concluído como evidência</Text>
-          </View>
-        )}
-
-        {isInProgress && (
-          <TouchableOpacity
-            style={[styles.completeBtn, completing && styles.disabled]}
-            onPress={handleCompleteJob}
-            disabled={completing}
-          >
-            {completing ? (
-              <ActivityIndicator color={Colors.cardWhite} />
-            ) : (
-              <>
-                <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                <Text style={styles.completeBtnText}>Concluir serviço</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          <>
+            {renderStageSection('provider_end', 'Término do serviço', true)}
+            <TouchableOpacity
+              style={[styles.completeBtn, (completing || !endReady) && styles.disabled]}
+              onPress={handleCompleteJob}
+              disabled={completing || !endReady}
+            >
+              {completing ? (
+                <ActivityIndicator color={Colors.cardWhite} />
+              ) : (
+                <>
+                  <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
+                  <Text style={styles.completeBtnText}>Concluir serviço</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </>
         )}
 
         {clientCoord && (
@@ -959,6 +1020,19 @@ const styles = StyleSheet.create({
   photosScroll: { marginHorizontal: -2 },
   photosRow: { gap: 8, paddingHorizontal: 2 },
   photoThumb: { width: 80, height: 80, borderRadius: 10, backgroundColor: Colors.border },
+  stageSection: { marginTop: 14 },
+  stageHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+  stageLabel: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  stageRequired: { fontSize: 12, fontWeight: '600', color: Colors.primary },
+  stageOptional: { fontSize: 12, fontWeight: '500', color: Colors.textSecondary },
+  stageCount: { fontSize: 12, color: Colors.textSecondary },
+  stageThumb: { width: 72, height: 72, borderRadius: 10, backgroundColor: Colors.border },
+  addStagePhotoBtn: {
+    width: 72, height: 72, borderRadius: 10, borderWidth: 1.5, borderStyle: 'dashed',
+    borderColor: Colors.primary, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#FFF4EE',
+  },
+  stageHint: { fontSize: 12, color: Colors.textSecondary, marginTop: 6 },
   paymentSentChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#ECFDF5', borderRadius: 8, padding: 10, borderWidth: 1, borderColor: Colors.successGreen },
   paymentSentChipText: { fontSize: 13, fontWeight: '600', color: Colors.successGreen, flex: 1 },
   paymentPendingChip: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: Colors.background, borderRadius: 8, padding: 10, borderWidth: 1, borderColor: Colors.border },
