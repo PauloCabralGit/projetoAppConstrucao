@@ -1839,9 +1839,16 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
 
     if (!req || req.payment_status === "confirmed") return c.json({ ok: true });
 
+    // Deriva o método do próprio pagamento MP — NÃO forçar "pix", senão um
+    // pagamento de cartão que confirme via webhook seria marcado como Pix.
+    const mpType = String(payment.payment_type_id ?? "");
+    const derivedMethod = mpType.includes("card") ? "card" : mpType ? "pix" : null;
+    const srUpdate: Record<string, unknown> = { payment_status: "confirmed" };
+    if (derivedMethod) srUpdate.payment_method = derivedMethod;
+
     await adminDb
       .from("service_requests")
-      .update({ payment_status: "confirmed", payment_method: "pix" })
+      .update(srUpdate)
       .eq("id", serviceRequestId);
 
     // Atualizar registro de payment como aprovado e criar split para o prestador
@@ -1862,11 +1869,12 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       }, { onConflict: "payment_id" });
     }
 
+    const methodLabel = derivedMethod === "card" ? "cartão" : "Pix";
     if (req.client_user_id) {
-      await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", "Seu Pix foi aprovado automaticamente.");
+      await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", `Seu pagamento via ${methodLabel} foi aprovado automaticamente.`);
     }
     if (req.provider_user_id) {
-      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", "O pagamento via Pix foi aprovado. O cliente será notificado.");
+      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O pagamento via ${methodLabel} foi aprovado. O cliente será notificado.`);
     }
 
     return c.json({ ok: true });
