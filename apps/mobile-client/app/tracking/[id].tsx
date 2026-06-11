@@ -678,9 +678,19 @@ export default function TrackingScreen() {
               <View style={styles.completedCategoryBadge}>
                 <Text style={styles.completedCategoryText}>{CATEGORY_LABELS[request.category] ?? request.category}</Text>
               </View>
-              <View style={styles.completedDoneBadge}>
-                <Ionicons name="checkmark-done-outline" size={12} color={Colors.successGreen} />
-                <Text style={styles.completedDoneText}>Concluído</Text>
+              <View style={[styles.completedDoneBadge, {
+                backgroundColor: paymentConfirmed ? '#ECFDF5' : paymentRejected ? '#FEF2F2' : '#FFFBEB',
+              }]}>
+                <Ionicons
+                  name={paymentConfirmed ? 'checkmark-done-outline' : paymentProcessing ? 'hourglass-outline' : paymentRejected ? 'close-circle-outline' : 'time-outline'}
+                  size={12}
+                  color={paymentConfirmed ? Colors.successGreen : paymentRejected ? Colors.dangerRed : Colors.warningAmber}
+                />
+                <Text style={[styles.completedDoneText, {
+                  color: paymentConfirmed ? Colors.successGreen : paymentRejected ? Colors.dangerRed : Colors.warningAmber,
+                }]}>
+                  {paymentConfirmed ? 'Pago' : paymentProcessing ? 'Processando' : paymentRejected ? 'Pagto recusado' : 'Aguardando pagto'}
+                </Text>
               </View>
             </View>
 
