@@ -2099,13 +2099,23 @@ app.get("/v1/service-requests/:id/sync-payment", async (c) => {
 
   const { data: pay } = await adminDb
     .from("payments")
-    .select("mp_payment_id")
+    .select("mp_payment_id, status")
     .eq("service_request_id", id)
-    .neq("status", "rejected")
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  if (!pay?.mp_payment_id) return c.json({ payment_status: req.payment_status });
+
+  // Sem pagamento gravado (ou todos rejeitados) + SR travada em 'processing':
+  // o MP não chegou a registrar ou já rejeitou. Destrava para nova tentativa.
+  if (!pay?.mp_payment_id || pay.status === "rejected") {
+    if (req.payment_status === "processing") {
+      await adminDb.from("service_requests")
+        .update({ payment_status: "rejected" })
+        .eq("id", id);
+      return c.json({ payment_status: "rejected" });
+    }
+    return c.json({ payment_status: req.payment_status });
+  }
 
   const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}`, {
     headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
