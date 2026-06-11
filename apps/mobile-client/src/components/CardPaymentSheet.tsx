@@ -260,12 +260,20 @@ export default function CardPaymentSheet({
       }
 
       const email = payerEmail || (await getPayerEmail());
+      // Enriquecimento do pagador (só cartão novo, onde temos nome+CPF) — melhora a
+      // aprovação no antifraude do MP. Cartão salvo já tem os dados no customer.
+      const nameParts = holder.trim().split(/\s+/).filter(Boolean);
       const outcome = await createCardPayment(requestId, {
         token,
         installments: selectedInstallment.installments,
         payment_method_id: paymentMethodId || (usingSaved ? selectedCard?.brand ?? '' : ''),
         issuer_id: issuerId || undefined,
         payer_email: email,
+        ...(usingSaved ? {} : {
+          payer_first_name: nameParts[0] || undefined,
+          payer_last_name: nameParts.slice(1).join(' ') || undefined,
+          payer_cpf: onlyDigits(cpf) || undefined,
+        }),
         // save_card só no crédito de cartão novo (débito nunca salva).
         save_card: !usingSaved && cardType === 'credit' && saveCard,
         idempotency_key: randomUUID(), // um por tentativa

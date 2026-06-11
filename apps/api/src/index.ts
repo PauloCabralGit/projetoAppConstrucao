@@ -1681,6 +1681,9 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     payment_method_id: string;
     issuer_id?: string;
     payer_email: string;
+    payer_first_name?: string;
+    payer_last_name?: string;
+    payer_cpf?: string;
     save_card?: boolean;
     idempotency_key?: string;
   }>().catch(() => ({} as any));
@@ -1741,7 +1744,11 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     }
   }
 
+  // Enriquece o pagador (nome + CPF) — melhora a taxa de aprovação no antifraude do MP.
   const payer: Record<string, unknown> = { email: body.payer_email };
+  if (body.payer_first_name) payer.first_name = body.payer_first_name;
+  if (body.payer_last_name) payer.last_name = body.payer_last_name;
+  if (body.payer_cpf) payer.identification = { type: "CPF", number: body.payer_cpf };
   if (saveCustomerId) { payer.type = "customer"; payer.id = saveCustomerId; }
 
   const payload: Record<string, unknown> = {

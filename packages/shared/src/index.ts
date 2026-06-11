@@ -90,6 +90,9 @@ export interface CardPaymentRequest {
   payment_method_id: string;
   issuer_id?: string;
   payer_email: string;
+  payer_first_name?: string;
+  payer_last_name?: string;
+  payer_cpf?: string;
   save_card?: boolean;
   idempotency_key: string;
 }
