@@ -1684,6 +1684,7 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     payer_first_name?: string;
     payer_last_name?: string;
     payer_cpf?: string;
+    device_id?: string;
     save_card?: boolean;
     idempotency_key?: string;
   }>().catch(() => ({} as any));
@@ -1803,6 +1804,8 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
       "Content-Type": "application/json",
       Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
       "X-Idempotency-Key": idemKey,
+      // Device fingerprint (antifraude) — fator chave de aprovação.
+      ...(body.device_id ? { "X-meli-session-id": body.device_id } : {}),
     },
     body: JSON.stringify(payload),
   });

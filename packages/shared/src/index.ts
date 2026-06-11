@@ -93,6 +93,8 @@ export interface CardPaymentRequest {
   payer_first_name?: string;
   payer_last_name?: string;
   payer_cpf?: string;
+  /** Device fingerprint do MP (MP_DEVICE_SESSION_ID) → header X-meli-session-id. */
+  device_id?: string;
   save_card?: boolean;
   idempotency_key: string;
 }

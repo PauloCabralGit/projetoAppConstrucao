@@ -46,6 +46,7 @@ import {
   statusDetailMessage,
   type CardFieldErrors,
 } from '@/lib/cardUtils';
+import { getMpDeviceId } from '@/lib/mpDevice';
 
 type CardStep = 'list' | 'new' | 'installments' | 'review' | 'result';
 type CardType = 'credit' | 'debit';
@@ -274,6 +275,7 @@ export default function CardPaymentSheet({
           payer_last_name: nameParts.slice(1).join(' ') || undefined,
           payer_cpf: onlyDigits(cpf) || undefined,
         }),
+        device_id: getMpDeviceId() ?? undefined,
         // save_card só no crédito de cartão novo (débito nunca salva).
         save_card: !usingSaved && cardType === 'credit' && saveCard,
         idempotency_key: randomUUID(), // um por tentativa
