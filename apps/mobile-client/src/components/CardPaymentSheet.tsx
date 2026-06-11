@@ -61,6 +61,8 @@ interface CardPaymentSheetProps {
   onClose: () => void;
   /** Chamado quando a cobrança é aprovada e o usuário toca em "Concluir". */
   onApproved: (result: CardPaymentResult) => void;
+  /** Chamado quando a cobrança fica EM PROCESSAMENTO (in_process/pending). */
+  onProcessing: (result: CardPaymentResult) => void;
 }
 
 const HIT = { top: 8, bottom: 8, left: 8, right: 8 };
@@ -77,6 +79,7 @@ export default function CardPaymentSheet({
   payerEmail,
   onClose,
   onApproved,
+  onProcessing,
 }: CardPaymentSheetProps) {
   const [step, setStep] = useState<CardStep>('list');
 
@@ -268,7 +271,9 @@ export default function CardPaymentSheet({
         idempotency_key: randomUUID(), // um por tentativa
       });
 
-      if (outcome.kind === 'approved') {
+      if (outcome.kind === 'approved' || outcome.kind === 'processing') {
+        // 'processing' = in_process/pending: a tela de resultado mostra "em
+        // processamento" (o status vem no result) e o Concluir avisa o tracking.
         setResult(outcome.result);
       } else if (outcome.kind === 'rejected') {
         setResult(outcome.result);
@@ -471,7 +476,16 @@ export default function CardPaymentSheet({
                 payErrorKind={payErrorKind}
                 rejectedDetail={rejectedDetail}
                 result={result}
-                onConcluir={() => { if (result) onApproved(result); onClose(); }}
+                onConcluir={() => {
+                  if (result) {
+                    if (result.status === 'in_process' || result.status === 'pending' || result.status === 'authorized') {
+                      onProcessing(result);
+                    } else {
+                      onApproved(result);
+                    }
+                  }
+                  onClose();
+                }}
                 onRetry={handlePay}
                 onTryAnotherCard={resetToPaymentStart}
                 onUseOtherMethod={onClose}
@@ -1076,10 +1090,12 @@ function StepResult({
     );
   }
 
-  const approved = result?.status === 'approved' || result?.status === 'authorized' || result?.status === 'in_process';
+  const isApproved = result?.status === 'approved';
+  const isProcessing =
+    result?.status === 'in_process' || result?.status === 'pending' || result?.status === 'authorized';
 
-  if (approved && result) {
-    const pending = result.status === 'in_process';
+  if ((isApproved || isProcessing) && result) {
+    const pending = isProcessing;
     return (
       <View style={styles.centerBox}>
         <View style={[styles.resultIcon, { backgroundColor: pending ? '#FFFBEB' : '#ECFDF5' }]}>
@@ -1094,15 +1110,17 @@ function StepResult({
         </Text>
         <Text style={styles.emptyDesc}>
           {formatBRL(result.amount)} · {result.installments}x
-          {pending ? '\nVocê será notificado assim que for confirmado.' : ''}
+          {pending ? '\nEstá em análise. Você será notificado quando for concluído.' : ''}
         </Text>
         <TouchableOpacity style={styles.primaryBtn} onPress={onConcluir} accessibilityRole="button">
           <Text style={styles.primaryBtnText}>Concluir</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.outlineBtn} onPress={onShareReceipt} accessibilityRole="button">
-          <Ionicons name="share-outline" size={16} color={Colors.darkNavy} />
-          <Text style={styles.outlineBtnText}>Compartilhar recibo</Text>
-        </TouchableOpacity>
+        {!pending && (
+          <TouchableOpacity style={styles.outlineBtn} onPress={onShareReceipt} accessibilityRole="button">
+            <Ionicons name="share-outline" size={16} color={Colors.darkNavy} />
+            <Text style={styles.outlineBtnText}>Compartilhar recibo</Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   }

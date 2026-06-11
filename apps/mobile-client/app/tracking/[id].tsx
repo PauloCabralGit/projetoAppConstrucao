@@ -642,7 +642,11 @@ export default function TrackingScreen() {
   const isCompleted = request?.status === 'completed';
   const paymentSent = request?.payment_status === 'client_paid';
   const paymentConfirmed = request?.payment_status === 'confirmed';
-  const needsPayment = isCompleted && !paymentSent && !paymentConfirmed;
+  const paymentProcessing = request?.payment_status === 'processing';
+  const paymentRejected = request?.payment_status === 'rejected';
+  // Em processamento, esconde o botão de pagar (evita cobrança dupla). Recusado
+  // volta a permitir pagamento (nova tentativa).
+  const needsPayment = isCompleted && !paymentSent && !paymentConfirmed && !paymentProcessing;
 
   // ── Completed state: full-screen card, no map ─────────────────────────────
   if (isCompleted && request) {
@@ -964,11 +968,19 @@ export default function TrackingScreen() {
             onClose={() => setShowCardSheet(false)}
             onApproved={() => {
               setShowCardSheet(false);
-              // F5: a cobrança já foi confirmada no backend (create-card-payment).
+              // A cobrança já foi confirmada no backend (create-card-payment).
               // Aqui só refletimos o estado localmente; o Realtime traz a confirmação
               // definitiva (payment_status). NÃO escrevemos no banco daqui.
               setRequest((prev) =>
                 prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
+              );
+            }}
+            onProcessing={() => {
+              setShowCardSheet(false);
+              // in_process: pagamento em análise. O resultado final (aprovado/recusado)
+              // chega pelo backend/Realtime (payment_status). Reflete "processing" local.
+              setRequest((prev) =>
+                prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
               );
             }}
           />
@@ -1226,6 +1238,24 @@ export default function TrackingScreen() {
           <View style={styles.paymentConfirmedCard}>
             <Ionicons name="checkmark-circle" size={22} color={Colors.successGreen} />
             <Text style={styles.paymentConfirmedText}>Pagamento confirmado pelo prestador</Text>
+          </View>
+        )}
+
+        {isCompleted && paymentProcessing && (
+          <View style={styles.paymentSentCard}>
+            <Ionicons name="hourglass-outline" size={18} color={Colors.warningAmber} />
+            <Text style={styles.paymentSentText}>
+              Pagamento em processamento. Avisaremos assim que for concluído.
+            </Text>
+          </View>
+        )}
+
+        {isCompleted && paymentRejected && (
+          <View style={[styles.paymentSentCard, { backgroundColor: '#FEF2F2' }]}>
+            <Ionicons name="close-circle" size={18} color={Colors.dangerRed} />
+            <Text style={styles.paymentSentText}>
+              Última cobrança recusada. Você pode tentar novamente abaixo.
+            </Text>
           </View>
         )}
 

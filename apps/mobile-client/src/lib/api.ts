@@ -173,6 +173,7 @@ export async function tokenizeSavedCard(
 // ── Cobrança ─────────────────────────────────────────────────────────────────
 export type ChargeOutcome =
   | { kind: 'approved'; result: CardPaymentResult }
+  | { kind: 'processing'; result: CardPaymentResult }
   | { kind: 'rejected'; result: CardPaymentResult | null; statusDetail: string }
   | { kind: 'token_expired' }
   | { kind: 'unavailable' };
@@ -223,12 +224,17 @@ export async function createCardPayment(
   if (!res.ok || !data) return { kind: 'unavailable' };
 
   const result = data as CardPaymentResult;
-  if (
-    result.status === 'approved' ||
-    result.status === 'authorized' ||
-    result.status === 'in_process'
-  ) {
+  if (result.status === 'approved') {
     return { kind: 'approved', result };
+  }
+  // in_process / pending / authorized → pagamento em ANÁLISE (não aprovado ainda).
+  // O resultado final chega pelo webhook do MP; o cliente é notificado.
+  if (
+    result.status === 'in_process' ||
+    result.status === 'pending' ||
+    result.status === 'authorized'
+  ) {
+    return { kind: 'processing', result };
   }
   return {
     kind: 'rejected',

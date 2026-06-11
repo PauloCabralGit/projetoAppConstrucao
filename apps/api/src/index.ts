@@ -1812,6 +1812,14 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     if (rejErr && (rejErr as any).code !== "23505") {
       console.error("[card-payment] auditoria de recusa falhou", id, rejErr.message);
     }
+    // Marca a SR como recusada (o cliente pode tentar de novo) e notifica.
+    await adminDb
+      .from("service_requests")
+      .update({ payment_status: "rejected", payment_method: "card" })
+      .eq("id", id);
+    if (req.client_user_id) {
+      await sendPush(c.env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
+    }
     return c.json({
       status: mpPayment.status,
       statusDetail: mpPayment.status_detail,
@@ -1915,6 +1923,17 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     }
     if (req.provider_user_id) {
       await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O cliente pagou R$ ${providerAmount.toFixed(2).replace(".", ",")} via cartão.`);
+    }
+  } else {
+    // in_process / pending: pagamento em análise (ex.: antifraude / 3DS). NÃO
+    // confirma nem credita o prestador ainda — o resultado final (aprovado ou
+    // recusado) chega pelo webhook do MP, que atualiza e notifica o cliente.
+    await adminDb
+      .from("service_requests")
+      .update({ payment_status: "processing", payment_method: "card" })
+      .eq("id", id);
+    if (req.client_user_id) {
+      await sendPush(c.env, req.client_user_id, "⏳ Pagamento em processamento", "Seu pagamento com cartão está sendo analisado. Avisaremos assim que for concluído.");
     }
   }
 
@@ -2325,7 +2344,10 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     if (!mpRes.ok) return c.json({ ok: true });
 
     const payment = await mpRes.json() as any;
-    if (payment.status !== "approved") return c.json({ ok: true });
+    // Só agimos em estados FINAIS. in_process/pending aguardam o webhook final.
+    if (payment.status !== "approved" && payment.status !== "rejected" && payment.status !== "cancelled") {
+      return c.json({ ok: true });
+    }
 
     const serviceRequestId = payment.external_reference;
     if (!serviceRequestId) return c.json({ ok: true });
@@ -2339,6 +2361,25 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       .maybeSingle();
 
     if (!req || req.payment_status === "confirmed") return c.json({ ok: true });
+
+    // Recusado/cancelado: se o pagamento estava EM PROCESSAMENTO, marca a SR como
+    // recusada e notifica o cliente (permite nova tentativa). Não mexe se já foi
+    // confirmada ou se há uma tentativa mais nova em curso.
+    if (payment.status !== "approved") {
+      if (req.payment_status === "processing") {
+        await adminDb
+          .from("service_requests")
+          .update({ payment_status: "rejected", payment_method: "card" })
+          .eq("id", serviceRequestId);
+        await adminDb.from("payments")
+          .update({ status: payment.status })
+          .eq("mp_payment_id", String(payment.id));
+        if (req.client_user_id) {
+          await sendPush(c.env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
+        }
+      }
+      return c.json({ ok: true });
+    }
 
     // Deriva o método do próprio pagamento MP — NÃO forçar "pix", senão um
     // pagamento de cartão que confirme via webhook seria marcado como Pix.
