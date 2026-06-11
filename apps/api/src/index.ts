@@ -1722,6 +1722,13 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     return c.json({ message: "Este serviço já foi pago." }, 409);
   }
 
+  // Telefone do cliente p/ enriquecer o pagador — ajuda no antifraude do MP.
+  const { data: client } = await adminDb
+    .from("app_users")
+    .select("phone")
+    .eq("id", clientId)
+    .maybeSingle();
+
   const amount = Number(req.quote_amount);
   const commissionRate = req.provider_user_id
     ? await getProviderCommissionRate(c.env, req.provider_user_id)
@@ -1749,6 +1756,11 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   if (body.payer_first_name) payer.first_name = body.payer_first_name;
   if (body.payer_last_name) payer.last_name = body.payer_last_name;
   if (body.payer_cpf) payer.identification = { type: "CPF", number: body.payer_cpf };
+  let phoneDigits = String(client?.phone ?? "").replace(/\D/g, "");
+  if (phoneDigits.length > 11 && phoneDigits.startsWith("55")) phoneDigits = phoneDigits.slice(2);
+  if (phoneDigits.length >= 10) {
+    payer.phone = { area_code: phoneDigits.slice(0, 2), number: phoneDigits.slice(2) };
+  }
   if (saveCustomerId) { payer.type = "customer"; payer.id = saveCustomerId; }
 
   const payload: Record<string, unknown> = {
@@ -1761,6 +1773,23 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     payer,
   };
   if (body.issuer_id) payload.issuer_id = body.issuer_id;
+
+  // additional_info: itens + pagador — recomendado pelo MP p/ melhorar a aprovação.
+  const aiPayer: Record<string, unknown> = {};
+  if (body.payer_first_name) aiPayer.first_name = body.payer_first_name;
+  if (body.payer_last_name) aiPayer.last_name = body.payer_last_name;
+  if (payer.phone) aiPayer.phone = payer.phone;
+  payload.additional_info = {
+    items: [{
+      id,
+      title: `Serviço de ${req.category}`,
+      description: "ConstruConnect",
+      category_id: "services",
+      quantity: 1,
+      unit_price: amount,
+    }],
+    ...(Object.keys(aiPayer).length ? { payer: aiPayer } : {}),
+  };
 
   // Idempotência: a key do cliente identifica a MESMA intenção de cobrança em
   // retries (corrige cobrança dupla). Fallback determinístico por SR+cliente.
