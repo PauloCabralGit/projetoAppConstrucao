@@ -48,7 +48,7 @@ name = "construconnect-api-staging"
 [env.staging.vars]
 APP_NAME = "ConstruConnect (staging)"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-MERCADOPAGO_PUBLIC_KEY = "APP_USR-a61f8380-1809-4be1-a267-dbfd9be408bb"   # TEMPORARIO: chave de PRODUCAO p/ teste de cobranca real (R$1). REVERTER p/ a de teste (0c6078fb) depois.
+MERCADOPAGO_PUBLIC_KEY = "APP_USR-0c6078fb-429e-4125-8010-26a17b5cb02e"   # teste/sandbox
 MP_APP_ID = ""
 MP_REDIRECT_URI = "https://construconnect-api-staging.orionsystem.workers.dev/v1/auth/mp-callback"
 
