@@ -965,7 +965,12 @@ export default function TrackingScreen() {
             visible={showCardSheet}
             requestId={String(id)}
             amount={Number(request.quote_amount ?? 0)}
-            onClose={() => setShowCardSheet(false)}
+            onClose={() => {
+              setShowCardSheet(false);
+              // Re-busca o status real do backend (confirmed/processing/rejected),
+              // cobrindo a recusa síncrona sem depender só do Realtime.
+              fetchRequest();
+            }}
             onApproved={() => {
               setShowCardSheet(false);
               // A cobrança já foi confirmada no backend (create-card-payment).
