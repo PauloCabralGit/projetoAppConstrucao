@@ -13,6 +13,7 @@ import {
   Share,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { WebView } from 'react-native-webview';
 import type { SavedCard, InstallmentOption, CardPaymentResult } from '@construconnect/shared';
 import { Colors } from '@/constants/colors';
 import {
@@ -27,6 +28,7 @@ import {
   tokenizeNewCard,
   tokenizeSavedCard,
   createCardPayment,
+  pollCardPaymentStatus,
   randomUUID,
 } from '@/lib/api';
 import {
@@ -48,7 +50,7 @@ import {
 } from '@/lib/cardUtils';
 import { getMpDeviceId } from '@/lib/mpDevice';
 
-type CardStep = 'list' | 'new' | 'installments' | 'review' | 'result';
+type CardStep = 'list' | 'new' | 'installments' | 'review' | 'threeds' | 'result';
 type CardType = 'credit' | 'debit';
 
 interface CardPaymentSheetProps {
@@ -72,6 +74,17 @@ const HIT = { top: 8, bottom: 8, left: 8, right: 8 };
 type PayErrorKind = 'unavailable' | 'token' | null;
 /** Estado de erro ao carregar a lista de cartões. */
 type CardsError = 'network' | 'auth' | null;
+
+// HTML que auto-submete o creq ao ACS (página de desafio 3DS do emissor) na WebView.
+function build3dsHtml(url: string, creq: string): string {
+  return `<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width, initial-scale=1" /></head>
+<body onload="document.forms[0].submit()" style="margin:0;padding:0">
+<form method="POST" action="${url}">
+  <input type="hidden" name="creq" value="${creq}" />
+</form>
+</body></html>`;
+}
 
 export default function CardPaymentSheet({
   visible,
@@ -117,6 +130,8 @@ export default function CardPaymentSheet({
   // Desfechos não-aprovados: recusa de cartão (rejectedDetail) ou falha de infra/token.
   const [rejectedDetail, setRejectedDetail] = useState<string | null>(null);
   const [payErrorKind, setPayErrorKind] = useState<PayErrorKind>(null);
+  // Desafio 3DS (autenticação do emissor) — URL + creq + id do pagamento.
+  const [threeDs, setThreeDs] = useState<{ url: string; creq: string; mpPaymentId: string } | null>(null);
 
   const brand = detectBrand(number);
   const selectedCard = useMemo(
@@ -165,6 +180,7 @@ export default function CardPaymentSheet({
     setResult(null);
     setRejectedDetail(null);
     setPayErrorKind(null);
+    setThreeDs(null);
     setManageMode(false);
     setCardActionId(null);
     loadCards();
@@ -174,6 +190,47 @@ export default function CardPaymentSheet({
   useEffect(() => {
     if (cardType === 'debit') setSaveCard(false);
   }, [cardType]);
+
+  // Polling do status durante o desafio 3DS. Enquanto a WebView de autenticação
+  // está aberta, consultamos o backend; quando o pagamento resolve (aprovado/
+  // recusado), encerramos o desafio e mostramos o resultado.
+  useEffect(() => {
+    if (step !== 'threeds' || !threeDs) return;
+    let alive = true;
+    const interval = setInterval(async () => {
+      const r = await pollCardPaymentStatus(requestId, threeDs.mpPaymentId);
+      if (!alive || !r) return;
+      if (r.status === 'approved' || r.status === 'rejected' || r.status === 'cancelled') {
+        clearInterval(interval);
+        if (r.status === 'approved') {
+          setResult({
+            status: 'approved', statusDetail: r.statusDetail, mpPaymentId: threeDs.mpPaymentId,
+            amount, platformFee: 0, mpFee: 0, providerAmount: 0,
+            installments: selectedInstallment?.installments ?? 1,
+          });
+        } else {
+          setResult(null);
+          setRejectedDetail(r.statusDetail || 'cc_rejected_other_reason');
+        }
+        setThreeDs(null);
+        setStep('result');
+      }
+    }, 3500);
+    // Timeout de segurança: 4 min → trata como "em processamento".
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      if (alive && step === 'threeds') {
+        setResult({
+          status: 'in_process', statusDetail: 'pending_challenge', mpPaymentId: threeDs.mpPaymentId,
+          amount, platformFee: 0, mpFee: 0, providerAmount: 0,
+          installments: selectedInstallment?.installments ?? 1,
+        });
+        setThreeDs(null);
+        setStep('result');
+      }
+    }, 240000);
+    return () => { alive = false; clearInterval(interval); clearTimeout(timeout); };
+  }, [step, threeDs, requestId, amount, selectedInstallment]);
 
   function validateNewCard(): boolean {
     const next: CardFieldErrors = {};
@@ -281,6 +338,13 @@ export default function CardPaymentSheet({
         idempotency_key: randomUUID(), // um por tentativa
       });
 
+      if (outcome.kind === 'challenge') {
+        // Desafio 3DS: abre a WebView de autenticação do emissor; o status final
+        // é resolvido pelo polling (efeito do passo 'threeds').
+        setThreeDs({ url: outcome.externalResourceUrl, creq: outcome.creq, mpPaymentId: outcome.mpPaymentId });
+        setStep('threeds');
+        return;
+      }
       if (outcome.kind === 'approved' || outcome.kind === 'processing') {
         // 'processing' = in_process/pending: a tela de resultado mostra "em
         // processamento" (o status vem no result) e o Concluir avisa o tracking.
@@ -349,10 +413,11 @@ export default function CardPaymentSheet({
     new: 'Novo cartão',
     installments: 'Parcelamento',
     review: 'Revisar pagamento',
+    threeds: 'Autenticação',
     result: 'Resultado',
   };
 
-  const canGoBack = step !== 'list' && step !== 'result' && !processing;
+  const canGoBack = step !== 'list' && step !== 'result' && step !== 'threeds' && !processing;
 
   function handleBack() {
     setErrors({});
@@ -479,6 +544,28 @@ export default function CardPaymentSheet({
                 cardType={usingSaved ? 'credit' : cardType}
                 processing={processing}
               />
+            )}
+
+            {step === 'threeds' && threeDs && (
+              <View>
+                <Text style={styles.threeDsTitle}>Autenticação do seu banco</Text>
+                <Text style={styles.emptyDesc}>
+                  Conclua a verificação na tela abaixo para finalizar o pagamento.
+                </Text>
+                <View style={styles.threeDsWebWrap}>
+                  <WebView
+                    source={{ html: build3dsHtml(threeDs.url, threeDs.creq) }}
+                    originWhitelist={['*']}
+                    javaScriptEnabled
+                    domStorageEnabled
+                    startInLoadingState
+                  />
+                </View>
+                <View style={styles.threeDsWaiting}>
+                  <ActivityIndicator size="small" color={Colors.primary} />
+                  <Text style={styles.emptyDesc}>Aguardando confirmação...</Text>
+                </View>
+              </View>
             )}
 
             {step === 'result' && (
@@ -1234,6 +1321,9 @@ const styles = StyleSheet.create({
   centerBox: { alignItems: 'center', gap: 10, paddingVertical: 24 },
   emptyTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary, textAlign: 'center' },
   emptyDesc: { fontSize: 13, color: Colors.textSecondary, textAlign: 'center', lineHeight: 18 },
+  threeDsTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary, marginBottom: 4 },
+  threeDsWebWrap: { height: 400, marginTop: 12, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: Colors.border },
+  threeDsWaiting: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 12 },
 
   // Skeleton
   skeletonRow: { flexDirection: 'row', alignItems: 'center', gap: 12, width: '100%', paddingVertical: 8 },

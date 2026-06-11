@@ -108,4 +108,6 @@ export interface CardPaymentResult {
   mpFee: number;
   providerAmount: number;
   installments: number;
+  /** Desafio 3DS, quando o emissor exige autenticação adicional. */
+  threeDs?: { externalResourceUrl: string; creq: string };
 }

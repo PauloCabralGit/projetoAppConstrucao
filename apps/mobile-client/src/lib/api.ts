@@ -174,6 +174,7 @@ export async function tokenizeSavedCard(
 export type ChargeOutcome =
   | { kind: 'approved'; result: CardPaymentResult }
   | { kind: 'processing'; result: CardPaymentResult }
+  | { kind: 'challenge'; externalResourceUrl: string; creq: string; mpPaymentId: string }
   | { kind: 'rejected'; result: CardPaymentResult | null; statusDetail: string }
   | { kind: 'token_expired' }
   | { kind: 'unavailable' };
@@ -224,6 +225,16 @@ export async function createCardPayment(
   if (!res.ok || !data) return { kind: 'unavailable' };
 
   const result = data as CardPaymentResult;
+  // Desafio 3DS: o emissor exige autenticação. O app abre a WebField e depois
+  // sincroniza o status final via pollCardPaymentStatus.
+  if (result.threeDs?.externalResourceUrl) {
+    return {
+      kind: 'challenge',
+      externalResourceUrl: result.threeDs.externalResourceUrl,
+      creq: result.threeDs.creq ?? '',
+      mpPaymentId: result.mpPaymentId,
+    };
+  }
   if (result.status === 'approved') {
     return { kind: 'approved', result };
   }
@@ -241,4 +252,23 @@ export async function createCardPayment(
     result,
     statusDetail: result.statusDetail ?? 'cc_rejected_other_reason',
   };
+}
+
+// Consulta o status final do pagamento (usado durante/após o desafio 3DS).
+// O backend busca no MP e, se já for final, confirma/recusa a SR e notifica.
+export async function pollCardPaymentStatus(
+  requestId: string,
+  mpPaymentId: string
+): Promise<{ status: string; statusDetail: string } | null> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(
+      `${API_BASE}/service-requests/${requestId}/card-payment-status?mp_payment_id=${encodeURIComponent(mpPaymentId)}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    return (await res.json()) as { status: string; statusDetail: string };
+  } catch {
+    return null;
+  }
 }
