@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { View } from 'react-native';
 import { WebView } from 'react-native-webview';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -34,21 +35,28 @@ const HTML = `<!DOCTYPE html><html><head><meta charset="utf-8" />
  */
 export function MpDeviceProbe() {
   const captured = useRef(false);
+  // Container ABSOLUTO 1x1 fora da tela: garante que a WebView não ocupe espaço
+  // no layout (com width/height 0 direto na WebView ela quebrava a tela).
   return (
-    <WebView
-      source={{ html: HTML, baseUrl: 'https://www.mercadopago.com' }}
-      onMessage={(e) => {
-        const v = e.nativeEvent.data;
-        if (v && !captured.current) {
-          deviceId = v;
-          captured.current = true;
-        }
-      }}
-      style={{ width: 0, height: 0, position: 'absolute', opacity: 0 }}
+    <View
+      style={{ position: 'absolute', top: -1000, left: -1000, width: 1, height: 1, opacity: 0 }}
       pointerEvents="none"
-      javaScriptEnabled
-      domStorageEnabled
-      originWhitelist={['*']}
-    />
+      collapsable={false}
+    >
+      <WebView
+        source={{ html: HTML, baseUrl: 'https://www.mercadopago.com' }}
+        onMessage={(e) => {
+          const v = e.nativeEvent.data;
+          if (v && !captured.current) {
+            deviceId = v;
+            captured.current = true;
+          }
+        }}
+        style={{ width: 1, height: 1 }}
+        javaScriptEnabled
+        domStorageEnabled
+        originWhitelist={['*']}
+      />
+    </View>
   );
 }
