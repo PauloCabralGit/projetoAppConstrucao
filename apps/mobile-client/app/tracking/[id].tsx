@@ -26,6 +26,7 @@ import { useFlags } from '@/contexts/FeatureFlagsContext';
 import CardPaymentSheet from '@/components/CardPaymentSheet';
 
 import { API_BASE } from '@/lib/config';
+import { syncCardPayment } from '@/lib/api';
 
 type RequestStatus =
   | 'draft'
@@ -151,6 +152,19 @@ export default function TrackingScreen() {
       .subscribe();
     return () => { cleanupRequest(); supabase.removeChannel(bidsChannel); };
   }, [id]);
+
+  // Auto-sync: quando a tela abre com pagamento em "processing", consulta o MP
+  // e resolve (confirma/recusa + notifica + split). Cobre o caso onde o webhook
+  // ou o polling do 3DS não fechou o pagamento.
+  useEffect(() => {
+    if (!id || !request) return;
+    if (request.payment_status !== 'processing') return;
+    syncCardPayment(String(id)).then((r) => {
+      if (r?.payment_status && r.payment_status !== request.payment_status) {
+        fetchRequest();
+      }
+    });
+  }, [id, request?.payment_status]);
 
   // Reload when screen regains focus (user navigates back to this screen)
   useFocusEffect(

@@ -2076,6 +2076,48 @@ app.get("/v1/service-requests/:id/card-payment-status", async (c) => {
   return c.json({ status: payment.status, statusDetail: payment.status_detail });
 });
 
+// ── Sincroniza o pagamento de cartão pendente de uma SR (auto-curativo) ───────
+// Cliente OU prestador podem chamar. Acha o último pagamento NÃO recusado da SR,
+// consulta o MP e resolve (confirma/recusa + notifica + cria split). Usado quando
+// o webhook/polling não fechou o pagamento (ex.: 3DS concluído fora do app).
+app.get("/v1/service-requests/:id/sync-payment", async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return c.json({ message: "Não autorizado." }, 401);
+  const id = c.req.param("id");
+
+  const adminDb = db(c.env);
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("client_user_id, provider_user_id, payment_status")
+    .eq("id", id).maybeSingle();
+  if (!req) return c.json({ message: "Pedido não encontrado." }, 404);
+  if (req.client_user_id !== userId && req.provider_user_id !== userId) {
+    return c.json({ message: "Não autorizado." }, 403);
+  }
+  if (req.payment_status === "confirmed") return c.json({ payment_status: "confirmed" });
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ payment_status: req.payment_status });
+
+  const { data: pay } = await adminDb
+    .from("payments")
+    .select("mp_payment_id")
+    .eq("service_request_id", id)
+    .neq("status", "rejected")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!pay?.mp_payment_id) return c.json({ payment_status: req.payment_status });
+
+  const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}`, {
+    headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
+  });
+  if (!mpRes.ok) return c.json({ payment_status: req.payment_status });
+  await resolveCardPaymentFinal(c.env, await mpRes.json());
+
+  const { data: after } = await adminDb
+    .from("service_requests").select("payment_status").eq("id", id).maybeSingle();
+  return c.json({ payment_status: after?.payment_status ?? req.payment_status });
+});
+
 // ── F1: Cartões salvos (Mercado Pago) ─────────────────────────────────────────
 // Persistimos só refs não sensíveis (PCI-DSS). Token é one-shot (tokenizado no
 // device); PAN/CVV nunca chegam ao backend. Authz por dono em TODAS as rotas
@@ -2863,11 +2905,71 @@ app.get("/v1/admin/payments", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const { data } = await db(c.env)
     .from("service_requests")
-    .select("id, category, city, quote_amount, payment_status, payment_method, created_at, client_user_id, provider_user_id")
+    .select(`id, category, city, quote_amount, payment_status, payment_method, created_at, client_user_id, provider_user_id,
+      app_users!service_requests_client_user_id_fkey(full_name),
+      provider_profiles!service_requests_provider_user_id_fkey(full_name, business_name),
+      payments(mp_payment_id, created_at)`)
     .in("payment_status", ["client_paid", "confirmed"])
     .order("created_at", { ascending: false })
     .limit(300);
   return c.json({ data: data ?? [] });
+});
+
+// ── Admin: estornar pagamento (janela de 3 dias, só cartão) ──────────────────
+app.post("/v1/admin/payments/:requestId/refund", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const requestId = c.req.param("requestId");
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ message: "MP não configurado." }, 503);
+
+  const adminDb = db(c.env);
+  const { data: pay } = await adminDb
+    .from("payments")
+    .select("mp_payment_id, created_at, status")
+    .eq("service_request_id", requestId)
+    .eq("status", "approved")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!pay?.mp_payment_id) return c.json({ message: "Nenhum pagamento aprovado encontrado." }, 404);
+
+  // Janela de 3 dias (72 h).
+  const paidAt = new Date(pay.created_at).getTime();
+  if (Date.now() - paidAt > 72 * 60 * 60 * 1000) {
+    return c.json({ message: "Prazo de 3 dias para estorno expirado." }, 422);
+  }
+
+  const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}/refunds`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
+    },
+    body: "{}",
+  });
+
+  if (!mpRes.ok) {
+    const err = await mpRes.text();
+    console.error("[refund] MP retornou erro", mpRes.status, err);
+    return c.json({ message: "Erro ao estornar no Mercado Pago." }, 502);
+  }
+
+  // Reverte o status da SR e do pagamento.
+  await adminDb.from("service_requests")
+    .update({ payment_status: "refunded" })
+    .eq("id", requestId);
+  await adminDb.from("payments")
+    .update({ status: "refunded" })
+    .eq("mp_payment_id", pay.mp_payment_id);
+
+  // Notifica o cliente.
+  const { data: sr } = await adminDb
+    .from("service_requests").select("client_user_id").eq("id", requestId).maybeSingle();
+  if (sr?.client_user_id) {
+    await sendPush(c.env, sr.client_user_id, "💸 Estorno realizado", "O estorno do seu pagamento foi processado. O valor voltará em até 10 dias úteis.");
+  }
+
+  return c.json({ ok: true });
 });
 
 // ── Complaints (formal + low ratings + cancelled) ─────────────────────────

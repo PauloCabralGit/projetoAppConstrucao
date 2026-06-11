@@ -91,6 +91,7 @@ interface AdminPayment {
   created_at: string;
   app_users?: { full_name: string } | null;
   provider_profiles?: any;
+  payments?: Array<{ mp_payment_id: string | null; created_at: string }> | null;
 }
 
 interface FormalComplaint {
@@ -903,6 +904,7 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
   const [rows, setRows] = useState<AdminPayment[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [refunding, setRefunding] = useState<string | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -911,6 +913,25 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
       .then((d) => { setRows(d.data ?? []); setLoading(false); })
       .catch(() => { setError("Erro ao carregar pagamentos."); setLoading(false); });
   }, [adminKey]);
+
+  async function handleRefund(requestId: string) {
+    if (!confirm("Confirma o estorno deste pagamento? O valor será devolvido ao cliente em até 10 dias úteis.")) return;
+    setRefunding(requestId);
+    try {
+      const res = await apiFetch(`/v1/admin/payments/${requestId}/refund`, adminKey, { method: "POST" });
+      if (res.ok) {
+        setRows((prev) => prev.map((r) => r.id === requestId ? { ...r, payment_status: "refunded" } : r));
+        alert("Estorno realizado com sucesso.");
+      } else {
+        const d = await res.json() as { message?: string };
+        alert(d.message ?? "Erro ao estornar.");
+      }
+    } catch {
+      alert("Erro de rede ao estornar.");
+    } finally {
+      setRefunding(null);
+    }
+  }
 
   const totalConfirmed = rows
     .filter((r) => r.payment_status === "confirmed")
@@ -955,6 +976,7 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
                 <th>Valor</th>
                 <th>Método</th>
                 <th>Status</th>
+                <th>Ações</th>
               </tr>
             </thead>
             <tbody>
@@ -970,6 +992,24 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
                     <span className={`badge ${PAY_COLOR[r.payment_status] ?? "badge-muted"}`}>
                       {PAY_LABEL[r.payment_status] ?? r.payment_status}
                     </span>
+                  </td>
+                  <td>
+                    {r.payment_status === "confirmed" && (() => {
+                      const payAt = r.payments?.[0]?.created_at ?? r.created_at;
+                      const within3Days = Date.now() - new Date(payAt).getTime() < 72 * 60 * 60 * 1000;
+                      return within3Days ? (
+                        <button
+                          className="btn-sm btn-danger"
+                          disabled={refunding === r.id}
+                          onClick={() => handleRefund(r.id)}
+                        >
+                          {refunding === r.id ? "Estornando..." : "Estornar"}
+                        </button>
+                      ) : <span className="text-muted" style={{ fontSize: 12 }}>Prazo expirado</span>;
+                    })()}
+                    {r.payment_status === "refunded" && (
+                      <span className="badge badge-muted">Estornado</span>
+                    )}
                   </td>
                 </tr>
               ))}

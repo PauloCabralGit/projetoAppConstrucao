@@ -254,6 +254,21 @@ export async function createCardPayment(
   };
 }
 
+// Sincroniza o pagamento pendente da SR (auto-curativo): o backend acha o último
+// pagamento, consulta o MP e resolve (confirma/recusa + notifica + split).
+export async function syncCardPayment(
+  requestId: string
+): Promise<{ payment_status: string | null } | null> {
+  try {
+    const headers = await authHeaders();
+    const res = await fetch(`${API_BASE}/service-requests/${requestId}/sync-payment`, { headers });
+    if (!res.ok) return null;
+    return (await res.json()) as { payment_status: string | null };
+  } catch {
+    return null;
+  }
+}
+
 // Consulta o status final do pagamento (usado durante/após o desafio 3DS).
 // O backend busca no MP e, se já for final, confirma/recusa a SR e notifica.
 export async function pollCardPaymentStatus(
