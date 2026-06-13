@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator,
-  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch, Image, Share,
+  Alert, Modal, TextInput, ScrollView, KeyboardAvoidingView, Platform, Switch, Image, Share, Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -79,6 +79,8 @@ export default function ProviderProfileScreen() {
   const [certImageBase64, setCertImageBase64] = useState('');
   const [certImageName, setCertImageName] = useState('');
   const [uploadingCert, setUploadingCert] = useState(false);
+  const [telemedicine, setTelemedicine] = useState<{ partner_name: string; partner_description: string; access_url?: string; verified: boolean } | null>(null);
+  const [showTelemedicineSheet, setShowTelemedicineSheet] = useState(false);
 
   useEffect(() => { loadProfile(); }, []);
   useEffect(() => {
@@ -130,7 +132,31 @@ export default function ProviderProfileScreen() {
         .then(() => {});
     }
 
+    // Telemedicina
+    if (session?.access_token) {
+      fetch(`${API_BASE}/telemedicine/config`, {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+      })
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d) setTelemedicine(d); })
+        .catch(() => {});
+    }
+
     setLoading(false);
+  }
+
+  async function handleTelemedicineAccess() {
+    if (!telemedicine?.access_url) return;
+    const { data: { session } } = await supabase.auth.getSession();
+    if (session?.access_token) {
+      fetch(`${API_BASE}/telemedicine/access-log`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_role: 'provider' }),
+      }).catch(() => {});
+    }
+    Linking.openURL(telemedicine.access_url).catch(() => Alert.alert('Erro', 'Não foi possível abrir o link.'));
+    setShowTelemedicineSheet(false);
   }
 
   function openEdit() {
@@ -491,6 +517,54 @@ export default function ProviderProfileScreen() {
           <Text style={[styles.faqBtnText, { color: Colors.primary }]}>Meu Plano</Text>
           <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
         </TouchableOpacity>
+
+        {telemedicine && telemedicine.partner_name ? (
+          telemedicine.verified ? (
+            <TouchableOpacity style={styles.telemedicineCard} onPress={() => setShowTelemedicineSheet(true)} activeOpacity={0.85}>
+              <View style={styles.telemedicineIcon}>
+                <Ionicons name="medkit-outline" size={24} color="#0EA5E9" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.telemedicineTitle}>{telemedicine.partner_name}</Text>
+                <Text style={styles.telemedicineDesc} numberOfLines={2}>{telemedicine.partner_description}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          ) : (
+            <View style={styles.telemedicineCardBlocked}>
+              <View style={[styles.telemedicineIcon, { backgroundColor: Colors.border }]}>
+                <Ionicons name="medkit-outline" size={24} color={Colors.textSecondary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.telemedicineTitle, { color: Colors.textSecondary }]}>{telemedicine.partner_name}</Text>
+                <Text style={styles.telemedicineBlockedDesc}>Disponível apenas para usuários verificados.</Text>
+                <TouchableOpacity onPress={() => router.push('/identity-verification' as any)}>
+                  <Text style={styles.telemedicineVerifyLink}>Complete sua verificação para acessar →</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          )
+        ) : null}
+
+        <Modal visible={showTelemedicineSheet} transparent animationType="slide" onRequestClose={() => setShowTelemedicineSheet(false)}>
+          <TouchableOpacity style={styles.telemedicineOverlay} activeOpacity={1} onPress={() => setShowTelemedicineSheet(false)}>
+            <View style={styles.telemedicineSheet}>
+              <View style={styles.telemedicineSheetHandle} />
+              <View style={styles.telemedicineSheetIcon}>
+                <Ionicons name="medkit" size={36} color="#0EA5E9" />
+              </View>
+              <Text style={styles.telemedicineSheetTitle}>{telemedicine?.partner_name}</Text>
+              <Text style={styles.telemedicineSheetDesc}>{telemedicine?.partner_description}</Text>
+              <TouchableOpacity style={styles.telemedicineAccessBtn} onPress={handleTelemedicineAccess}>
+                <Ionicons name="open-outline" size={18} color={Colors.cardWhite} />
+                <Text style={styles.telemedicineAccessTxt}>Acessar agora</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowTelemedicineSheet(false)}>
+                <Text style={styles.telemedicineCancelTxt}>Cancelar</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
 
         <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/(tabs)/faq' as any)}>
           <Ionicons name="help-circle-outline" size={22} color={Colors.darkNavy} />
@@ -928,4 +1002,39 @@ const styles = StyleSheet.create({
     justifyContent: 'center', alignItems: 'center', marginTop: 4, marginBottom: 8,
   },
   saveButtonText: { fontSize: 16, fontWeight: '700', color: '#fff' },
+  telemedicineCard: {
+    flexDirection: 'row', alignItems: 'center', gap: 12,
+    backgroundColor: '#F0F9FF', borderRadius: 14, padding: 16, marginBottom: 12,
+    borderWidth: 1, borderColor: '#BAE6FD',
+  },
+  telemedicineCardBlocked: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 12,
+    backgroundColor: Colors.background, borderRadius: 14, padding: 16, marginBottom: 12,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  telemedicineIcon: {
+    width: 44, height: 44, borderRadius: 22,
+    backgroundColor: '#E0F2FE', justifyContent: 'center', alignItems: 'center',
+  },
+  telemedicineTitle: { fontSize: 15, fontWeight: '700', color: '#0C4A6E', marginBottom: 2 },
+  telemedicineDesc: { fontSize: 13, color: '#0369A1', lineHeight: 18 },
+  telemedicineBlockedDesc: { fontSize: 13, color: Colors.textSecondary, marginBottom: 4 },
+  telemedicineVerifyLink: { fontSize: 13, fontWeight: '600', color: Colors.primary },
+  telemedicineOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
+  },
+  telemedicineSheet: {
+    backgroundColor: Colors.cardWhite, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: 24, paddingBottom: Platform.OS === 'ios' ? 44 : 28, alignItems: 'center', gap: 12,
+  },
+  telemedicineSheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: Colors.border, marginBottom: 8 },
+  telemedicineSheetIcon: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#E0F2FE', justifyContent: 'center', alignItems: 'center' },
+  telemedicineSheetTitle: { fontSize: 20, fontWeight: '700', color: Colors.textPrimary, textAlign: 'center' },
+  telemedicineSheetDesc: { fontSize: 14, color: Colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  telemedicineAccessBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: '#0EA5E9', borderRadius: 12, height: 52, width: '100%',
+  },
+  telemedicineAccessTxt: { fontSize: 16, fontWeight: '700', color: Colors.cardWhite },
+  telemedicineCancelTxt: { fontSize: 14, color: Colors.textSecondary, paddingVertical: 8 },
 });

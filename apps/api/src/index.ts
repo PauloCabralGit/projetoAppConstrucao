@@ -38,6 +38,8 @@ const DEFAULT_FLAGS = [
   { key: "ratings",             label: "Avaliações",                 description: "Permite que clientes avaliem prestadores após o serviço.",                  category: "Qualidade",   enabled: true  },
   { key: "formal_complaints",   label: "Reclamações formais",        description: "Habilita o formulário de reclamação formal para clientes.",                 category: "Qualidade",   enabled: true  },
   { key: "provider_tracking",   label: "Rastreamento de prestador",  description: "Permite que clientes vejam a localização do prestador em tempo real.",     category: "Localização", enabled: true  },
+  { key: "ads_enabled",         label: "Propagandas",                description: "Exibe banners externos e prestadores patrocinados nos apps.",                 category: "Marketing",   enabled: false },
+  { key: "telemedicine",        label: "Telemedicina",               description: "Habilita acesso ao parceiro de telemedicina para usuários verificados.",      category: "Parceiros",   enabled: false },
 ];
 
 async function getFlags(kv: KVNamespace) {
@@ -148,6 +150,8 @@ const PUBLIC_PATHS = new Set([
   "/v1/providers/available",
   "/v1/mp-public-key",
   "/v1/crm/auth/login",
+  "/v1/ads/banners",
+  "/v1/ads/sponsored-providers",
 ]);
 
 app.use("/v1/*", async (c, next) => {
@@ -213,6 +217,7 @@ function areaForPath(path: string): string {
     if (a === "relatorios") return "relatorios";
     return "operacao";
   }
+  if (path.startsWith("/v1/admin/telemedicine")) return "marketing";
   return "operacao";
 }
 function operatorAllowed(user: any, area: string, method: string): boolean {
@@ -4293,6 +4298,359 @@ async function checkExpiredSubscriptions(env: Bindings) {
 
   return { expired: (expired ?? []).length };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Propagandas — Banners externos (Fatia 2) ─────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function isFlagEnabled(kv: KVNamespace, key: string, defaultValue = false): Promise<boolean> {
+  const stored = await kv.get(key, "json") as { enabled: boolean } | null;
+  return stored != null ? stored.enabled : defaultValue;
+}
+
+app.get("/v1/ads/banners", async (c) => {
+  const adsEnabled = await isFlagEnabled(c.env.FEATURE_FLAGS, "ads_enabled");
+  if (!adsEnabled) return c.json({ data: [] });
+
+  const placement = c.req.query("placement") ?? "home";
+  const target = c.req.query("target") ?? "client";
+  const now = new Date().toISOString();
+
+  const { data, error } = await db(c.env)
+    .from("ads")
+    .select("id, title, advertiser_name, image_url, link_url, target, placement, priority")
+    .eq("active", true)
+    .in("target", [target, "both"])
+    .eq("placement", placement)
+    .or(`starts_at.is.null,starts_at.lte.${now}`)
+    .or(`ends_at.is.null,ends_at.gte.${now}`)
+    .order("priority", { ascending: false });
+
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ data: data ?? [] });
+});
+
+app.get("/v1/ads/sponsored-providers", async (c) => {
+  const adsEnabled = await isFlagEnabled(c.env.FEATURE_FLAGS, "ads_enabled");
+  if (!adsEnabled) return c.json({ data: [] });
+
+  const category = c.req.query("category");
+  const city = c.req.query("city");
+  const now = new Date().toISOString();
+
+  let query = db(c.env)
+    .from("sponsored_providers")
+    .select("id, provider_id, categories, cities, priority")
+    .eq("active", true)
+    .or(`starts_at.is.null,starts_at.lte.${now}`)
+    .or(`ends_at.is.null,ends_at.gte.${now}`)
+    .order("priority", { ascending: false })
+    .limit(2);
+
+  if (category) query = query.contains("categories", [category]);
+  if (city) query = query.contains("cities", [city]);
+
+  const { data, error } = await query;
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ data: data ?? [] });
+});
+
+// ── Propagandas — Admin CRUD Banners (Fatia 4) ───────────────────────────────
+
+app.get("/v1/admin/crm/mkt/banners", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env)
+    .from("ads")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ items: data ?? [] });
+});
+
+app.post("/v1/admin/crm/mkt/banners", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const b = await c.req.json<{
+    title: string; advertiser_name?: string; image_url: string; link_url?: string;
+    target?: string; placement?: string; active?: boolean;
+    starts_at?: string; ends_at?: string; priority?: number;
+  }>();
+  if (!b.title || !b.image_url) return c.json({ message: "title e image_url são obrigatórios." }, 400);
+  if (!b.image_url.startsWith("https://")) return c.json({ message: "image_url deve começar com https://." }, 400);
+  const row = {
+    title: b.title,
+    advertiser_name: b.advertiser_name ?? "",
+    image_url: b.image_url,
+    link_url: b.link_url ?? null,
+    target: b.target ?? "both",
+    placement: b.placement ?? "home",
+    active: b.active ?? false,
+    starts_at: b.starts_at ?? null,
+    ends_at: b.ends_at ?? null,
+    priority: b.priority ?? 0,
+  };
+  const { data, error } = await db(c.env).from("ads").insert(row).select("*").maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ item: data }, 201);
+});
+
+app.get("/v1/admin/crm/mkt/banners/:id", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env).from("ads").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  if (!data) return c.json({ message: "Não encontrado." }, 404);
+  return c.json({ item: data });
+});
+
+async function handleBannerPatch(c: any) {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const b = await c.req.json() as Record<string, any>;
+  const allowed = ["title", "advertiser_name", "image_url", "link_url", "target", "placement", "active", "starts_at", "ends_at", "priority"];
+  const patch: Record<string, any> = {};
+  for (const k of allowed) if (b[k] !== undefined) patch[k] = b[k];
+  if (patch.image_url && !String(patch.image_url).startsWith("https://")) return c.json({ message: "image_url deve começar com https://." }, 400);
+  const { data, error } = await db(c.env).from("ads").update(patch).eq("id", c.req.param("id")).select("*").maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  if (!data) return c.json({ message: "Não encontrado." }, 404);
+  return c.json({ item: data });
+}
+app.put("/v1/admin/crm/mkt/banners/:id", handleBannerPatch);
+app.patch("/v1/admin/crm/mkt/banners/:id", handleBannerPatch);
+
+app.delete("/v1/admin/crm/mkt/banners/:id", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { error } = await db(c.env).from("ads").delete().eq("id", c.req.param("id"));
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+// ── Propagandas — Admin CRUD Patrocinados (Fatia 4 cont.) ────────────────────
+
+app.get("/v1/admin/crm/mkt/sponsored", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env)
+    .from("sponsored_providers")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ items: data ?? [] });
+});
+
+app.post("/v1/admin/crm/mkt/sponsored", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const b = await c.req.json<{
+    provider_id: string; categories?: string[]; cities?: string[];
+    active?: boolean; starts_at?: string; ends_at?: string; priority?: number; notes?: string;
+  }>();
+  if (!b.provider_id) return c.json({ message: "provider_id é obrigatório." }, 400);
+
+  // Impede dois registros ativos para o mesmo prestador
+  if (b.active) {
+    const { data: existing } = await db(c.env)
+      .from("sponsored_providers").select("id").eq("provider_id", b.provider_id).eq("active", true).maybeSingle();
+    if (existing) return c.json({ message: "Este prestador já tem um patrocínio ativo." }, 409);
+  }
+
+  const row = {
+    provider_id: b.provider_id,
+    categories: b.categories ?? [],
+    cities: b.cities ?? [],
+    active: b.active ?? false,
+    starts_at: b.starts_at ?? null,
+    ends_at: b.ends_at ?? null,
+    priority: b.priority ?? 0,
+    notes: b.notes ?? "",
+  };
+  const { data, error } = await db(c.env).from("sponsored_providers").insert(row).select("*").maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ item: data }, 201);
+});
+
+app.get("/v1/admin/crm/mkt/sponsored/:id", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env).from("sponsored_providers").select("*").eq("id", c.req.param("id")).maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  if (!data) return c.json({ message: "Não encontrado." }, 404);
+  return c.json({ item: data });
+});
+
+async function handleSponsoredPatch(c: any) {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const b = await c.req.json() as Record<string, any>;
+  const allowed = ["categories", "cities", "active", "starts_at", "ends_at", "priority", "notes"];
+  const patch: Record<string, any> = {};
+  for (const k of allowed) if (b[k] !== undefined) patch[k] = b[k];
+
+  if (patch.active === true && b.provider_id) {
+    const { data: existing } = await db(c.env)
+      .from("sponsored_providers").select("id").eq("provider_id", b.provider_id).eq("active", true)
+      .neq("id", c.req.param("id")).maybeSingle();
+    if (existing) return c.json({ message: "Este prestador já tem um patrocínio ativo." }, 409);
+  }
+
+  const { data, error } = await db(c.env).from("sponsored_providers").update(patch).eq("id", c.req.param("id")).select("*").maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  if (!data) return c.json({ message: "Não encontrado." }, 404);
+  return c.json({ item: data });
+}
+app.put("/v1/admin/crm/mkt/sponsored/:id", handleSponsoredPatch);
+app.patch("/v1/admin/crm/mkt/sponsored/:id", handleSponsoredPatch);
+
+app.delete("/v1/admin/crm/mkt/sponsored/:id", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { error } = await db(c.env).from("sponsored_providers").delete().eq("id", c.req.param("id"));
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ── Telemedicina — App endpoints (Fatia 3) ────────────────────────────────
+// ═══════════════════════════════════════════════════════════════════════════
+
+app.get("/v1/telemedicine/config", async (c) => {
+  const telemedicineEnabled = await isFlagEnabled(c.env.FEATURE_FLAGS, "telemedicine");
+  if (!telemedicineEnabled) return c.json({ message: "Feature não disponível." }, 503);
+
+  const userId = c.get("userId");
+  const adminDb = db(c.env);
+
+  const { data: config } = await adminDb
+    .from("telemedicine_config")
+    .select("partner_name, partner_description, is_active, access_url")
+    .limit(1)
+    .maybeSingle();
+
+  if (!config || !config.is_active) return c.json({ message: "Serviço indisponível." }, 503);
+
+  const { data: user } = await adminDb
+    .from("app_users")
+    .select("verification_status")
+    .eq("id", userId)
+    .maybeSingle();
+
+  const verified = user?.verification_status === "approved";
+
+  return c.json({
+    partner_name: config.partner_name,
+    partner_description: config.partner_description,
+    is_active: config.is_active,
+    access_url: verified ? config.access_url : undefined,
+    verified,
+  });
+});
+
+app.post("/v1/telemedicine/access-log", async (c) => {
+  const telemedicineEnabled = await isFlagEnabled(c.env.FEATURE_FLAGS, "telemedicine");
+  if (!telemedicineEnabled) return c.json({ message: "Feature não disponível." }, 503);
+
+  const userId = c.get("userId");
+  const adminDb = db(c.env);
+
+  const { data: user } = await adminDb
+    .from("app_users")
+    .select("verification_status")
+    .eq("id", userId)
+    .maybeSingle();
+
+  if (user?.verification_status !== "approved") return c.json({ message: "Acesso restrito a usuários verificados." }, 403);
+
+  const { user_role } = await c.req.json<{ user_role?: string }>();
+  if (!user_role || !["client", "provider"].includes(user_role)) {
+    return c.json({ message: "user_role deve ser 'client' ou 'provider'." }, 400);
+  }
+
+  const { error } = await adminDb.from("telemedicine_access_log").insert({
+    user_id: userId,
+    user_role,
+    accessed_at: new Date().toISOString(),
+  });
+
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ ok: true });
+});
+
+// ── Telemedicina — Admin endpoints (Fatia 5) ─────────────────────────────────
+
+app.get("/v1/admin/telemedicine/config", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env)
+    .from("telemedicine_config")
+    .select("*")
+    .limit(1)
+    .maybeSingle();
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ item: data ?? null });
+});
+
+app.put("/v1/admin/telemedicine/config", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const b = await c.req.json<{
+    partner_name?: string; partner_description?: string;
+    access_url?: string; is_active?: boolean;
+  }>();
+  if (b.access_url && !b.access_url.startsWith("https://") && !b.access_url.startsWith("http://")) {
+    return c.json({ message: "access_url deve ser uma URL válida." }, 400);
+  }
+
+  const adminDb = db(c.env);
+  const { data: existing } = await adminDb.from("telemedicine_config").select("id").limit(1).maybeSingle();
+
+  let data, error;
+  if (existing) {
+    const patch: Record<string, any> = {};
+    if (b.partner_name !== undefined) patch.partner_name = b.partner_name;
+    if (b.partner_description !== undefined) patch.partner_description = b.partner_description;
+    if (b.access_url !== undefined) patch.access_url = b.access_url;
+    if (b.is_active !== undefined) patch.is_active = b.is_active;
+    patch.updated_at = new Date().toISOString();
+    ({ data, error } = await adminDb.from("telemedicine_config").update(patch).eq("id", existing.id).select("*").maybeSingle());
+  } else {
+    const row = {
+      partner_name: b.partner_name ?? "",
+      partner_description: b.partner_description ?? "",
+      access_url: b.access_url ?? "",
+      is_active: b.is_active ?? false,
+    };
+    ({ data, error } = await adminDb.from("telemedicine_config").insert(row).select("*").maybeSingle());
+  }
+
+  if (error) return c.json({ message: error.message }, 500);
+  return c.json({ item: data });
+});
+
+app.get("/v1/admin/telemedicine/report", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const { data, error } = await db(c.env)
+    .from("telemedicine_access_log")
+    .select("user_role, accessed_at")
+    .order("accessed_at", { ascending: false })
+    .limit(5000);
+  if (error) return c.json({ message: error.message }, 500);
+
+  // Agrupa por dia e role
+  const map = new Map<string, { client: number; provider: number }>();
+  for (const row of data ?? []) {
+    const dia = row.accessed_at.slice(0, 10);
+    const entry = map.get(dia) ?? { client: 0, provider: 0 };
+    if (row.user_role === "client") entry.client++;
+    else entry.provider++;
+    map.set(dia, entry);
+  }
+
+  const report = [...map.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .slice(0, 90)
+    .flatMap(([dia, counts]) => [
+      { dia, user_role: "client" as const, count: counts.client },
+      { dia, user_role: "provider" as const, count: counts.provider },
+    ])
+    .filter((r) => r.count > 0);
+
+  const total = (data ?? []).length;
+  const today = new Date().toISOString().slice(0, 10);
+  const todayTotal = (data ?? []).filter((r) => r.accessed_at.startsWith(today)).length;
+
+  return c.json({ report, total, today: todayTotal });
+});
 
 // ─── Worker export com scheduled handler e error boundary ────────────────────
 export default {

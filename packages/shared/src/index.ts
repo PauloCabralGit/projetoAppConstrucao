@@ -111,3 +111,84 @@ export interface CardPaymentResult {
   /** Desafio 3DS, quando o emissor exige autenticação adicional. */
   threeDs?: { externalResourceUrl: string; creq: string };
 }
+
+// ── Propagandas (banners + patrocinados) ────────────────────────────────────
+
+export type AdPlacement = 'home' | 'jobs';
+export type AdTarget = 'client' | 'provider' | 'both';
+
+export interface AdBanner {
+  id: string;
+  title: string;
+  advertiser_name: string;
+  image_url: string;
+  link_url: string | null;
+  target: AdTarget;
+  placement: AdPlacement;
+  priority: number;
+}
+
+export interface CreateAdRequest {
+  title: string;
+  advertiser_name: string;
+  image_url: string;
+  link_url?: string;
+  target: AdTarget;
+  placement: AdPlacement;
+  active?: boolean;
+  starts_at?: string;
+  ends_at?: string;
+  priority?: number;
+}
+
+export interface UpdateAdRequest extends Partial<CreateAdRequest> {}
+
+export interface SponsoredProvider {
+  id: string;
+  provider_id: string;
+  categories: string[];
+  cities: string[];
+  priority: number;
+}
+
+export interface CreateSponsoredProviderRequest {
+  provider_id: string;
+  categories: string[];
+  cities: string[];
+  active?: boolean;
+  starts_at?: string;
+  ends_at?: string;
+  priority?: number;
+  notes?: string;
+}
+
+export interface UpdateSponsoredProviderRequest extends Partial<CreateSponsoredProviderRequest> {}
+
+// ── Telemedicina (parceria) ──────────────────────────────────────────────────
+
+export interface TelemedicineConfigPublic {
+  partner_name: string;
+  partner_description: string;
+  is_active: boolean;
+}
+
+export interface TelemedicineConfigAdmin extends TelemedicineConfigPublic {
+  id: string;
+  access_url: string;
+  updated_at: string;
+}
+
+export interface TelemedicineConfigResponse extends TelemedicineConfigPublic {
+  access_url?: string;
+  verified: boolean;
+}
+
+export interface TelemedicineAccessLogPayload {
+  user_role: 'client' | 'provider';
+}
+
+export interface TelemedicineReportEntry {
+  dia: string;
+  user_role: 'client' | 'provider';
+  count: number;
+}
