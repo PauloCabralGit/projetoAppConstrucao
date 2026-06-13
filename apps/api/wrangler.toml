@@ -2,26 +2,81 @@ name = "construconnect-api"
 main = "src/index.ts"
 compatibility_date = "2026-05-16"
 
+# ════════════════════════════════════════════════════════════════════════════
+# AMBIENTES (Mercado Pago: sandbox vs produção)
+#
+#   • TESTE / sandbox  ->  wrangler deploy --env staging      (credenciais de TESTE do MP)
+#   • PRODUÇÃO         ->  wrangler deploy --env production   (credenciais de PRODUÇÃO do MP)
+#   Obs.: no modelo novo do Mercado Pago, TANTO teste quanto produção usam o
+#   prefixo APP_USR-. O que define o ambiente é o CONJUNTO de credenciais
+#   (painel: "Credenciais de teste" vs "Credenciais de produção"), não o prefixo.
+#
+#   `wrangler deploy` SEM --env usa a config de topo (= produção), para manter
+#   compatibilidade com `npm run deploy:api`.
+#
+# ── SEGREDOS (NUNCA neste arquivo — ele é versionado no git) ─────────────────
+# Defina por ambiente com `wrangler secret put <NOME> --env <staging|production>`:
+#   MERCADOPAGO_ACCESS_TOKEN     (access token de TESTE no staging / de PRODUÇÃO na production)
+#   MERCADOPAGO_WEBHOOK_SECRET   (gerado no painel MP > Webhooks)
+#   MP_APP_SECRET                (painel MP > Aplicações — só se usar MP Connect)
+#   SUPABASE_SERVICE_KEY         (service role do Supabase)
+#   SENTRY_DSN                   (opcional, monitoramento)
+# A MERCADOPAGO_PUBLIC_KEY é segura para expor (vai ao app), então fica em [vars].
+# Para `wrangler dev` local, use um arquivo .dev.vars (já no .gitignore) — veja
+# .dev.vars.example.
+# ════════════════════════════════════════════════════════════════════════════
+
+# ── Base / default (= produção, para `wrangler deploy` sem --env) ────────────
 [vars]
 APP_NAME = "ConstruConnect"
 SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
-# Mercado Pago — Access Token (sandbox: TEST-, produção: APP_USR-)
-MERCADOPAGO_ACCESS_TOKEN = ""
-# Mercado Pago — Webhook secret (gerado no painel MP > Webhooks)
-MERCADOPAGO_WEBHOOK_SECRET = ""
-# Mercado Pago — Chave pública (segura para expor no client)
-MERCADOPAGO_PUBLIC_KEY = ""
-# Mercado Pago — Marketplace OAuth (gerado no painel MP > Aplicações)
+MERCADOPAGO_PUBLIC_KEY = ""   # APP_USR-... (produção — preencher com a public key de PRODUÇÃO)
 MP_APP_ID = ""
-MP_APP_SECRET = ""
 MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
-# Sentry DSN para monitoramento de erros (obter em sentry.io)
-SENTRY_DSN = ""
 
 [[kv_namespaces]]
 binding = "FEATURE_FLAGS"
 id = "17281fd061e64ac0b32c469a8044d980"
 
-# Cron: verifica assinaturas expiradas todo dia às 03h BRT (06h UTC)
 [triggers]
+crons = ["0 6 * * *"]
+
+# ── STAGING — sandbox Mercado Pago (credenciais de TESTE) ────────────────────
+[env.staging]
+name = "construconnect-api-staging"
+
+[env.staging.vars]
+APP_NAME = "ConstruConnect (staging)"
+SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
+MERCADOPAGO_PUBLIC_KEY = "APP_USR-a61f8380-1809-4be1-a267-dbfd9be408bb"   # TEMPORARIO: producao p/ teste de autorizacao. Reverter p/ 0c6078fb depois.
+MP_APP_ID = ""
+MP_REDIRECT_URI = "https://construconnect-api-staging.orionsystem.workers.dev/v1/auth/mp-callback"
+
+# KV próprio do staging (flags isoladas da produção).
+# Crie uma vez:  wrangler kv namespace create FEATURE_FLAGS --env staging
+# e cole o id retornado aqui (enquanto não criar, pode reusar o id de produção
+# acima, mas as flags ficarão compartilhadas com produção):
+[[env.staging.kv_namespaces]]
+binding = "FEATURE_FLAGS"
+id = "f7c497bf60ef418585890eba3b2a359b"
+
+[env.staging.triggers]
+crons = ["0 6 * * *"]
+
+# ── PRODUCTION — Mercado Pago real (credenciais APP_USR-...) ─────────────────
+[env.production]
+name = "construconnect-api"
+
+[env.production.vars]
+APP_NAME = "ConstruConnect"
+SUPABASE_URL = "https://hjmcfekqhwshbmvsfkod.supabase.co"
+MERCADOPAGO_PUBLIC_KEY = ""   # APP_USR-... (produção — preencher com a public key de PRODUÇÃO)
+MP_APP_ID = ""
+MP_REDIRECT_URI = "https://construconnect-api.orionsystem.workers.dev/v1/auth/mp-callback"
+
+[[env.production.kv_namespaces]]
+binding = "FEATURE_FLAGS"
+id = "17281fd061e64ac0b32c469a8044d980"
+
+[env.production.triggers]
 crons = ["0 6 * * *"]

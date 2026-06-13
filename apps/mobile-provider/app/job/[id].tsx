@@ -22,7 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 interface JobDetail {
   id: string;
@@ -146,6 +146,24 @@ export default function JobDetailScreen() {
       setDistance(calcDistance(providerCoord, { latitude: job.latitude, longitude: job.longitude }));
     }
   }, [providerCoord, job]);
+
+  // Auto-sync: quando o job tem pagamento em "processing", consulta o MP e resolve.
+  // Cobre o caso onde o webhook não chegou e o prestador abre o job antes do cliente.
+  useEffect(() => {
+    if (!id || job?.payment_status !== 'processing') return;
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (!session?.access_token) return;
+      try {
+        const res = await fetch(`${API_BASE}/service-requests/${id}/sync-payment`, {
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        });
+        if (res.ok) {
+          const r = await res.json() as { payment_status: string | null };
+          if (r.payment_status && r.payment_status !== 'processing') loadJob();
+        }
+      } catch { /* best-effort */ }
+    });
+  }, [id, job?.payment_status]);
 
   function subscribeToJob() {
     const channel = supabase

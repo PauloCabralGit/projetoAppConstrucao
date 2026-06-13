@@ -32,6 +32,7 @@ const DEFAULT_FLAGS = [
   { key: "provider_bidding",    label: "Sistema de lances",          description: "Permite que prestadores enviem propostas de valor para chamados.",           category: "Chamados",    enabled: true  },
   { key: "pix_payments",        label: "Pagamento via Pix",          description: "Habilita a geração de QR Code Pix para pagamentos.",                        category: "Pagamentos",  enabled: true  },
   { key: "cash_payments",       label: "Pagamento em dinheiro",      description: "Permite pagamento em dinheiro como forma de pagamento.",                    category: "Pagamentos",  enabled: true  },
+  { key: "card_saved_cards",    label: "Cartão salvo",               description: "Habilita pagamento com cartão (crédito/débito) e cartões salvos no app.",   category: "Pagamentos",  enabled: false },
   { key: "chat",                label: "Chat cliente-prestador",     description: "Habilita o sistema de mensagens entre clientes e prestadores.",              category: "Comunicação", enabled: true  },
   { key: "push_notifications",  label: "Notificações push",          description: "Habilita o envio de notificações push para usuários.",                      category: "Comunicação", enabled: true  },
   { key: "ratings",             label: "Avaliações",                 description: "Permite que clientes avaliem prestadores após o serviço.",                  category: "Qualidade",   enabled: true  },
@@ -145,6 +146,7 @@ const PUBLIC_PATHS = new Set([
   "/v1/feature-flags",
   "/v1/providers",
   "/v1/providers/available",
+  "/v1/mp-public-key",
   "/v1/crm/auth/login",
 ]);
 
@@ -1662,8 +1664,16 @@ app.post("/v1/service-requests/:id/create-pix", async (c) => {
   }
 });
 
-// ── US-010: Pagamento via cartão com split ────────────────────────────────────
+// ── US-010 / F3: Pagamento via cartão com split (hardening) ───────────────────
+// Authz por dono (corrige IDOR), idempotência via key do cliente (corrige
+// cobrança dupla), split descontando a taxa do MP do prestador, save_card
+// opt-in best-effort e recusa (rejected) → 402. Forma de resposta =
+// CardPaymentResult (packages/shared).
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const round2 = (n: number) => Math.round(n * 100) / 100;
+
 app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
+  const clientId = c.get("userId");
   const id = c.req.param("id");
   const body = await c.req.json<{
     token: string;
@@ -1671,10 +1681,19 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     payment_method_id: string;
     issuer_id?: string;
     payer_email: string;
+    payer_first_name?: string;
+    payer_last_name?: string;
+    payer_cpf?: string;
+    device_id?: string;
+    save_card?: boolean;
+    idempotency_key?: string;
   }>().catch(() => ({} as any));
 
   if (!body.token || !body.installments || !body.payment_method_id || !body.payer_email) {
     return c.json({ message: "Campos obrigatórios: token, installments, payment_method_id, payer_email." }, 400);
+  }
+  if (typeof body.installments !== "number" || !Number.isInteger(body.installments) || body.installments < 1) {
+    return c.json({ message: "installments deve ser um inteiro positivo." }, 400);
   }
 
   if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
@@ -1692,6 +1711,11 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   if (!req || req.status !== "completed") {
     return c.json({ message: "Serviço não encontrado ou não concluído." }, 400);
   }
+  // Authz por dono: só o cliente da SR pode disparar a cobrança (corrige IDOR).
+  if (req.client_user_id !== clientId) {
+    console.warn("[card-payment] tentativa de cobrar SR alheia", { id, clientId });
+    return c.json({ message: "Não autorizado." }, 403);
+  }
   if (!req.quote_amount) {
     return c.json({ message: "Valor do serviço não definido." }, 400);
   }
@@ -1699,12 +1723,46 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     return c.json({ message: "Este serviço já foi pago." }, 409);
   }
 
+  // Telefone do cliente p/ enriquecer o pagador — ajuda no antifraude do MP.
+  const { data: client } = await adminDb
+    .from("app_users")
+    .select("phone")
+    .eq("id", clientId)
+    .maybeSingle();
+
   const amount = Number(req.quote_amount);
   const commissionRate = req.provider_user_id
     ? await getProviderCommissionRate(c.env, req.provider_user_id)
     : 0.10;
-  const platformFee = Math.round(amount * commissionRate * 100) / 100;
-  const providerAmount = Math.round((amount - platformFee) * 100) / 100;
+  // Comissão da plataforma incide sobre o BRUTO (decisão de produto).
+  const platformFee = round2(amount * commissionRate);
+
+  // save_card sem reusar o token (one-shot, consumido na cobrança): associamos o
+  // customer ao pagamento; o MP devolve o cartão salvo em payment.card e nós
+  // persistimos a ref após a aprovação. Se o customer falhar, seguimos a cobrança
+  // sem salvar (best-effort — nunca derruba o pagamento por causa do "salvar").
+  let saveCustomerId: string | null = null;
+  if (body.save_card === true) {
+    try {
+      const cust = await ensureMpCustomer(c.env, clientId);
+      if (cust.ok) saveCustomerId = cust.customerId;
+      else console.warn("[card-payment] save_card: customer indisponivel, segue sem salvar", cust.status);
+    } catch (e) {
+      console.error("[card-payment] save_card: ensureMpCustomer lançou", clientId, e);
+    }
+  }
+
+  // Enriquece o pagador (nome + CPF) — melhora a taxa de aprovação no antifraude do MP.
+  const payer: Record<string, unknown> = { email: body.payer_email };
+  if (body.payer_first_name) payer.first_name = body.payer_first_name;
+  if (body.payer_last_name) payer.last_name = body.payer_last_name;
+  if (body.payer_cpf) payer.identification = { type: "CPF", number: body.payer_cpf };
+  let phoneDigits = String(client?.phone ?? "").replace(/\D/g, "");
+  if (phoneDigits.length > 11 && phoneDigits.startsWith("55")) phoneDigits = phoneDigits.slice(2);
+  if (phoneDigits.length >= 10) {
+    payer.phone = { area_code: phoneDigits.slice(0, 2), number: phoneDigits.slice(2) };
+  }
+  if (saveCustomerId) { payer.type = "customer"; payer.id = saveCustomerId; }
 
   const payload: Record<string, unknown> = {
     transaction_amount: amount,
@@ -1713,45 +1771,146 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     installments: body.installments,
     payment_method_id: body.payment_method_id,
     external_reference: id,
-    payer: { email: body.payer_email },
+    payer,
+    // 3DS 2.0: autenticação adicional que melhora aprovação em transações barradas
+    // por risco. "optional" = só desafia quando o emissor exige.
+    three_d_secure_mode: "optional",
   };
   if (body.issuer_id) payload.issuer_id = body.issuer_id;
+
+  // additional_info: itens + pagador — recomendado pelo MP p/ melhorar a aprovação.
+  const aiPayer: Record<string, unknown> = {};
+  if (body.payer_first_name) aiPayer.first_name = body.payer_first_name;
+  if (body.payer_last_name) aiPayer.last_name = body.payer_last_name;
+  if (payer.phone) aiPayer.phone = payer.phone;
+  payload.additional_info = {
+    items: [{
+      id,
+      title: `Serviço de ${req.category}`,
+      description: "ConstruConnect",
+      category_id: "services",
+      quantity: 1,
+      unit_price: amount,
+    }],
+    ...(Object.keys(aiPayer).length ? { payer: aiPayer } : {}),
+  };
+
+  // Idempotência: a key do cliente identifica a MESMA intenção de cobrança em
+  // retries (corrige cobrança dupla). Fallback determinístico por SR+cliente.
+  const idemKey = body.idempotency_key && UUID_RE.test(body.idempotency_key)
+    ? body.idempotency_key
+    : `card-${id}-${clientId}`;
 
   const mpRes = await fetch("https://api.mercadopago.com/v1/payments", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
-      "X-Idempotency-Key": `card-${id}-${Date.now()}`,
+      "X-Idempotency-Key": idemKey,
+      // Device fingerprint (antifraude) — fator chave de aprovação.
+      ...(body.device_id ? { "X-meli-session-id": body.device_id } : {}),
     },
     body: JSON.stringify(payload),
   });
 
   if (!mpRes.ok) {
     const err = await mpRes.text();
-    return c.json({ message: `Erro MercadoPago: ${err}` }, 400);
+    console.error("[card-payment] MP retornou erro", mpRes.status, err);
+    // Não vaza o corpo do MP ao cliente.
+    return c.json({ message: "Não foi possível processar o pagamento. Tente novamente." }, 502);
   }
 
   const mpPayment = await mpRes.json() as {
     id: number;
     status: string;
     status_detail: string;
+    payment_type_id?: string;
+    fee_details?: Array<{ type?: string; amount?: number; fee_payer?: string }>;
+    transaction_details?: { net_received_amount?: number };
+    card?: {
+      id?: string;
+      last_four_digits?: string;
+      expiration_month?: number;
+      expiration_year?: number;
+      cardholder?: { name?: string };
+    };
+    three_ds_info?: { external_resource_url?: string; creq?: string };
   };
+  const mpPaymentId = String(mpPayment.id);
 
-  // Registrar na tabela payments
-  await adminDb.from("payments").insert({
+  // Recusa: não registra split nem confirma; devolve o motivo (status_detail).
+  if (mpPayment.status === "rejected") {
+    console.warn("[card-payment] pagamento recusado", { id, mpPaymentId, statusDetail: mpPayment.status_detail });
+    // Auditoria best-effort (não falha o fluxo se duplicar em retry).
+    const { error: rejErr } = await adminDb.from("payments").insert({
+      service_request_id: id,
+      mp_payment_id: mpPaymentId,
+      amount,
+      platform_fee: platformFee,
+      provider_amount: 0,
+      payment_method: "card",
+      status: "rejected",
+      payer_email: body.payer_email,
+    });
+    if (rejErr && (rejErr as any).code !== "23505") {
+      console.error("[card-payment] auditoria de recusa falhou", id, rejErr.message);
+    }
+    // Marca a SR como recusada (o cliente pode tentar de novo) e notifica.
+    await adminDb
+      .from("service_requests")
+      .update({ payment_status: "rejected", payment_method: "card" })
+      .eq("id", id);
+    if (req.client_user_id) {
+      await sendPush(c.env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
+    }
+    return c.json({
+      status: mpPayment.status,
+      statusDetail: mpPayment.status_detail,
+      mpPaymentId,
+      amount,
+      platformFee,
+      mpFee: 0,
+      providerAmount: 0,
+      installments: body.installments,
+    }, 402);
+  }
+
+  const approved = mpPayment.status === "approved";
+
+  // Taxa do MP: 100% do prestador (decisão). Soma os fee_details do collector;
+  // fallback = bruto − net_received_amount. Só é conhecida quando aprovado.
+  let mpFee = 0;
+  if (approved) {
+    const fees = Array.isArray(mpPayment.fee_details) ? mpPayment.fee_details : [];
+    const collectorFee = fees
+      .filter((f) => f?.fee_payer === "collector")
+      .reduce((sum, f) => sum + Number(f?.amount ?? 0), 0);
+    mpFee = collectorFee > 0
+      ? round2(collectorFee)
+      : Math.max(0, round2(amount - Number(mpPayment.transaction_details?.net_received_amount ?? amount)));
+  }
+  const providerAmount = round2(amount - platformFee - mpFee);
+
+  // Registrar na tabela payments (mp_fee_amount e installments p/ auditoria).
+  const { error: payErr } = await adminDb.from("payments").insert({
     service_request_id: id,
-    mp_payment_id: String(mpPayment.id),
+    mp_payment_id: mpPaymentId,
     amount,
     platform_fee: platformFee,
     provider_amount: providerAmount,
+    mp_fee_amount: mpFee,
+    installments: body.installments,
     payment_method: "card",
-    status: mpPayment.status === "approved" ? "approved" : "pending",
+    status: approved ? "approved" : "pending",
     payer_email: body.payer_email,
-    confirmed_at: mpPayment.status === "approved" ? new Date().toISOString() : null,
+    confirmed_at: approved ? new Date().toISOString() : null,
   });
+  // 23505 = retry idempotente (mesmo mp_payment_id já registrado): segue.
+  if (payErr && (payErr as any).code !== "23505") {
+    console.error("[card-payment] insert payments falhou", id, payErr.message);
+  }
 
-  if (mpPayment.status === "approved") {
+  if (approved) {
     await adminDb
       .from("service_requests")
       .update({ payment_status: "confirmed", payment_method: "card" })
@@ -1761,7 +1920,7 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     const { data: paymentRecord } = await adminDb
       .from("payments")
       .select("id")
-      .eq("mp_payment_id", String(mpPayment.id))
+      .eq("mp_payment_id", mpPaymentId)
       .maybeSingle();
 
     if (paymentRecord && req.provider_user_id) {
@@ -1774,21 +1933,561 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
       }, { onConflict: "payment_id" });
     }
 
+    // save_card opt-in e best-effort: só crédito, só após aprovar; nunca derruba
+    // a cobrança. O cartão já foi salvo no MP via associação do customer no
+    // pagamento (o token one-shot NÃO é reusado); aqui só persistimos a ref a
+    // partir de payment.card. Exige mês de validade válido (CHECK 1..12).
+    if (
+      saveCustomerId &&
+      mpPayment.payment_type_id === "credit_card" &&
+      mpPayment.card?.id &&
+      mpPayment.card?.expiration_month
+    ) {
+      try {
+        const card = mpPayment.card;
+        const saved = await persistSavedCard(c.env, clientId, saveCustomerId, {
+          mpCardId: card.id!,
+          brand: body.payment_method_id ?? null,
+          last4: card.last_four_digits ?? "",
+          expMonth: Number(card.expiration_month),
+          expYear: Number(card.expiration_year ?? 0),
+          cardholderName: card.cardholder?.name ?? null,
+        }, false);
+        if (!saved.ok && saved.status !== 409) {
+          console.warn("[card-payment] save_card best-effort falhou", { clientId, status: saved.status, message: saved.message });
+        }
+      } catch (e) {
+        console.error("[card-payment] save_card lançou exceção", clientId, e);
+      }
+    }
+
     if (req.client_user_id) {
       await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento no cartão foi aprovado.");
     }
     if (req.provider_user_id) {
       await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O cliente pagou R$ ${providerAmount.toFixed(2).replace(".", ",")} via cartão.`);
     }
+  } else {
+    // in_process / pending: pagamento em análise (ex.: antifraude / 3DS). NÃO
+    // confirma nem credita o prestador ainda — o resultado final (aprovado ou
+    // recusado) chega pelo webhook do MP, que atualiza e notifica o cliente.
+    await adminDb
+      .from("service_requests")
+      .update({ payment_status: "processing", payment_method: "card" })
+      .eq("id", id);
+    if (req.client_user_id) {
+      await sendPush(c.env, req.client_user_id, "⏳ Pagamento em processamento", "Seu pagamento com cartão está sendo analisado. Avisaremos assim que for concluído.");
+    }
   }
 
   return c.json({
     status: mpPayment.status,
     statusDetail: mpPayment.status_detail,
-    mpPaymentId: String(mpPayment.id),
+    mpPaymentId,
     amount,
     platformFee,
+    mpFee,
     providerAmount,
+    installments: body.installments,
+    // Desafio 3DS: se o emissor exigir, o app abre a WebView com creq+URL e depois
+    // sincroniza o status (GET .../card-payment-status).
+    ...(mpPayment.three_ds_info?.external_resource_url
+      ? { threeDs: {
+          externalResourceUrl: mpPayment.three_ds_info.external_resource_url,
+          creq: mpPayment.three_ds_info.creq ?? "",
+        } }
+      : {}),
+  });
+});
+
+// ── Resolve o resultado FINAL de um pagamento MP (aprovado/recusado) numa SR.
+// Compartilhado pelo webhook e pelo sync pós-3DS. Idempotente. ────────────────
+async function resolveCardPaymentFinal(
+  env: Bindings,
+  payment: { id: number | string; status: string; payment_type_id?: string },
+): Promise<void> {
+  const serviceRequestId = (payment as any).external_reference;
+  if (!serviceRequestId) return;
+  const adminDb = db(env);
+
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("client_user_id, provider_user_id, payment_status")
+    .eq("id", serviceRequestId)
+    .maybeSingle();
+  if (!req || req.payment_status === "confirmed") return;
+
+  if (payment.status === "approved") {
+    const mpType = String(payment.payment_type_id ?? "");
+    const method = mpType.includes("card") ? "card" : mpType ? "pix" : null;
+    const srUpdate: Record<string, unknown> = { payment_status: "confirmed" };
+    if (method) srUpdate.payment_method = method;
+    await adminDb.from("service_requests").update(srUpdate).eq("id", serviceRequestId);
+
+    const { data: rec } = await adminDb
+      .from("payments")
+      .update({ status: "approved", confirmed_at: new Date().toISOString() })
+      .eq("mp_payment_id", String(payment.id))
+      .select("id, provider_amount")
+      .maybeSingle();
+    if (rec && req.provider_user_id) {
+      await adminDb.from("provider_splits").upsert({
+        payment_id: rec.id,
+        provider_user_id: req.provider_user_id,
+        amount: rec.provider_amount,
+        status: "transferred",
+        transferred_at: new Date().toISOString(),
+      }, { onConflict: "payment_id" });
+    }
+    const label = method === "card" ? "cartão" : "Pix";
+    if (req.client_user_id) await sendPush(env, req.client_user_id, "✅ Pagamento confirmado!", `Seu pagamento via ${label} foi aprovado.`);
+    if (req.provider_user_id) await sendPush(env, req.provider_user_id, "💳 Pagamento recebido!", `O pagamento via ${label} foi aprovado.`);
+  } else if ((payment.status === "rejected" || payment.status === "cancelled") && req.payment_status === "processing") {
+    await adminDb.from("service_requests")
+      .update({ payment_status: "rejected", payment_method: "card" })
+      .eq("id", serviceRequestId);
+    await adminDb.from("payments").update({ status: payment.status }).eq("mp_payment_id", String(payment.id));
+    if (req.client_user_id) await sendPush(env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
+  }
+}
+
+// ── Sincroniza o status de um pagamento de cartão (usado após o desafio 3DS) ──
+app.get("/v1/service-requests/:id/card-payment-status", async (c) => {
+  const clientId = c.get("userId");
+  if (!clientId) return c.json({ message: "Não autorizado." }, 401);
+  const id = c.req.param("id");
+  const mpPaymentId = c.req.query("mp_payment_id");
+  if (!mpPaymentId) return c.json({ message: "mp_payment_id obrigatório." }, 400);
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ message: "MP não configurado." }, 503);
+
+  const adminDb = db(c.env);
+  const { data: req } = await adminDb
+    .from("service_requests").select("client_user_id").eq("id", id).maybeSingle();
+  if (!req || req.client_user_id !== clientId) return c.json({ message: "Não autorizado." }, 403);
+
+  const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${mpPaymentId}`, {
+    headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
+  });
+  if (!mpRes.ok) return c.json({ message: "Não foi possível consultar o pagamento." }, 502);
+  const payment = await mpRes.json() as any;
+
+  await resolveCardPaymentFinal(c.env, payment);
+
+  return c.json({ status: payment.status, statusDetail: payment.status_detail });
+});
+
+// ── Sincroniza o pagamento de cartão pendente de uma SR (auto-curativo) ───────
+// Cliente OU prestador podem chamar. Acha o último pagamento NÃO recusado da SR,
+// consulta o MP e resolve (confirma/recusa + notifica + cria split). Usado quando
+// o webhook/polling não fechou o pagamento (ex.: 3DS concluído fora do app).
+app.get("/v1/service-requests/:id/sync-payment", async (c) => {
+  const userId = c.get("userId");
+  if (!userId) return c.json({ message: "Não autorizado." }, 401);
+  const id = c.req.param("id");
+
+  const adminDb = db(c.env);
+  const { data: req } = await adminDb
+    .from("service_requests")
+    .select("client_user_id, provider_user_id, payment_status")
+    .eq("id", id).maybeSingle();
+  if (!req) return c.json({ message: "Pedido não encontrado." }, 404);
+  if (req.client_user_id !== userId && req.provider_user_id !== userId) {
+    return c.json({ message: "Não autorizado." }, 403);
+  }
+  if (req.payment_status === "confirmed") return c.json({ payment_status: "confirmed" });
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ payment_status: req.payment_status });
+
+  const { data: pay } = await adminDb
+    .from("payments")
+    .select("mp_payment_id, status")
+    .eq("service_request_id", id)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  // Sem pagamento gravado (ou todos rejeitados) + SR travada em 'processing':
+  // o MP não chegou a registrar ou já rejeitou. Destrava para nova tentativa.
+  if (!pay?.mp_payment_id || pay.status === "rejected") {
+    if (req.payment_status === "processing") {
+      await adminDb.from("service_requests")
+        .update({ payment_status: "rejected" })
+        .eq("id", id);
+      return c.json({ payment_status: "rejected" });
+    }
+    return c.json({ payment_status: req.payment_status });
+  }
+
+  const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}`, {
+    headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` },
+  });
+  if (!mpRes.ok) return c.json({ payment_status: req.payment_status });
+  await resolveCardPaymentFinal(c.env, await mpRes.json());
+
+  const { data: after } = await adminDb
+    .from("service_requests").select("payment_status").eq("id", id).maybeSingle();
+  return c.json({ payment_status: after?.payment_status ?? req.payment_status });
+});
+
+// ── F1: Cartões salvos (Mercado Pago) ─────────────────────────────────────────
+// Persistimos só refs não sensíveis (PCI-DSS). Token é one-shot (tokenizado no
+// device); PAN/CVV nunca chegam ao backend. Authz por dono em TODAS as rotas
+// (deriva do JWT, nunca do body). saved_cards/app_users.mp_customer_id criados
+// na migration 20260615_saved_cards.sql.
+
+// Forma de resposta = SavedCard (packages/shared). Montado na mão p/ não acoplar.
+function toSavedCard(r: any) {
+  return {
+    id: r.id as string,
+    brand: (r.brand ?? null) as string | null,
+    last4: r.last4 as string,
+    expMonth: r.exp_month as number,
+    expYear: r.exp_year as number,
+    cardholderName: (r.cardholder_name ?? null) as string | null,
+    isDefault: !!r.is_default,
+  };
+}
+const SAVED_CARD_COLS = "id, brand, last4, exp_month, exp_year, cardholder_name, is_default";
+
+// Resultado discriminado: a borda HTTP (POST /v1/cards) mapeia para status; o
+// fluxo best-effort (create-card-payment) só loga em caso de falha.
+type SaveCardResult =
+  | { ok: true; card: ReturnType<typeof toSavedCard> }
+  | { ok: false; status: number; message: string; code?: string };
+
+// ensureMpCustomer — garante o customer 1:1 do usuário no MP (cria/recupera/grava).
+async function ensureMpCustomer(
+  env: Bindings,
+  userId: string,
+): Promise<{ ok: true; customerId: string } | { ok: false; status: number; message: string }> {
+  if (!env.MERCADOPAGO_ACCESS_TOKEN) {
+    return { ok: false, status: 503, message: "Integração com Mercado Pago não configurada." };
+  }
+  const adminDb = db(env);
+  const auth = `Bearer ${env.MERCADOPAGO_ACCESS_TOKEN}`;
+
+  const { data: user, error: uErr } = await adminDb
+    .from("app_users").select("email, mp_customer_id").eq("id", userId).maybeSingle();
+  if (uErr) return { ok: false, status: 500, message: uErr.message };
+  if (!user) return { ok: false, status: 404, message: "Usuário não encontrado." };
+
+  let customerId = (user.mp_customer_id ?? null) as string | null;
+  if (customerId) return { ok: true, customerId };
+
+  const custRes = await fetch("https://api.mercadopago.com/v1/customers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: auth },
+    body: JSON.stringify({ email: user.email }),
+  });
+  if (!custRes.ok) {
+    const detail = await custRes.text();
+    console.error("[cards] criar customer MP falhou", custRes.status, detail);
+    // MP recusa email já cadastrado como customer → recupera o existente
+    if (custRes.status === 409 || /already exist|customer.*exist/i.test(detail)) {
+      const searchRes = await fetch(
+        `https://api.mercadopago.com/v1/customers/search?email=${encodeURIComponent(user.email)}`,
+        { headers: { Authorization: auth } },
+      );
+      if (searchRes.ok) {
+        const sr = await searchRes.json() as { results?: Array<{ id: string }> };
+        customerId = sr.results?.[0]?.id ?? null;
+      }
+    }
+    if (!customerId) {
+      return { ok: false, status: 503, message: "Falha ao registrar cliente no provedor de pagamento." };
+    }
+  } else {
+    const cust = await custRes.json() as { id: string };
+    customerId = cust.id;
+  }
+  await adminDb.from("app_users").update({ mp_customer_id: customerId }).eq("id", userId);
+  return { ok: true, customerId };
+}
+
+// persistSavedCard — grava a ref não sensível de um cartão que JÁ existe no MP
+// como cartão do customer (tratando o preferido). Usado pelo POST /v1/cards
+// (cartão recém-criado via token) e pelo create-card-payment (cartão salvo
+// durante a cobrança → vem de payment.card, sem reusar o token one-shot).
+async function persistSavedCard(
+  env: Bindings,
+  userId: string,
+  customerId: string,
+  card: { mpCardId: string; brand: string | null; last4: string; expMonth: number; expYear: number; cardholderName: string | null },
+  setDefault: boolean,
+): Promise<SaveCardResult> {
+  const adminDb = db(env);
+
+  // 1º cartão sempre vira default.
+  const { count } = await adminDb
+    .from("saved_cards").select("id", { count: "exact", head: true }).eq("user_id", userId);
+  const makeDefault = setDefault === true || (count ?? 0) === 0;
+
+  // Insere SEM default primeiro: evita violar uq_saved_cards_default e evita
+  // deixar o usuário sem preferido caso o insert caia no UNIQUE(user_id,mp_card_id).
+  const { data: inserted, error: insErr } = await adminDb
+    .from("saved_cards")
+    .insert({
+      user_id: userId,
+      mp_customer_id: customerId,
+      mp_card_id: card.mpCardId,
+      brand: card.brand,
+      last4: card.last4,
+      exp_month: card.expMonth,
+      exp_year: card.expYear,
+      cardholder_name: card.cardholderName,
+      is_default: false,
+    })
+    .select(SAVED_CARD_COLS)
+    .maybeSingle();
+  if (insErr) {
+    if ((insErr as any).code === "23505") {
+      return { ok: false, status: 409, message: "Este cartão já está salvo." };
+    }
+    console.error("[cards] insert falhou", userId, insErr.message);
+    return { ok: false, status: 500, message: insErr.message };
+  }
+  if (!inserted) {
+    return { ok: false, status: 500, message: "Falha ao salvar cartão." };
+  }
+
+  if (makeDefault) {
+    // zera os demais antes de marcar este (índice parcial exige no máx. 1 true)
+    await adminDb.from("saved_cards")
+      .update({ is_default: false, updated_at: new Date().toISOString() })
+      .eq("user_id", userId).neq("id", inserted.id).eq("is_default", true);
+    await adminDb.from("saved_cards")
+      .update({ is_default: true, updated_at: new Date().toISOString() })
+      .eq("id", inserted.id);
+    inserted.is_default = true;
+  }
+
+  return { ok: true, card: toSavedCard(inserted) };
+}
+
+// saveCardForUser — cria o cartão no MP a partir de um token (one-shot, NÃO
+// consumido) e persiste a ref. Usado pelo POST /v1/cards (token fresco do device).
+// Authz por dono é responsabilidade do CHAMADOR (userId deriva do JWT).
+async function saveCardForUser(
+  env: Bindings,
+  userId: string,
+  token: string,
+  setDefault: boolean,
+): Promise<SaveCardResult> {
+  if (!env.MERCADOPAGO_ACCESS_TOKEN) {
+    return { ok: false, status: 503, message: "Integração com Mercado Pago não configurada." };
+  }
+  const auth = `Bearer ${env.MERCADOPAGO_ACCESS_TOKEN}`;
+
+  const cust = await ensureMpCustomer(env, userId);
+  if (!cust.ok) return cust;
+
+  const cardRes = await fetch(`https://api.mercadopago.com/v1/customers/${cust.customerId}/cards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: auth },
+    body: JSON.stringify({ token }),
+  });
+  if (!cardRes.ok) {
+    const detail = await cardRes.text();
+    console.error("[cards] salvar cartão MP falhou", cardRes.status, detail);
+    if (cardRes.status >= 400 && cardRes.status < 500) {
+      return {
+        ok: false,
+        status: 400,
+        message: "Não foi possível validar o cartão. Verifique os dados e tente novamente.",
+        code: "CARD_TOKEN_INVALID",
+      };
+    }
+    return { ok: false, status: 503, message: "Provedor de pagamento indisponível. Tente novamente." };
+  }
+  const mpCard = await cardRes.json() as {
+    id: string;
+    last_four_digits: string;
+    expiration_month: number;
+    expiration_year: number;
+    cardholder?: { name?: string };
+    payment_method?: { id?: string };
+  };
+
+  return persistSavedCard(env, userId, cust.customerId, {
+    mpCardId: mpCard.id,
+    brand: mpCard.payment_method?.id ?? null,
+    last4: mpCard.last_four_digits,
+    expMonth: mpCard.expiration_month,
+    expYear: mpCard.expiration_year,
+    cardholderName: mpCard.cardholder?.name ?? null,
+  }, setDefault);
+}
+
+// GET /v1/cards → cartões do usuário (preferido primeiro, depois mais recentes)
+app.get("/v1/cards", async (c) => {
+  const userId = c.get("userId");
+  const { data, error } = await db(c.env)
+    .from("saved_cards")
+    .select(SAVED_CARD_COLS)
+    .eq("user_id", userId)
+    .order("is_default", { ascending: false })
+    .order("created_at", { ascending: false });
+  if (error) {
+    console.error("[cards] erro ao listar", userId, error.message);
+    return c.json({ message: error.message }, 500);
+  }
+  return c.json({ cards: (data ?? []).map(toSavedCard) });
+});
+
+// POST /v1/cards { token, setDefault? } → tokeniza no MP e persiste a ref
+app.post("/v1/cards", async (c) => {
+  const userId = c.get("userId");
+  const body = await c.req.json<{ token?: string; setDefault?: boolean }>().catch(() => ({} as any));
+  if (!body.token || typeof body.token !== "string") {
+    return c.json({ message: "Campo obrigatório: token." }, 400);
+  }
+
+  const result = await saveCardForUser(c.env, userId, body.token, body.setDefault === true);
+  if (!result.ok) {
+    const payload: Record<string, unknown> = { message: result.message };
+    if (result.code) payload.code = result.code;
+    return c.json(payload, result.status as any);
+  }
+  return c.json({ card: result.card }, 201);
+});
+
+// DELETE /v1/cards/:id → confere dono, apaga no MP e remove; promove o + recente
+app.delete("/v1/cards/:id", async (c) => {
+  const userId = c.get("userId");
+  const cardId = c.req.param("id");
+  const adminDb = db(c.env);
+
+  const { data: card } = await adminDb
+    .from("saved_cards")
+    .select("id, mp_customer_id, mp_card_id, is_default")
+    .eq("id", cardId).eq("user_id", userId).maybeSingle();
+  if (!card) return c.json({ message: "Cartão não encontrado." }, 404);
+
+  if (c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    const delRes = await fetch(
+      `https://api.mercadopago.com/v1/customers/${card.mp_customer_id}/cards/${card.mp_card_id}`,
+      { method: "DELETE", headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` } },
+    );
+    // 404 no MP = já não existe lá; seguimos para limpar a ref local.
+    if (!delRes.ok && delRes.status !== 404) {
+      const detail = await delRes.text();
+      console.error("[cards] remover no MP falhou", delRes.status, detail);
+      return c.json({ message: "Provedor de pagamento indisponível. Tente novamente." }, 503);
+    }
+  } else {
+    // Sem MP configurado: ainda assim removemos a ref local (direito do dono, LGPD).
+    console.warn("[cards] MP não configurado; removendo apenas a ref local", cardId);
+  }
+
+  const { error: delErr } = await adminDb.from("saved_cards").delete().eq("id", cardId).eq("user_id", userId);
+  if (delErr) return c.json({ message: delErr.message }, 500);
+
+  if (card.is_default) {
+    const { data: next } = await adminDb
+      .from("saved_cards")
+      .select("id")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (next) {
+      await adminDb.from("saved_cards")
+        .update({ is_default: true, updated_at: new Date().toISOString() })
+        .eq("id", next.id);
+    }
+  }
+
+  return c.body(null, 204);
+});
+
+// PATCH /v1/cards/:id/default → confere dono; zera os demais e marca o alvo
+app.patch("/v1/cards/:id/default", async (c) => {
+  const userId = c.get("userId");
+  const cardId = c.req.param("id");
+  const adminDb = db(c.env);
+
+  const { data: card } = await adminDb
+    .from("saved_cards").select("id").eq("id", cardId).eq("user_id", userId).maybeSingle();
+  if (!card) return c.json({ message: "Cartão não encontrado." }, 404);
+
+  await adminDb.from("saved_cards")
+    .update({ is_default: false, updated_at: new Date().toISOString() })
+    .eq("user_id", userId).neq("id", cardId).eq("is_default", true);
+  const { data: updated, error } = await adminDb
+    .from("saved_cards")
+    .update({ is_default: true, updated_at: new Date().toISOString() })
+    .eq("id", cardId).eq("user_id", userId)
+    .select(SAVED_CARD_COLS).maybeSingle();
+  if (error) {
+    console.error("[cards] set default falhou", userId, error.message);
+    return c.json({ message: error.message }, 500);
+  }
+  return c.json({ card: toSavedCard(updated) });
+});
+
+// ── F2: Parcelas (consulta de payer_costs no MP) ──────────────────────────────
+// GET /v1/service-requests/:id/installments?bin=123456
+//   ou ?payment_method_id=visa  (cartão salvo só tem last4, não tem BIN)
+// Valor lido da SR NO SERVIDOR (nunca do client). Só o cliente dono da SR.
+app.get("/v1/service-requests/:id/installments", async (c) => {
+  const userId = c.get("userId");
+  const id = c.req.param("id");
+  const bin = c.req.query("bin");
+  const paymentMethodId = c.req.query("payment_method_id");
+
+  // Aceita bin OU payment_method_id; prefere bin quando ambos vierem.
+  if (bin && !/^\d{6,8}$/.test(bin)) {
+    return c.json({ message: "Parâmetro bin inválido (6 a 8 dígitos)." }, 400);
+  }
+  if (!bin && paymentMethodId && !/^[a-z0-9_-]{1,40}$/i.test(paymentMethodId)) {
+    return c.json({ message: "Parâmetro payment_method_id inválido." }, 400);
+  }
+  if (!bin && !paymentMethodId) {
+    return c.json({ message: "Informe bin ou payment_method_id." }, 400);
+  }
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
+  }
+
+  const adminDb = db(c.env);
+  const { data: sr } = await adminDb
+    .from("service_requests").select("quote_amount, client_user_id").eq("id", id).maybeSingle();
+  if (!sr) return c.json({ message: "Serviço não encontrado." }, 404);
+  if (sr.client_user_id !== userId) return c.json({ message: "Não autorizado." }, 403);
+  if (!sr.quote_amount || Number(sr.quote_amount) <= 0) {
+    return c.json({ message: "Valor do serviço não definido." }, 400);
+  }
+  const amount = Number(sr.quote_amount);
+
+  const selector = bin
+    ? `&bin=${bin}`
+    : `&payment_method_id=${encodeURIComponent(paymentMethodId as string)}`;
+  const mpRes = await fetch(
+    `https://api.mercadopago.com/v1/payment_methods/installments?amount=${amount}${selector}`,
+    { headers: { Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}` } },
+  );
+  if (!mpRes.ok) {
+    const detail = await mpRes.text();
+    console.error("[installments] consulta MP falhou", mpRes.status, detail);
+    return c.json({ message: "Não foi possível consultar as parcelas. Tente novamente." }, 503);
+  }
+  const arr = await mpRes.json() as Array<{
+    payment_method_id: string;
+    issuer?: { id?: string | number };
+    payer_costs?: Array<{ installments: number; installment_amount: number; total_amount: number; labels?: string[] }>;
+  }>;
+  const first = Array.isArray(arr) ? arr[0] : undefined;
+  if (!first) return c.json({ message: "Nenhuma opção de parcelamento para este cartão." }, 404);
+
+  // Forma de resposta = InstallmentsResponse (packages/shared)
+  return c.json({
+    paymentMethodId: first.payment_method_id,
+    issuerId: first.issuer?.id != null ? String(first.issuer.id) : "",
+    payerCosts: (first.payer_costs ?? []).map((pc) => ({
+      installments: pc.installments,
+      installmentAmount: pc.installment_amount,
+      totalAmount: pc.total_amount,
+      labels: pc.labels ?? [],
+    })),
   });
 });
 
@@ -1824,7 +2523,10 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     if (!mpRes.ok) return c.json({ ok: true });
 
     const payment = await mpRes.json() as any;
-    if (payment.status !== "approved") return c.json({ ok: true });
+    // Só agimos em estados FINAIS. in_process/pending aguardam o webhook final.
+    if (payment.status !== "approved" && payment.status !== "rejected" && payment.status !== "cancelled") {
+      return c.json({ ok: true });
+    }
 
     const serviceRequestId = payment.external_reference;
     if (!serviceRequestId) return c.json({ ok: true });
@@ -1839,9 +2541,35 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
 
     if (!req || req.payment_status === "confirmed") return c.json({ ok: true });
 
+    // Recusado/cancelado: se o pagamento estava EM PROCESSAMENTO, marca a SR como
+    // recusada e notifica o cliente (permite nova tentativa). Não mexe se já foi
+    // confirmada ou se há uma tentativa mais nova em curso.
+    if (payment.status !== "approved") {
+      if (req.payment_status === "processing") {
+        await adminDb
+          .from("service_requests")
+          .update({ payment_status: "rejected", payment_method: "card" })
+          .eq("id", serviceRequestId);
+        await adminDb.from("payments")
+          .update({ status: payment.status })
+          .eq("mp_payment_id", String(payment.id));
+        if (req.client_user_id) {
+          await sendPush(c.env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
+        }
+      }
+      return c.json({ ok: true });
+    }
+
+    // Deriva o método do próprio pagamento MP — NÃO forçar "pix", senão um
+    // pagamento de cartão que confirme via webhook seria marcado como Pix.
+    const mpType = String(payment.payment_type_id ?? "");
+    const derivedMethod = mpType.includes("card") ? "card" : mpType ? "pix" : null;
+    const srUpdate: Record<string, unknown> = { payment_status: "confirmed" };
+    if (derivedMethod) srUpdate.payment_method = derivedMethod;
+
     await adminDb
       .from("service_requests")
-      .update({ payment_status: "confirmed", payment_method: "pix" })
+      .update(srUpdate)
       .eq("id", serviceRequestId);
 
     // Atualizar registro de payment como aprovado e criar split para o prestador
@@ -1862,11 +2590,12 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       }, { onConflict: "payment_id" });
     }
 
+    const methodLabel = derivedMethod === "card" ? "cartão" : "Pix";
     if (req.client_user_id) {
-      await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", "Seu Pix foi aprovado automaticamente.");
+      await sendPush(c.env, req.client_user_id, "✅ Pagamento confirmado!", `Seu pagamento via ${methodLabel} foi aprovado automaticamente.`);
     }
     if (req.provider_user_id) {
-      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", "O pagamento via Pix foi aprovado. O cliente será notificado.");
+      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O pagamento via ${methodLabel} foi aprovado. O cliente será notificado.`);
     }
 
     return c.json({ ok: true });
@@ -2186,11 +2915,71 @@ app.get("/v1/admin/payments", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const { data } = await db(c.env)
     .from("service_requests")
-    .select("id, category, city, quote_amount, payment_status, payment_method, created_at, client_user_id, provider_user_id")
+    .select(`id, category, city, quote_amount, payment_status, payment_method, created_at, client_user_id, provider_user_id,
+      app_users!service_requests_client_user_id_fkey(full_name),
+      provider_profiles!service_requests_provider_user_id_fkey(full_name, business_name),
+      payments(mp_payment_id, created_at)`)
     .in("payment_status", ["client_paid", "confirmed"])
     .order("created_at", { ascending: false })
     .limit(300);
   return c.json({ data: data ?? [] });
+});
+
+// ── Admin: estornar pagamento (janela de 3 dias, só cartão) ──────────────────
+app.post("/v1/admin/payments/:requestId/refund", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const requestId = c.req.param("requestId");
+  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) return c.json({ message: "MP não configurado." }, 503);
+
+  const adminDb = db(c.env);
+  const { data: pay } = await adminDb
+    .from("payments")
+    .select("mp_payment_id, created_at, status")
+    .eq("service_request_id", requestId)
+    .eq("status", "approved")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!pay?.mp_payment_id) return c.json({ message: "Nenhum pagamento aprovado encontrado." }, 404);
+
+  // Janela de 3 dias (72 h).
+  const paidAt = new Date(pay.created_at).getTime();
+  if (Date.now() - paidAt > 72 * 60 * 60 * 1000) {
+    return c.json({ message: "Prazo de 3 dias para estorno expirado." }, 422);
+  }
+
+  const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}/refunds`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
+    },
+    body: "{}",
+  });
+
+  if (!mpRes.ok) {
+    const err = await mpRes.text();
+    console.error("[refund] MP retornou erro", mpRes.status, err);
+    return c.json({ message: "Erro ao estornar no Mercado Pago." }, 502);
+  }
+
+  // Reverte o status da SR e do pagamento.
+  await adminDb.from("service_requests")
+    .update({ payment_status: "refunded" })
+    .eq("id", requestId);
+  await adminDb.from("payments")
+    .update({ status: "refunded" })
+    .eq("mp_payment_id", pay.mp_payment_id);
+
+  // Notifica o cliente.
+  const { data: sr } = await adminDb
+    .from("service_requests").select("client_user_id").eq("id", requestId).maybeSingle();
+  if (sr?.client_user_id) {
+    await sendPush(c.env, sr.client_user_id, "💸 Estorno realizado", "O estorno do seu pagamento foi processado. O valor voltará em até 10 dias úteis.");
+  }
+
+  return c.json({ ok: true });
 });
 
 // ── Complaints (formal + low ratings + cancelled) ─────────────────────────

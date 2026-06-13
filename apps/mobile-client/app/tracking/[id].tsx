@@ -23,8 +23,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { useFlags } from '@/contexts/FeatureFlagsContext';
+import CardPaymentSheet from '@/components/CardPaymentSheet';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
+import { syncCardPayment } from '@/lib/api';
 
 type RequestStatus =
   | 'draft'
@@ -120,6 +122,8 @@ export default function TrackingScreen() {
   const [generatingPix, setGeneratingPix] = useState(false);
   const [pixQrCode, setPixQrCode] = useState<string | null>(null);
   const [pixCopiaECola, setPixCopiaECola] = useState<string | null>(null);
+  // Bottom-sheet de pagamento com cartão (atrás da flag card_saved_cards).
+  const [showCardSheet, setShowCardSheet] = useState(false);
 
   // Complaint state
   const [complaintModal, setComplaintModal] = useState(false);
@@ -148,6 +152,19 @@ export default function TrackingScreen() {
       .subscribe();
     return () => { cleanupRequest(); supabase.removeChannel(bidsChannel); };
   }, [id]);
+
+  // Auto-sync: quando a tela abre com pagamento em "processing", consulta o MP
+  // e resolve (confirma/recusa + notifica + split). Cobre o caso onde o webhook
+  // ou o polling do 3DS não fechou o pagamento.
+  useEffect(() => {
+    if (!id || !request) return;
+    if (request.payment_status !== 'processing') return;
+    syncCardPayment(String(id)).then((r) => {
+      if (r?.payment_status && r.payment_status !== request.payment_status) {
+        fetchRequest();
+      }
+    });
+  }, [id, request?.payment_status]);
 
   // Reload when screen regains focus (user navigates back to this screen)
   useFocusEffect(
@@ -373,7 +390,7 @@ export default function TrackingScreen() {
     setGeneratingPix(false);
   }
 
-  async function handleSendPayment() {
+  async function handleSendPayment(silent = false) {
     if (!request) return;
     setSendingPayment(true);
     // Pix e Cartão são confirmados automaticamente pelo sistema (o prestador
@@ -391,12 +408,14 @@ export default function TrackingScreen() {
         .eq('status', 'completed');
       if (!error) {
         setRequest(prev => prev ? { ...prev, payment_status: newStatus, payment_method: paymentMethod } : null);
-        Alert.alert(
-          autoConfirm ? 'Pagamento confirmado!' : 'Pagamento registrado!',
-          autoConfirm
-            ? 'O pagamento foi confirmado automaticamente e o prestador foi notificado.'
-            : 'Combine o pagamento em dinheiro com o prestador. Ele confirmará o recebimento.'
-        );
+        if (!silent) {
+          Alert.alert(
+            autoConfirm ? 'Pagamento confirmado!' : 'Pagamento registrado!',
+            autoConfirm
+              ? 'O pagamento foi confirmado automaticamente e o prestador foi notificado.'
+              : 'Combine o pagamento em dinheiro com o prestador. Ele confirmará o recebimento.'
+          );
+        }
       } else {
         Alert.alert('Erro', 'Não foi possível registrar o pagamento. Tente novamente.');
       }
@@ -637,7 +656,11 @@ export default function TrackingScreen() {
   const isCompleted = request?.status === 'completed';
   const paymentSent = request?.payment_status === 'client_paid';
   const paymentConfirmed = request?.payment_status === 'confirmed';
-  const needsPayment = isCompleted && !paymentSent && !paymentConfirmed;
+  const paymentProcessing = request?.payment_status === 'processing';
+  const paymentRejected = request?.payment_status === 'rejected';
+  // Em processamento, esconde o botão de pagar (evita cobrança dupla). Recusado
+  // volta a permitir pagamento (nova tentativa).
+  const needsPayment = isCompleted && !paymentSent && !paymentConfirmed && !paymentProcessing;
 
   // ── Completed state: full-screen card, no map ─────────────────────────────
   if (isCompleted && request) {
@@ -669,9 +692,19 @@ export default function TrackingScreen() {
               <View style={styles.completedCategoryBadge}>
                 <Text style={styles.completedCategoryText}>{CATEGORY_LABELS[request.category] ?? request.category}</Text>
               </View>
-              <View style={styles.completedDoneBadge}>
-                <Ionicons name="checkmark-done-outline" size={12} color={Colors.successGreen} />
-                <Text style={styles.completedDoneText}>Concluído</Text>
+              <View style={[styles.completedDoneBadge, {
+                backgroundColor: paymentConfirmed ? '#ECFDF5' : paymentRejected ? '#FEF2F2' : '#FFFBEB',
+              }]}>
+                <Ionicons
+                  name={paymentConfirmed ? 'checkmark-done-outline' : paymentProcessing ? 'hourglass-outline' : paymentRejected ? 'close-circle-outline' : 'time-outline'}
+                  size={12}
+                  color={paymentConfirmed ? Colors.successGreen : paymentRejected ? Colors.dangerRed : Colors.warningAmber}
+                />
+                <Text style={[styles.completedDoneText, {
+                  color: paymentConfirmed ? Colors.successGreen : paymentRejected ? Colors.dangerRed : Colors.warningAmber,
+                }]}>
+                  {paymentConfirmed ? 'Pago' : paymentProcessing ? 'Processando' : paymentRejected ? 'Pagto recusado' : 'Aguardando pagto'}
+                </Text>
               </View>
             </View>
 
@@ -821,7 +854,15 @@ export default function TrackingScreen() {
                   )}
                   <TouchableOpacity
                     style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-                    onPress={handleSendPayment}
+                    onPress={() => {
+                      // Flag ON + método cartão → abre o bottom-sheet (F4 mocks).
+                      // Caso contrário, mantém o comportamento atual (confirmação direta).
+                      if (paymentMethod === 'card' && flags.card_saved_cards) {
+                        setShowCardSheet(true);
+                      } else {
+                        handleSendPayment();
+                      }
+                    }}
                     disabled={sendingPayment}
                   >
                     {sendingPayment ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
@@ -941,6 +982,38 @@ export default function TrackingScreen() {
             </View>
           </KeyboardAvoidingView>
         </Modal>
+
+        {/* Bottom-sheet de pagamento com cartão (F5 — integração real, atrás da flag) */}
+        {flags.card_saved_cards && (
+          <CardPaymentSheet
+            visible={showCardSheet}
+            requestId={String(id)}
+            amount={Number(request.quote_amount ?? 0)}
+            onClose={() => {
+              setShowCardSheet(false);
+              // Re-busca o status real do backend (confirmed/processing/rejected),
+              // cobrindo a recusa síncrona sem depender só do Realtime.
+              fetchRequest();
+            }}
+            onApproved={() => {
+              setShowCardSheet(false);
+              // A cobrança já foi confirmada no backend (create-card-payment).
+              // Aqui só refletimos o estado localmente; o Realtime traz a confirmação
+              // definitiva (payment_status). NÃO escrevemos no banco daqui.
+              setRequest((prev) =>
+                prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
+              );
+            }}
+            onProcessing={() => {
+              setShowCardSheet(false);
+              // in_process: pagamento em análise. O resultado final (aprovado/recusado)
+              // chega pelo backend/Realtime (payment_status). Reflete "processing" local.
+              setRequest((prev) =>
+                prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
+              );
+            }}
+          />
+        )}
       </View>
     );
   }
@@ -1197,6 +1270,24 @@ export default function TrackingScreen() {
           </View>
         )}
 
+        {isCompleted && paymentProcessing && (
+          <View style={styles.paymentSentCard}>
+            <Ionicons name="hourglass-outline" size={18} color={Colors.warningAmber} />
+            <Text style={styles.paymentSentText}>
+              Pagamento em processamento. Avisaremos assim que for concluído.
+            </Text>
+          </View>
+        )}
+
+        {isCompleted && paymentRejected && (
+          <View style={[styles.paymentSentCard, { backgroundColor: '#FEF2F2' }]}>
+            <Ionicons name="close-circle" size={18} color={Colors.dangerRed} />
+            <Text style={styles.paymentSentText}>
+              Última cobrança recusada. Você pode tentar novamente abaixo.
+            </Text>
+          </View>
+        )}
+
         {/* Rating section */}
         {isCompleted && request?.client_rating == null && (
           <TouchableOpacity style={styles.ratingBannerCard} onPress={() => router.push(`/report/${id}` as any)}>
@@ -1308,7 +1399,7 @@ export default function TrackingScreen() {
                 )}
                 <TouchableOpacity
                   style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-                  onPress={handleSendPayment}
+                  onPress={() => handleSendPayment()}
                   disabled={sendingPayment}
                 >
                   {sendingPayment ? (

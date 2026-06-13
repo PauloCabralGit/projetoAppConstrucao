@@ -11,7 +11,7 @@ import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 interface ProviderStats {
   avg_score: number;

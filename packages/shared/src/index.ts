@@ -58,3 +58,56 @@ export interface DashboardMetric {
   value: string;
   trend: string;
 }
+
+// ── Pagamento com cartão (Mercado Pago) ──────────────────────────────────────
+// Apenas referências não sensíveis (PCI: PAN/CVV nunca trafegam ao backend).
+export interface SavedCard {
+  id: string;
+  brand: string | null;
+  last4: string;
+  expMonth: number;
+  expYear: number;
+  cardholderName: string | null;
+  isDefault: boolean;
+}
+
+export interface InstallmentOption {
+  installments: number;
+  installmentAmount: number;
+  totalAmount: number;
+  labels: string[];
+}
+
+export interface InstallmentsResponse {
+  paymentMethodId: string;
+  issuerId: string;
+  payerCosts: InstallmentOption[];
+}
+
+export interface CardPaymentRequest {
+  token: string;
+  installments: number;
+  payment_method_id: string;
+  issuer_id?: string;
+  payer_email: string;
+  payer_first_name?: string;
+  payer_last_name?: string;
+  payer_cpf?: string;
+  /** Device fingerprint do MP (MP_DEVICE_SESSION_ID) → header X-meli-session-id. */
+  device_id?: string;
+  save_card?: boolean;
+  idempotency_key: string;
+}
+
+export interface CardPaymentResult {
+  status: string;
+  statusDetail: string;
+  mpPaymentId: string;
+  amount: number;
+  platformFee: number;
+  mpFee: number;
+  providerAmount: number;
+  installments: number;
+  /** Desafio 3DS, quando o emissor exige autenticação adicional. */
+  threeDs?: { externalResourceUrl: string; creq: string };
+}

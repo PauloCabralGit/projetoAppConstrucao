@@ -20,7 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 
-const API_BASE = 'https://construconnect-api.orionsystem.workers.dev/v1';
+import { API_BASE } from '@/lib/config';
 
 // Jobs confirmed or dismissed by the provider this session — won't reappear on focus.
 const dismissedJobIds = new Set<string>();

@@ -8,6 +8,7 @@ import { supabase } from '@/lib/supabase';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ThemeProvider } from '@/contexts/ThemeContext';
 import { FeatureFlagsProvider, useFlags } from '@/contexts/FeatureFlagsContext';
+import { MpDeviceProbe } from '@/lib/mpDevice';
 import { VerificationGate } from '@/components/VerificationGate';
 import { ONBOARDING_KEY } from './onboarding';
 
@@ -278,6 +279,8 @@ export default function RootLayout() {
         <NotificationProvider>
           <RootLayoutInner blockedUntil={blockedUntil} />
           {authUserId && <VerificationGate userId={authUserId} role="client" />}
+          {/* WebView oculta que captura o device id do MP (antifraude). */}
+          <MpDeviceProbe />
         </NotificationProvider>
       </ThemeProvider>
     </FeatureFlagsProvider>
