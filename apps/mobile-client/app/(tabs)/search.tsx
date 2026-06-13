@@ -11,6 +11,7 @@ import {
   ScrollView,
   Image,
   Share,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router, useFocusEffect } from 'expo-router';
@@ -21,6 +22,14 @@ import { useTheme } from '@/contexts/ThemeContext';
 
 import { API_BASE } from '@/lib/config';
 const FAVORITES_KEY = 'client_favorite_providers';
+
+interface SponsoredProvider {
+  id: string;
+  provider_id: string;
+  categories: string[];
+  cities: string[];
+  priority: number;
+}
 
 interface Provider {
   id: string;
@@ -128,10 +137,23 @@ export default function SearchScreen() {
   const [portfolios, setPortfolios] = useState<Record<string, PortfolioPhoto[]>>({});
   const [loadingPortfolio, setLoadingPortfolio] = useState<string | null>(null);
   const [expandedPortfolio, setExpandedPortfolio] = useState<string | null>(null);
+  const [sponsoredIds, setSponsoredIds] = useState<Set<string>>(new Set());
+  const [showSponsoredInfo, setShowSponsoredInfo] = useState(false);
 
   const loadFavorites = useCallback(async () => {
     const favs = await getFavorites();
     setFavorites(favs);
+  }, []);
+
+  const fetchSponsored = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/ads/sponsored-providers`);
+      if (res.ok) {
+        const data = await res.json();
+        const ids = new Set<string>((data.data ?? []).map((s: SponsoredProvider) => s.provider_id));
+        setSponsoredIds(ids);
+      }
+    } catch {}
   }, []);
 
   const fetchProviders = useCallback(async () => {
@@ -154,8 +176,8 @@ export default function SearchScreen() {
 
   useEffect(() => {
     setLoading(true);
-    fetchProviders().finally(() => setLoading(false));
-  }, [fetchProviders]);
+    Promise.all([fetchProviders(), fetchSponsored()]).finally(() => setLoading(false));
+  }, [fetchProviders, fetchSponsored]);
 
   async function handleRefresh() {
     setRefreshing(true);
@@ -209,18 +231,34 @@ export default function SearchScreen() {
   });
 
   const favProviders = sortedAll.filter((p) => favorites.includes(p.id));
-  const otherProviders = sortedAll.filter((p) => !favorites.includes(p.id));
-  const sortedProviders = [...favProviders, ...otherProviders];
+  const nonFavProviders = sortedAll.filter((p) => !favorites.includes(p.id));
+
+  // Patrocinados: máx 2, excluindo favoritos (favorito sempre ganha posição natural)
+  const sponsoredNonFav = nonFavProviders.filter((p) => sponsoredIds.has(p.id)).slice(0, 2);
+  const organicProviders = nonFavProviders.filter((p) => !sponsoredIds.has(p.id));
+
+  const sortedProviders = [...favProviders, ...sponsoredNonFav, ...organicProviders];
 
   const activeFilters = (minRating > 0 ? 1 : 0) + (availableOnly ? 1 : 0) + (sortBy !== 'rating' ? 1 : 0);
 
   function renderProvider({ item }: { item: Provider }) {
     const isFav = favorites.includes(item.id);
+    const isSponsored = sponsoredIds.has(item.id) && !isFav;
     const availColor = AVAILABILITY_COLOR[item.availability] ?? Colors.textSecondary;
     const lastSeenLabel = formatLastSeen(item.lastSeenAt);
 
     return (
-      <View style={[styles.card, { backgroundColor: colors.cardWhite }]}>
+      <View style={[styles.card, { backgroundColor: colors.cardWhite }, isSponsored && styles.sponsoredCard]}>
+        {isSponsored && (
+          <View style={styles.sponsoredRow}>
+            <View style={styles.sponsoredBadge}>
+              <Text style={styles.sponsoredBadgeText}>Patrocinado</Text>
+            </View>
+            <TouchableOpacity onPress={() => setShowSponsoredInfo(true)} hitSlop={8}>
+              <Ionicons name="information-circle-outline" size={16} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        )}
         <View style={styles.cardHeader}>
           <View style={styles.avatar}>
             <Text style={styles.avatarText}>
@@ -460,6 +498,20 @@ export default function SearchScreen() {
         </View>
       )}
 
+      <Modal visible={showSponsoredInfo} transparent animationType="fade" onRequestClose={() => setShowSponsoredInfo(false)}>
+        <TouchableOpacity style={styles.adInfoOverlay} activeOpacity={1} onPress={() => setShowSponsoredInfo(false)}>
+          <View style={styles.adInfoSheet}>
+            <Text style={styles.adInfoTitle}>Por que vejo isso?</Text>
+            <Text style={styles.adInfoBody}>
+              Este profissional está pagando para aparecer em destaque na busca. Isso não afeta sua avaliação ou qualidade do serviço.
+            </Text>
+            <TouchableOpacity style={styles.adInfoCloseBtn} onPress={() => setShowSponsoredInfo(false)}>
+              <Text style={styles.adInfoCloseTxt}>Entendi</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={Colors.primary} />
@@ -692,4 +744,48 @@ const styles = StyleSheet.create({
   portfolioRow: { gap: 8, paddingBottom: 8 },
   portfolioThumb: { width: 80, height: 80, borderRadius: 10, backgroundColor: Colors.border },
   portfolioEmpty: { fontSize: 13, color: Colors.textSecondary, fontStyle: 'italic', paddingVertical: 8 },
+  sponsoredCard: {
+    borderWidth: 1.5,
+    borderColor: '#FED7AA',
+    backgroundColor: '#FFFBF5',
+  },
+  sponsoredRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  sponsoredBadge: {
+    backgroundColor: '#FFF4EE',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+  },
+  sponsoredBadgeText: { fontSize: 10, fontWeight: '700', color: '#C2410C', letterSpacing: 0.3 },
+  adInfoOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  adInfoSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 16,
+    padding: 24,
+    gap: 12,
+    width: '100%',
+  },
+  adInfoTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  adInfoBody: { fontSize: 14, color: Colors.textSecondary, lineHeight: 20 },
+  adInfoCloseBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+  },
+  adInfoCloseTxt: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
 });

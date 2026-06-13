@@ -11,6 +11,8 @@ import {
   Switch,
   Alert,
   TextInput,
+  Image,
+  Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { router } from 'expo-router';
@@ -19,6 +21,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { API_BASE } from '@/lib/config';
+import * as Linking from 'expo-linking';
+
+interface AdBanner {
+  id: string;
+  advertiser_name: string;
+  image_url: string;
+  link_url: string | null;
+}
 
 interface ServiceRequest {
   id: string;
@@ -83,9 +93,9 @@ export default function JobsScreen() {
   const [bidAmounts, setBidAmounts] = useState<Record<string, string>>({});
   const [biddingJob, setBiddingJob] = useState<string | null>(null);
   const [submittedBids, setSubmittedBids] = useState<Set<string>>(new Set());
-  // Bumped whenever the rejected set may have changed (e.g. on focus) so the
-  // memoized visible list re-applies the rejected filter against the Set.
   const [rejectedVersion, setRejectedVersion] = useState(0);
+  const [adBanner, setAdBanner] = useState<AdBanner | null>(null);
+  const [showAdInfo, setShowAdInfo] = useState(false);
 
   const fetchJobs = useCallback(async () => {
     const { data, error } = await supabase
@@ -108,6 +118,13 @@ export default function JobsScreen() {
     () => jobs.filter(j => !rejectedJobIds.has(j.id)),
     [jobs, rejectedVersion]
   );
+
+  useEffect(() => {
+    fetch(`${API_BASE}/ads/banners?placement=jobs&target=provider`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.data?.[0]) setAdBanner(d.data[0]); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     loadProvider();
@@ -368,6 +385,18 @@ export default function JobsScreen() {
               tintColor={Colors.primary}
             />
           }
+          ListHeaderComponent={adBanner ? (
+            <TouchableOpacity
+              activeOpacity={0.92}
+              style={styles.adBannerWrap}
+              onPress={() => adBanner.link_url ? Linking.openURL(adBanner.link_url).catch(() => {}) : null}
+            >
+              <Image source={{ uri: adBanner.image_url }} style={styles.adBannerImage} resizeMode="cover" />
+              <TouchableOpacity style={styles.adInfoBtn} onPress={() => setShowAdInfo(true)} hitSlop={8}>
+                <Ionicons name="information-circle-outline" size={18} color={Colors.textSecondary} />
+              </TouchableOpacity>
+            </TouchableOpacity>
+          ) : null}
           ItemSeparatorComponent={() => <View style={styles.separator} />}
           ListEmptyComponent={
             <View style={styles.emptyContainer}>
@@ -389,6 +418,20 @@ export default function JobsScreen() {
           }
         />
       )}
+
+      <Modal visible={showAdInfo} transparent animationType="fade" onRequestClose={() => setShowAdInfo(false)}>
+        <TouchableOpacity style={styles.adInfoOverlay} activeOpacity={1} onPress={() => setShowAdInfo(false)}>
+          <View style={styles.adInfoSheet}>
+            <Text style={styles.adInfoTitle}>Por que vejo isso?</Text>
+            <Text style={styles.adInfoBody}>
+              Este é um banner patrocinado por {adBanner?.advertiser_name || 'um anunciante'}. A ConstruConnect exibe propagandas para manter o aplicativo gratuito.
+            </Text>
+            <TouchableOpacity style={styles.adInfoCloseBtn} onPress={() => setShowAdInfo(false)}>
+              <Text style={styles.adInfoCloseTxt}>Entendi</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -640,4 +683,44 @@ const styles = StyleSheet.create({
     borderColor: '#A7F3D0',
   },
   bidSentText: { fontSize: 13, fontWeight: '600', color: Colors.successGreen },
+  adBannerWrap: {
+    height: 64,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginBottom: 12,
+    position: 'relative',
+  },
+  adBannerImage: { width: '100%', height: 64, borderRadius: 8 },
+  adInfoBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 6,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    borderRadius: 10,
+    padding: 2,
+  },
+  adInfoOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  adInfoSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 16,
+    padding: 24,
+    gap: 12,
+    width: '100%',
+  },
+  adInfoTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  adInfoBody: { fontSize: 14, color: Colors.textSecondary, lineHeight: 20 },
+  adInfoCloseBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+  },
+  adInfoCloseTxt: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
 });

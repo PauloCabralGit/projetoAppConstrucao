@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { VendasModule } from "./crm/modules/Vendas";
 import { MarketingModule } from "./crm/modules/Marketing";
+import { TeleMedicinaModule } from "./crm/modules/Telemedicina";
 import { FinanceiroModule } from "./crm/modules/Financeiro";
 import { RelatoriosModule } from "./crm/modules/Relatorios";
 import { JuridicoModule } from "./crm/modules/Juridico";
@@ -17,13 +18,14 @@ type Page =
   | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags" | "verifications"
   | "vendas" | "marketing" | "financeiro" | "relatorios"
   | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda"
-  | "acesso" | "auditoria";
+  | "acesso" | "auditoria"
+  | "telemedicina";
 
 // Mapeia cada página para a "área" de permissão correspondente.
 const PAGE_AREA: Record<Page, string> = {
   dashboard: "operacao", requests: "operacao", providers: "operacao", users: "operacao",
   payments: "operacao", complaints: "operacao", flags: "operacao", verifications: "operacao",
-  vendas: "vendas", marketing: "marketing", financeiro: "financeiro", relatorios: "relatorios",
+  vendas: "vendas", marketing: "marketing", financeiro: "financeiro", relatorios: "relatorios", telemedicina: "marketing",
   juridico: "juridico", rh: "rh", fornecedores: "fornecedores", suporte: "suporte", agenda: "agenda",
   acesso: "__master__",
   auditoria: "__master__",
@@ -1740,6 +1742,7 @@ const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: stri
     items: [
       { key: "vendas", label: "Vendas (CRM)", icon: "📈" },
       { key: "marketing", label: "Marketing", icon: "📣" },
+      { key: "telemedicina", label: "Telemedicina", icon: "🩺" },
     ],
   },
   {
@@ -2014,6 +2017,7 @@ export function App() {
           {page === "flags" && <FeatureFlagsPage adminKey={adminKey} />}
           {page === "vendas" && <VendasModule adminKey={adminKey} />}
           {page === "marketing" && <MarketingModule adminKey={adminKey} />}
+          {page === "telemedicina" && <TeleMedicinaModule adminKey={adminKey} />}
           {page === "financeiro" && <FinanceiroModule adminKey={adminKey} />}
           {page === "relatorios" && <RelatoriosModule adminKey={adminKey} />}
           {page === "juridico" && <JuridicoModule adminKey={adminKey} />}

@@ -75,14 +75,73 @@ function numField(v: string): number {
   return Number(v.replace(/[^\d]/g, "")) || 0;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// BANNERS externos
+// ═══════════════════════════════════════════════════════════════════════════
+
+type AdPlacement = "home" | "jobs";
+type AdTarget = "client" | "provider" | "both";
+
+interface AdBanner {
+  id: string;
+  title: string;
+  advertiser_name: string;
+  image_url: string;
+  link_url: string | null;
+  target: AdTarget;
+  placement: AdPlacement;
+  active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  priority: number;
+}
+
+function emptyBannerForm(): Omit<AdBanner, "id"> {
+  return { title: "", advertiser_name: "", image_url: "", link_url: null, target: "both", placement: "home", active: false, starts_at: null, ends_at: null, priority: 0 };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PRESTADORES PATROCINADOS
+// ═══════════════════════════════════════════════════════════════════════════
+
+interface SponsoredProvider {
+  id: string;
+  provider_id: string;
+  categories: string[];
+  cities: string[];
+  active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+  priority: number;
+  notes: string;
+}
+
+function emptySponsoredForm(): Omit<SponsoredProvider, "id"> {
+  return { provider_id: "", categories: [], cities: [], active: false, starts_at: null, ends_at: null, priority: 0, notes: "" };
+}
+
 export function MarketingModule({ adminKey }: { adminKey: string }) {
   const { items, add, update, remove } = useApiCollection<Campanha>(`${CRM_API_BASE}/mkt/campanhas`, adminKey);
   void SEED;
-  const [tab, setTab] = useState<"campanhas" | "canais">("campanhas");
+  const [tab, setTab] = useState<"campanhas" | "canais" | "banners" | "patrocinados">("campanhas");
 
   const [open, setOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [form, setForm] = useState<Omit<Campanha, "id">>(emptyForm);
+
+  // Banners state
+  const { items: banners, add: addBanner, update: updateBanner, remove: removeBanner } =
+    useApiCollection<AdBanner>(`${CRM_API_BASE}/mkt/banners`, adminKey);
+  const [bannerOpen, setBannerOpen] = useState(false);
+  const [bannerEditId, setBannerEditId] = useState<string | null>(null);
+  const [bannerForm, setBannerForm] = useState<Omit<AdBanner, "id">>(emptyBannerForm());
+
+  // Patrocinados state
+  const { items: sponsored, add: addSponsored, update: updateSponsored, remove: removeSponsored } =
+    useApiCollection<SponsoredProvider>(`${CRM_API_BASE}/mkt/sponsored`, adminKey);
+  const [sponsoredOpen, setSponsoredOpen] = useState(false);
+  const [sponsoredEditId, setSponsoredEditId] = useState<string | null>(null);
+  const [sponsoredForm, setSponsoredForm] = useState<Omit<SponsoredProvider, "id">>(emptySponsoredForm());
 
   // KPIs
   const investimento = items.reduce((s, c) => s + (c.gasto || 0), 0);
@@ -189,9 +248,11 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
         tabs={[
           { key: "campanhas", label: "Campanhas" },
           { key: "canais", label: "Canais" },
+          { key: "banners", label: "Banners" },
+          { key: "patrocinados", label: "Patrocinados" },
         ]}
         active={tab}
-        onChange={(k) => setTab(k as "campanhas" | "canais")}
+        onChange={(k) => setTab(k as "campanhas" | "canais" | "banners" | "patrocinados")}
       />
 
       {tab === "campanhas" && (
@@ -218,6 +279,133 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
           </SectionCard>
         </div>
       )}
+
+      {tab === "banners" && (
+        <SectionCard title="Banners externos" actions={<Button tone="green" onClick={() => { setBannerForm(emptyBannerForm()); setBannerEditId(null); setBannerOpen(true); }}>+ Novo banner</Button>}>
+          <DataTable
+            columns={[
+              { key: "title", label: "Título", render: (r: AdBanner) => <strong>{r.title}</strong> },
+              { key: "advertiser_name", label: "Anunciante", render: (r: AdBanner) => r.advertiser_name },
+              { key: "placement", label: "Posição", render: (r: AdBanner) => <Badge tone="info">{r.placement}</Badge> },
+              { key: "target", label: "Público", render: (r: AdBanner) => <Badge tone="purple">{r.target}</Badge> },
+              { key: "active", label: "Status", render: (r: AdBanner) => <Badge tone={r.active ? "green" : "gray"}>{r.active ? "Ativo" : "Inativo"}</Badge> },
+              { key: "priority", label: "Prioridade", align: "right" as const, render: (r: AdBanner) => r.priority },
+              { key: "acoes", label: "", align: "right" as const, render: (r: AdBanner) => <Button tone="ghost" size="sm" onClick={() => { const { id, ...rest } = r; setBannerForm(rest); setBannerEditId(id); setBannerOpen(true); }}>Editar</Button> },
+            ]}
+            rows={banners}
+            empty="Nenhum banner cadastrado."
+          />
+        </SectionCard>
+      )}
+
+      {tab === "patrocinados" && (
+        <SectionCard title="Prestadores patrocinados" actions={<Button tone="green" onClick={() => { setSponsoredForm(emptySponsoredForm()); setSponsoredEditId(null); setSponsoredOpen(true); }}>+ Novo patrocínio</Button>}>
+          <DataTable
+            columns={[
+              { key: "provider_id", label: "Provider ID", render: (r: SponsoredProvider) => <code style={{ fontSize: 11 }}>{r.provider_id.slice(0, 8)}…</code> },
+              { key: "categories", label: "Categorias", render: (r: SponsoredProvider) => r.categories.join(", ") || "—" },
+              { key: "cities", label: "Cidades", render: (r: SponsoredProvider) => r.cities.join(", ") || "—" },
+              { key: "active", label: "Status", render: (r: SponsoredProvider) => <Badge tone={r.active ? "green" : "gray"}>{r.active ? "Ativo" : "Inativo"}</Badge> },
+              { key: "priority", label: "Prioridade", align: "right" as const, render: (r: SponsoredProvider) => r.priority },
+              { key: "acoes", label: "", align: "right" as const, render: (r: SponsoredProvider) => <Button tone="ghost" size="sm" onClick={() => { const { id, ...rest } = r; setSponsoredForm(rest); setSponsoredEditId(id); setSponsoredOpen(true); }}>Editar</Button> },
+            ]}
+            rows={sponsored}
+            empty="Nenhum prestador patrocinado."
+          />
+        </SectionCard>
+      )}
+
+      {/* Modal Banner */}
+      <Modal
+        open={bannerOpen}
+        title={bannerEditId ? "Editar banner" : "Novo banner"}
+        onClose={() => setBannerOpen(false)}
+        wide
+        footer={
+          <>
+            {bannerEditId && <Button tone="danger" onClick={() => { if (bannerEditId) removeBanner(bannerEditId); setBannerOpen(false); }}>Excluir</Button>}
+            <span style={{ flex: 1 }} />
+            <Button tone="muted" onClick={() => setBannerOpen(false)}>Cancelar</Button>
+            <Button tone="green" onClick={() => { if (!bannerForm.title.trim() || !bannerForm.image_url.trim()) return; bannerEditId ? updateBanner(bannerEditId, bannerForm) : addBanner(bannerForm); setBannerOpen(false); }} disabled={!bannerForm.title.trim() || !bannerForm.image_url.trim()}>Salvar</Button>
+          </>
+        }
+      >
+        <Field label="Título">
+          <TextInput value={bannerForm.title} onChange={(v) => setBannerForm({ ...bannerForm, title: v })} placeholder="Ex.: Promoção Tintas Suvinil" />
+        </Field>
+        <Field label="Anunciante">
+          <TextInput value={bannerForm.advertiser_name} onChange={(v) => setBannerForm({ ...bannerForm, advertiser_name: v })} placeholder="Nome do anunciante" />
+        </Field>
+        <Field label="URL da imagem" hint="Deve começar com https://">
+          <TextInput value={bannerForm.image_url} onChange={(v) => setBannerForm({ ...bannerForm, image_url: v })} placeholder="https://cdn.anunciante.com/banner.jpg" />
+        </Field>
+        <Field label="URL de destino (opcional)">
+          <TextInput value={bannerForm.link_url ?? ""} onChange={(v) => setBannerForm({ ...bannerForm, link_url: v || null })} placeholder="https://anunciante.com/oferta" />
+        </Field>
+        <div className="crm-grid-2">
+          <Field label="Posição">
+            <Select value={bannerForm.placement} onChange={(v) => setBannerForm({ ...bannerForm, placement: v as AdPlacement })} options={[{ value: "home", label: "Home (cliente)" }, { value: "jobs", label: "Chamados (prestador)" }]} />
+          </Field>
+          <Field label="Público">
+            <Select value={bannerForm.target} onChange={(v) => setBannerForm({ ...bannerForm, target: v as AdTarget })} options={[{ value: "client", label: "Cliente" }, { value: "provider", label: "Prestador" }, { value: "both", label: "Ambos" }]} />
+          </Field>
+          <Field label="Prioridade" hint="Maior = aparece primeiro">
+            <TextInput value={String(bannerForm.priority)} onChange={(v) => setBannerForm({ ...bannerForm, priority: Number(v) || 0 })} type="number" placeholder="0" />
+          </Field>
+          <Field label="Status">
+            <Select value={bannerForm.active ? "true" : "false"} onChange={(v) => setBannerForm({ ...bannerForm, active: v === "true" })} options={[{ value: "false", label: "Inativo" }, { value: "true", label: "Ativo" }]} />
+          </Field>
+          <Field label="Início (opcional)">
+            <TextInput value={bannerForm.starts_at ?? ""} onChange={(v) => setBannerForm({ ...bannerForm, starts_at: v || null })} type="datetime-local" />
+          </Field>
+          <Field label="Fim (opcional)">
+            <TextInput value={bannerForm.ends_at ?? ""} onChange={(v) => setBannerForm({ ...bannerForm, ends_at: v || null })} type="datetime-local" />
+          </Field>
+        </div>
+      </Modal>
+
+      {/* Modal Patrocinado */}
+      <Modal
+        open={sponsoredOpen}
+        title={sponsoredEditId ? "Editar patrocínio" : "Novo patrocínio"}
+        onClose={() => setSponsoredOpen(false)}
+        wide
+        footer={
+          <>
+            {sponsoredEditId && <Button tone="danger" onClick={() => { if (sponsoredEditId) removeSponsored(sponsoredEditId); setSponsoredOpen(false); }}>Excluir</Button>}
+            <span style={{ flex: 1 }} />
+            <Button tone="muted" onClick={() => setSponsoredOpen(false)}>Cancelar</Button>
+            <Button tone="green" onClick={() => { if (!sponsoredForm.provider_id.trim()) return; sponsoredEditId ? updateSponsored(sponsoredEditId, sponsoredForm) : addSponsored(sponsoredForm); setSponsoredOpen(false); }} disabled={!sponsoredForm.provider_id.trim()}>Salvar</Button>
+          </>
+        }
+      >
+        <Field label="Provider ID (UUID)" hint="Copie da aba Prestadores">
+          <TextInput value={sponsoredForm.provider_id} onChange={(v) => setSponsoredForm({ ...sponsoredForm, provider_id: v })} placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+        </Field>
+        <div className="crm-grid-2">
+          <Field label="Categorias" hint="Separadas por vírgula">
+            <TextInput value={sponsoredForm.categories.join(", ")} onChange={(v) => setSponsoredForm({ ...sponsoredForm, categories: v.split(",").map(s => s.trim()).filter(Boolean) })} placeholder="hidraulica, eletrica" />
+          </Field>
+          <Field label="Cidades" hint="Separadas por vírgula">
+            <TextInput value={sponsoredForm.cities.join(", ")} onChange={(v) => setSponsoredForm({ ...sponsoredForm, cities: v.split(",").map(s => s.trim()).filter(Boolean) })} placeholder="São Paulo, Campinas" />
+          </Field>
+          <Field label="Prioridade">
+            <TextInput value={String(sponsoredForm.priority)} onChange={(v) => setSponsoredForm({ ...sponsoredForm, priority: Number(v) || 0 })} type="number" placeholder="0" />
+          </Field>
+          <Field label="Status">
+            <Select value={sponsoredForm.active ? "true" : "false"} onChange={(v) => setSponsoredForm({ ...sponsoredForm, active: v === "true" })} options={[{ value: "false", label: "Inativo" }, { value: "true", label: "Ativo" }]} />
+          </Field>
+          <Field label="Início (opcional)">
+            <TextInput value={sponsoredForm.starts_at ?? ""} onChange={(v) => setSponsoredForm({ ...sponsoredForm, starts_at: v || null })} type="datetime-local" />
+          </Field>
+          <Field label="Fim (opcional)">
+            <TextInput value={sponsoredForm.ends_at ?? ""} onChange={(v) => setSponsoredForm({ ...sponsoredForm, ends_at: v || null })} type="datetime-local" />
+          </Field>
+        </div>
+        <Field label="Notas internas">
+          <TextInput value={sponsoredForm.notes} onChange={(v) => setSponsoredForm({ ...sponsoredForm, notes: v })} placeholder="Ex.: Contrato #123, renova em Jan/27" />
+        </Field>
+      </Modal>
 
       {/* Modal CRUD */}
       <Modal

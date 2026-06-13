@@ -37,6 +37,16 @@ const speechAvailable = (() => {
 const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 import { API_BASE } from '@/lib/config';
+import * as Linking from 'expo-linking';
+
+interface AdBanner {
+  id: string;
+  title: string;
+  advertiser_name: string;
+  image_url: string;
+  link_url: string | null;
+  priority: number;
+}
 
 const CATEGORIES = [
   { key: 'alvenaria', label: 'Alvenaria', icon: 'layers-outline' },
@@ -86,6 +96,15 @@ export default function HomeScreen() {
   const [pickerDay, setPickerDay] = useState<number>(0);
   const [pickerTime, setPickerTime] = useState<string>('');
   const [listening, setListening] = useState(false);
+  const [adBanner, setAdBanner] = useState<AdBanner | null>(null);
+  const [showAdInfo, setShowAdInfo] = useState(false);
+
+  useEffect(() => {
+    fetch(`${API_BASE}/ads/banners?placement=home&target=client`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.data?.[0]) setAdBanner(d.data[0]); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     requestLocation();
@@ -416,6 +435,20 @@ export default function HomeScreen() {
 
       <View style={[styles.bottomCard, { backgroundColor: colors.cardWhite }]}>
         <View style={[styles.bottomCardHandle, { backgroundColor: colors.border }]} />
+
+        {adBanner && (
+          <TouchableOpacity
+            activeOpacity={0.92}
+            style={styles.adBannerWrap}
+            onPress={() => adBanner.link_url ? Linking.openURL(adBanner.link_url).catch(() => {}) : null}
+          >
+            <Image source={{ uri: adBanner.image_url }} style={styles.adBannerImage} resizeMode="cover" />
+            <TouchableOpacity style={styles.adInfoBtn} onPress={() => setShowAdInfo(true)} hitSlop={8}>
+              <Ionicons name="information-circle-outline" size={18} color={Colors.textSecondary} />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        )}
+
         <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Solicitar serviço</Text>
         <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>Selecione a categoria</Text>
 
@@ -582,6 +615,21 @@ export default function HomeScreen() {
           </View>
         )}
       </View>
+
+      {/* Ad info modal */}
+      <Modal visible={showAdInfo} transparent animationType="fade" onRequestClose={() => setShowAdInfo(false)}>
+        <TouchableOpacity style={styles.adInfoOverlay} activeOpacity={1} onPress={() => setShowAdInfo(false)}>
+          <View style={styles.adInfoSheet}>
+            <Text style={styles.adInfoTitle}>Por que vejo isso?</Text>
+            <Text style={styles.adInfoBody}>
+              Este é um banner patrocinado por {adBanner?.advertiser_name || 'um anunciante'}. A ConstruConnect exibe propagandas para manter o aplicativo gratuito.
+            </Text>
+            <TouchableOpacity style={styles.adInfoCloseBtn} onPress={() => setShowAdInfo(false)}>
+              <Text style={styles.adInfoCloseTxt}>Entendi</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Schedule modal */}
       <Modal visible={showScheduler} transparent animationType="slide" onRequestClose={() => setShowScheduler(false)}>
@@ -981,4 +1029,49 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   scheduleConfirmText: { fontSize: 15, fontWeight: '700', color: Colors.cardWhite },
+  adBannerWrap: {
+    height: 80,
+    borderRadius: 8,
+    overflow: 'hidden',
+    marginHorizontal: 0,
+    marginBottom: 12,
+    position: 'relative',
+  },
+  adBannerImage: {
+    width: '100%',
+    height: 80,
+    borderRadius: 8,
+  },
+  adInfoBtn: {
+    position: 'absolute',
+    top: 4,
+    right: 6,
+    backgroundColor: 'rgba(255,255,255,0.85)',
+    borderRadius: 10,
+    padding: 2,
+  },
+  adInfoOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 32,
+  },
+  adInfoSheet: {
+    backgroundColor: Colors.cardWhite,
+    borderRadius: 16,
+    padding: 24,
+    gap: 12,
+    width: '100%',
+  },
+  adInfoTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
+  adInfoBody: { fontSize: 14, color: Colors.textSecondary, lineHeight: 20 },
+  adInfoCloseBtn: {
+    alignSelf: 'flex-end',
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: Colors.primary,
+    borderRadius: 10,
+  },
+  adInfoCloseTxt: { fontSize: 14, fontWeight: '700', color: Colors.cardWhite },
 });
