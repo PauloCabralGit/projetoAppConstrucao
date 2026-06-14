@@ -21,6 +21,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 import { API_BASE } from '@/lib/config';
+import { useFlags } from '@/contexts/FeatureFlagsContext';
 import * as Linking from 'expo-linking';
 
 interface AdBanner {
@@ -82,6 +83,7 @@ function timeAgo(dateStr: string): string {
 }
 
 export default function JobsScreen() {
+  const { provider_bidding } = useFlags();
   const [jobs, setJobs] = useState<ServiceRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -295,7 +297,7 @@ export default function JobsScreen() {
           </View>
         </View>
 
-        {submittedBids.has(item.id) ? (
+        {provider_bidding && (submittedBids.has(item.id) ? (
           <View style={styles.bidSentBanner}>
             <Ionicons name="checkmark-circle" size={16} color={Colors.successGreen} />
             <Text style={styles.bidSentText}>Orçamento enviado — aguardando cliente</Text>
@@ -323,7 +325,7 @@ export default function JobsScreen() {
                 : <Text style={styles.bidSubmitText}>Enviar</Text>}
             </TouchableOpacity>
           </View>
-        )}
+        ))}
 
         <TouchableOpacity
           style={styles.viewButton}

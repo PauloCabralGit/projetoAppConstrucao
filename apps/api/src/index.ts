@@ -373,6 +373,8 @@ app.get("/health", (c) => c.json({
 // ── Push notification helper ───────────────────────────────────────────────
 async function sendPush(env: Bindings, userId: string, title: string, body: string) {
   try {
+    const pushFlag = await env.FEATURE_FLAGS.get("push_notifications", "json") as { enabled: boolean } | null;
+    if (pushFlag != null && !pushFlag.enabled) return;
     const { data, error: dbErr } = await db(env)
       .from("app_users")
       .select("push_token")
@@ -581,7 +583,20 @@ app.patch("/v1/service-requests/:id/cancel", async (c) => {
     return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
   }
 
-  const { error } = await db(c.env)
+  const adminDb = db(c.env);
+
+  const { data: sr } = await adminDb
+    .from("service_requests")
+    .select("status, payment_status, client_user_id")
+    .eq("id", jobId)
+    .maybeSingle();
+
+  if (!sr) return c.json({ message: "Pedido não encontrado." }, 404);
+  if (sr.client_user_id !== body.client_user_id) return c.json({ message: "Não autorizado." }, 403);
+  if (sr.status === "completed") return c.json({ message: "Não é possível cancelar um pedido já concluído." }, 422);
+  if (sr.status === "cancelled") return c.json({ message: "Pedido já cancelado." }, 409);
+
+  const { error } = await adminDb
     .from("service_requests")
     .update({ status: "cancelled" })
     .eq("id", jobId)
@@ -589,7 +604,63 @@ app.patch("/v1/service-requests/:id/cancel", async (c) => {
 
   if (error) return c.json({ message: error.message }, 400);
 
-  return c.json({ message: "Pedido cancelado com sucesso." });
+  // Estorno automático apenas se o pagamento já foi confirmado
+  let refund_status: "none" | "ok" | "failed" = "none";
+
+  if (sr.payment_status === "confirmed" && c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    const { data: pay } = await adminDb
+      .from("payments")
+      .select("mp_payment_id")
+      .eq("service_request_id", jobId)
+      .eq("status", "approved")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (pay?.mp_payment_id) {
+      try {
+        const mpRes = await fetch(
+          `https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}/refunds`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
+            },
+            body: "{}",
+          }
+        );
+
+        if (mpRes.ok) {
+          await adminDb
+            .from("service_requests")
+            .update({ payment_status: "refunded" })
+            .eq("id", jobId);
+          await adminDb
+            .from("payments")
+            .update({ status: "refunded" })
+            .eq("mp_payment_id", pay.mp_payment_id);
+          refund_status = "ok";
+        } else {
+          await adminDb
+            .from("service_requests")
+            .update({ payment_status: "refund_failed" })
+            .eq("id", jobId);
+          refund_status = "failed";
+          console.error("[Refund] MP error:", mpRes.status, "jobId:", jobId, "mp_id:", pay.mp_payment_id);
+        }
+      } catch (err) {
+        await adminDb
+          .from("service_requests")
+          .update({ payment_status: "refund_failed" })
+          .eq("id", jobId);
+        refund_status = "failed";
+        console.error("[Refund] Exception:", err, "jobId:", jobId);
+      }
+    }
+  }
+
+  return c.json({ message: "Pedido cancelado com sucesso.", refund_status });
 });
 
 app.post("/v1/service-requests", async (c) => {
@@ -1351,7 +1422,7 @@ app.post("/v1/service-requests/:id/rate", async (c) => {
 
   const { data: req } = await db(c.env)
     .from("service_requests")
-    .select("provider_user_id, client_rating, status, client_user_id")
+    .select("provider_user_id, client_rating, status, client_user_id, payment_status")
     .eq("id", id)
     .maybeSingle();
 
@@ -1359,6 +1430,7 @@ app.post("/v1/service-requests/:id/rate", async (c) => {
   if (req.status !== "completed") return c.json({ message: "Serviço não concluído." }, 400);
   if (req.client_rating != null) return c.json({ message: "Pedido já avaliado." }, 400);
   if (req.client_user_id !== body.client_user_id) return c.json({ message: "Não autorizado." }, 403);
+  if (req.payment_status !== "confirmed") return c.json({ message: "Avalie após a confirmação do pagamento." }, 422);
 
   await db(c.env)
     .from("service_requests")
@@ -3562,6 +3634,11 @@ app.post("/v1/complaints", async (c) => {
 
 // ── Bids: provider submits a bid ──────────────────────────────────────────
 app.post("/v1/service-requests/:id/bids", async (c) => {
+  const biddingFlag = await c.env.FEATURE_FLAGS.get("provider_bidding", "json") as { enabled: boolean } | null;
+  if (biddingFlag != null && !biddingFlag.enabled) {
+    return c.json({ message: "Sistema de lances desabilitado." }, 503);
+  }
+
   const requestId = c.req.param("id");
   const body = await c.req.json<{
     provider_user_id: string;
@@ -3920,76 +3997,9 @@ app.get("/v1/providers/:id/subscription", async (c) => {
   });
 });
 
-// Criar / atualizar assinatura Pro ou Premium
+// Planos pagos descontinuados — todos os prestadores operam no plano básico.
 app.post("/v1/providers/:id/subscription", async (c) => {
-  const providerId = c.req.param("id");
-  const userId = c.get("userId");
-  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
-
-  const body = await c.req.json<{ plan: string; payer_email: string }>().catch(() => ({} as any));
-  const planId = body.plan as PlanId;
-  if (!planId || !(planId in PLAN_CONFIG)) {
-    return c.json({ message: "Plano inválido. Use: free, pro ou premium." }, 400);
-  }
-
-  // Plano free → apenas atualizar no banco, sem MP
-  if (planId === "free") {
-    await db(c.env).from("provider_subscriptions").upsert({
-      provider_user_id: providerId,
-      plan: "free",
-      status: "active",
-      commission_rate: 0.10,
-      mp_subscription_id: null,
-      current_period_end: null,
-    }, { onConflict: "provider_user_id" });
-    return c.json({ plan: "free", message: "Plano gratuito ativado." });
-  }
-
-  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
-    return c.json({ message: "Integração com MercadoPago não configurada." }, 503);
-  }
-
-  const planConf = PLAN_CONFIG[planId];
-
-  // Criar preapproval no MP
-  const mpRes = await fetch("https://api.mercadopago.com/preapproval", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
-    },
-    body: JSON.stringify({
-      reason: `ConstruConnect — Plano ${planConf.label}`,
-      auto_recurring: {
-        frequency: 1,
-        frequency_type: "months",
-        transaction_amount: planConf.price,
-        currency_id: "BRL",
-      },
-      back_url: "construconnect://subscription-success",
-      payer_email: body.payer_email,
-      external_reference: providerId,
-    }),
-  });
-
-  if (!mpRes.ok) {
-    const err = await mpRes.text();
-    return c.json({ message: `Erro MercadoPago: ${err}` }, 400);
-  }
-
-  const mpSub = await mpRes.json() as { id: string; init_point: string; status: string };
-
-  // Salvar assinatura pendente
-  await db(c.env).from("provider_subscriptions").upsert({
-    provider_user_id: providerId,
-    plan: planId,
-    status: "pending",
-    commission_rate: planConf.commission,
-    mp_subscription_id: mpSub.id,
-    current_period_end: null,
-  }, { onConflict: "provider_user_id" });
-
-  return c.json({ initPoint: mpSub.init_point, subscriptionId: mpSub.id });
+  return c.json({ message: "Planos pagos descontinuados. Todos os prestadores operam no plano básico (10% de comissão)." }, 410);
 });
 
 // Webhook de assinatura MP (preapproval)

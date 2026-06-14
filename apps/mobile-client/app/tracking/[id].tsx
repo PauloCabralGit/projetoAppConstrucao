@@ -26,7 +26,7 @@ import { useFlags } from '@/contexts/FeatureFlagsContext';
 import CardPaymentSheet from '@/components/CardPaymentSheet';
 
 import { API_BASE } from '@/lib/config';
-import { syncCardPayment } from '@/lib/api';
+import { syncCardPayment, fetchSavedCards } from '@/lib/api';
 
 type RequestStatus =
   | 'draft'
@@ -189,9 +189,11 @@ export default function TrackingScreen() {
   useEffect(() => {
     if (!request?.provider_user_id) return;
     loadProviderProfile(request.provider_user_id);
-    const cleanupLocation = subscribeToProviderLocation(request.provider_user_id);
+    const cleanupLocation = flags.provider_tracking
+      ? subscribeToProviderLocation(request.provider_user_id)
+      : () => {};
     return () => { cleanupLocation(); };
-  }, [request?.provider_user_id]);
+  }, [request?.provider_user_id, flags.provider_tracking]);
 
   useEffect(() => {
     if (providerLocation) {
@@ -320,6 +322,21 @@ export default function TrackingScreen() {
 
   async function handleAcceptQuote() {
     if (!request) return;
+
+    // Gate de cartão: verificar antes de aceitar o orçamento
+    const cards = await fetchSavedCards().catch(() => [] as Awaited<ReturnType<typeof fetchSavedCards>>);
+    if (cards.length === 0) {
+      Alert.alert(
+        'Cartão necessário',
+        'Adicione um cartão de crédito ou débito antes de aceitar o orçamento.',
+        [
+          { text: 'Adicionar cartão', onPress: () => setShowCardSheet(true) },
+          { text: 'Cancelar', style: 'cancel' },
+        ]
+      );
+      return;
+    }
+
     setAcceptingQuote(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
@@ -332,6 +349,8 @@ export default function TrackingScreen() {
         .select('id');
       if (!error && updated && updated.length > 0) {
         setRequest(prev => prev ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted' } : null);
+        // Abre o pagamento imediatamente após aceitar o orçamento
+        setShowCardSheet(true);
       } else {
         Alert.alert('Erro', 'Não foi possível aceitar o orçamento. Tente novamente.');
       }
@@ -654,13 +673,14 @@ export default function TrackingScreen() {
     request?.status !== 'completed';
 
   const isCompleted = request?.status === 'completed';
+  const isAccepted = request?.status === 'accepted';
   const paymentSent = request?.payment_status === 'client_paid';
   const paymentConfirmed = request?.payment_status === 'confirmed';
   const paymentProcessing = request?.payment_status === 'processing';
   const paymentRejected = request?.payment_status === 'rejected';
-  // Em processamento, esconde o botão de pagar (evita cobrança dupla). Recusado
-  // volta a permitir pagamento (nova tentativa).
-  const needsPayment = isCompleted && !paymentSent && !paymentConfirmed && !paymentProcessing;
+  // Pagamento agora ocorre no aceite do orçamento, não na conclusão.
+  // Em processamento (3DS), esconde o botão para evitar cobrança dupla.
+  const needsPayment = isAccepted && !paymentConfirmed && !paymentProcessing;
 
   // ── Completed state: full-screen card, no map ─────────────────────────────
   if (isCompleted && request) {
@@ -792,88 +812,13 @@ export default function TrackingScreen() {
                   R$ {Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
                 </Text>
               )}
-              <Text style={styles.paymentMethodLabel}>Forma de pagamento</Text>
-              <View style={styles.paymentMethodRow}>
-                {(['pix', 'cash', 'card'] as const).filter(m =>
-                  !(m === 'pix' && !flags.pix_payments) && !(m === 'cash' && !flags.cash_payments)
-                ).map((m) => (
-                  <TouchableOpacity
-                    key={m}
-                    style={[styles.methodChip, paymentMethod === m && styles.methodChipActive]}
-                    onPress={() => setPaymentMethod(m)}
-                  >
-                    <Ionicons
-                      name={m === 'pix' ? 'qr-code-outline' : m === 'cash' ? 'cash-outline' : 'card-outline'}
-                      size={16}
-                      color={paymentMethod === m ? Colors.cardWhite : Colors.textPrimary}
-                    />
-                    <Text style={[styles.methodChipText, paymentMethod === m && styles.methodChipTextActive]}>
-                      {m === 'pix' ? 'Pix' : m === 'cash' ? 'Dinheiro' : 'Cartão'}
-                    </Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-              {paymentMethod === 'pix' && !pixCopiaECola && (
-                <TouchableOpacity
-                  style={[styles.generatePixBtn, generatingPix && styles.btnDisabled]}
-                  onPress={handleGeneratePix}
-                  disabled={generatingPix}
-                >
-                  {generatingPix ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
-                    <>
-                      <Ionicons name="qr-code-outline" size={18} color={Colors.cardWhite} />
-                      <Text style={styles.generatePixBtnText}>Gerar QR Code Pix</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              )}
-              {paymentMethod === 'pix' && pixCopiaECola && (
-                <View style={styles.pixQrSection}>
-                  {!!pixQrCode && (
-                    <Image source={{ uri: `data:image/png;base64,${pixQrCode}` }} style={styles.pixQrImage} resizeMode="contain" />
-                  )}
-                  <Text style={styles.pixCopiaLabel}>Pix Copia e Cola</Text>
-                  <Text style={styles.pixCopiaText} numberOfLines={2}>{pixCopiaECola}</Text>
-                  <TouchableOpacity style={styles.sharePixBtn} onPress={() => Share.share({ message: pixCopiaECola })}>
-                    <Ionicons name="copy-outline" size={16} color={Colors.darkNavy} />
-                    <Text style={styles.sharePixBtnText}>Copiar código</Text>
-                  </TouchableOpacity>
-                  <View style={styles.pixAwaitingRow}>
-                    <ActivityIndicator size="small" color={Colors.warningAmber} />
-                    <Text style={styles.pixAwaitingText}>Aguardando confirmação do banco...</Text>
-                  </View>
-                </View>
-              )}
-              {paymentMethod !== 'pix' && (
-                <>
-                  {paymentMethod === 'cash' && providerProfile?.pix_key && (
-                    <View style={styles.pixKeyBox}>
-                      <Text style={styles.pixKeyLabel}>Chave Pix do prestador</Text>
-                      <Text style={styles.pixKeyValue}>{providerProfile.pix_key}</Text>
-                    </View>
-                  )}
-                  <TouchableOpacity
-                    style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-                    onPress={() => {
-                      // Flag ON + método cartão → abre o bottom-sheet (F4 mocks).
-                      // Caso contrário, mantém o comportamento atual (confirmação direta).
-                      if (paymentMethod === 'card' && flags.card_saved_cards) {
-                        setShowCardSheet(true);
-                      } else {
-                        handleSendPayment();
-                      }
-                    }}
-                    disabled={sendingPayment}
-                  >
-                    {sendingPayment ? <ActivityIndicator color={Colors.cardWhite} size="small" /> : (
-                      <>
-                        <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                        <Text style={styles.sendPaymentBtnText}>{paymentMethod === 'card' ? 'Pagar com cartão' : 'Confirmar pagamento enviado'}</Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </>
-              )}
+              <TouchableOpacity
+                style={styles.sendPaymentBtn}
+                onPress={() => setShowCardSheet(true)}
+              >
+                <Ionicons name="card-outline" size={18} color={Colors.cardWhite} />
+                <Text style={styles.sendPaymentBtnText}>Pagar com cartão</Text>
+              </TouchableOpacity>
             </View>
           )}
 
@@ -983,37 +928,27 @@ export default function TrackingScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        {/* Bottom-sheet de pagamento com cartão (F5 — integração real, atrás da flag) */}
-        {flags.card_saved_cards && (
-          <CardPaymentSheet
-            visible={showCardSheet}
-            requestId={String(id)}
-            amount={Number(request.quote_amount ?? 0)}
-            onClose={() => {
-              setShowCardSheet(false);
-              // Re-busca o status real do backend (confirmed/processing/rejected),
-              // cobrindo a recusa síncrona sem depender só do Realtime.
-              fetchRequest();
-            }}
-            onApproved={() => {
-              setShowCardSheet(false);
-              // A cobrança já foi confirmada no backend (create-card-payment).
-              // Aqui só refletimos o estado localmente; o Realtime traz a confirmação
-              // definitiva (payment_status). NÃO escrevemos no banco daqui.
-              setRequest((prev) =>
-                prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
-              );
-            }}
-            onProcessing={() => {
-              setShowCardSheet(false);
-              // in_process: pagamento em análise. O resultado final (aprovado/recusado)
-              // chega pelo backend/Realtime (payment_status). Reflete "processing" local.
-              setRequest((prev) =>
-                prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
-              );
-            }}
-          />
-        )}
+        <CardPaymentSheet
+          visible={showCardSheet}
+          requestId={String(id)}
+          amount={Number(request.quote_amount ?? 0)}
+          onClose={() => {
+            setShowCardSheet(false);
+            fetchRequest();
+          }}
+          onApproved={() => {
+            setShowCardSheet(false);
+            setRequest((prev) =>
+              prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
+            );
+          }}
+          onProcessing={() => {
+            setShowCardSheet(false);
+            setRequest((prev) =>
+              prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
+            );
+          }}
+        />
       </View>
     );
   }
@@ -1289,7 +1224,7 @@ export default function TrackingScreen() {
         )}
 
         {/* Rating section */}
-        {isCompleted && request?.client_rating == null && (
+        {isCompleted && request?.client_rating == null && paymentConfirmed && (
           <TouchableOpacity style={styles.ratingBannerCard} onPress={() => router.push(`/report/${id}` as any)}>
             <Ionicons name="star-outline" size={22} color={Colors.warningAmber} />
             <View style={{ flex: 1 }}>
@@ -1326,93 +1261,13 @@ export default function TrackingScreen() {
                 R$ {Number(request!.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
               </Text>
             )}
-            <Text style={styles.paymentMethodLabel}>Forma de pagamento</Text>
-            <View style={styles.paymentMethodRow}>
-              {(['pix', 'cash', 'card'] as const).filter(m =>
-                !(m === 'pix' && !flags.pix_payments) && !(m === 'cash' && !flags.cash_payments)
-              ).map((m) => (
-                <TouchableOpacity
-                  key={m}
-                  style={[styles.methodChip, paymentMethod === m && styles.methodChipActive]}
-                  onPress={() => setPaymentMethod(m)}
-                >
-                  <Ionicons
-                    name={m === 'pix' ? 'qr-code-outline' : m === 'cash' ? 'cash-outline' : 'card-outline'}
-                    size={16}
-                    color={paymentMethod === m ? Colors.cardWhite : Colors.textPrimary}
-                  />
-                  <Text style={[styles.methodChipText, paymentMethod === m && styles.methodChipTextActive]}>
-                    {m === 'pix' ? 'Pix' : m === 'cash' ? 'Dinheiro' : 'Cartão'}
-                  </Text>
-                </TouchableOpacity>
-              ))}
-            </View>
-            {paymentMethod === 'pix' && !pixCopiaECola && (
-              <TouchableOpacity
-                style={[styles.generatePixBtn, generatingPix && styles.btnDisabled]}
-                onPress={handleGeneratePix}
-                disabled={generatingPix}
-              >
-                {generatingPix ? (
-                  <ActivityIndicator color={Colors.cardWhite} size="small" />
-                ) : (
-                  <>
-                    <Ionicons name="qr-code-outline" size={18} color={Colors.cardWhite} />
-                    <Text style={styles.generatePixBtnText}>Gerar QR Code Pix</Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            )}
-
-            {paymentMethod === 'pix' && pixCopiaECola && (
-              <View style={styles.pixQrSection}>
-                {!!pixQrCode && (
-                  <Image
-                    source={{ uri: `data:image/png;base64,${pixQrCode}` }}
-                    style={styles.pixQrImage}
-                    resizeMode="contain"
-                  />
-                )}
-                <Text style={styles.pixCopiaLabel}>Pix Copia e Cola</Text>
-                <Text style={styles.pixCopiaText} numberOfLines={2}>{pixCopiaECola}</Text>
-                <TouchableOpacity
-                  style={styles.sharePixBtn}
-                  onPress={() => Share.share({ message: pixCopiaECola })}
-                >
-                  <Ionicons name="copy-outline" size={16} color={Colors.darkNavy} />
-                  <Text style={styles.sharePixBtnText}>Compartilhar / Copiar código</Text>
-                </TouchableOpacity>
-                <View style={styles.pixAwaitingRow}>
-                  <ActivityIndicator size="small" color={Colors.warningAmber} />
-                  <Text style={styles.pixAwaitingText}>Aguardando confirmação do banco...</Text>
-                </View>
-              </View>
-            )}
-
-            {paymentMethod !== 'pix' && (
-              <>
-                {paymentMethod === 'cash' && providerProfile?.pix_key && (
-                  <View style={styles.pixKeyBox}>
-                    <Text style={styles.pixKeyLabel}>Chave Pix do prestador (para referência)</Text>
-                    <Text style={styles.pixKeyValue}>{providerProfile.pix_key}</Text>
-                  </View>
-                )}
-                <TouchableOpacity
-                  style={[styles.sendPaymentBtn, sendingPayment && styles.btnDisabled]}
-                  onPress={() => handleSendPayment()}
-                  disabled={sendingPayment}
-                >
-                  {sendingPayment ? (
-                    <ActivityIndicator color={Colors.cardWhite} size="small" />
-                  ) : (
-                    <>
-                      <Ionicons name="checkmark-circle-outline" size={18} color={Colors.cardWhite} />
-                      <Text style={styles.sendPaymentBtnText}>{paymentMethod === 'card' ? 'Pagar com cartão' : 'Confirmar pagamento enviado'}</Text>
-                    </>
-                  )}
-                </TouchableOpacity>
-              </>
-            )}
+            <TouchableOpacity
+              style={styles.sendPaymentBtn}
+              onPress={() => setShowCardSheet(true)}
+            >
+              <Ionicons name="card-outline" size={18} color={Colors.cardWhite} />
+              <Text style={styles.sendPaymentBtnText}>Pagar com cartão</Text>
+            </TouchableOpacity>
           </View>
         )}
 
