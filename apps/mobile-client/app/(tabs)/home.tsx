@@ -16,7 +16,7 @@ import {
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -108,11 +108,13 @@ export default function HomeScreen() {
       .catch(() => {});
   }, []);
 
-  useEffect(() => {
+  // Re-verifica a cada vez que a tela ganha foco (inclusive ao voltar do perfil
+  // após adicionar um cartão).
+  useFocusEffect(useCallback(() => {
     fetchSavedCards()
       .then(cards => setHasCard(cards.length > 0))
       .catch(() => setHasCard(null));
-  }, []);
+  }, []));
 
   useEffect(() => {
     requestLocation();
