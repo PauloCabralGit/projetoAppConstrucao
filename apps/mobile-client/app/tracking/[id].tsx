@@ -529,32 +529,38 @@ export default function TrackingScreen() {
         return;
       }
 
-      await supabase.from('bids').update({ status: 'accepted' }).eq('id', bidId);
-      await supabase.from('bids').update({ status: 'rejected' }).eq('request_id', id).neq('id', bidId);
-
+      // Prepara a SR para pagamento: define valor, prestador e quote_status='quoted'
+      // SEM mudar o status para 'accepted' — isso só acontece após o pagamento ser capturado.
       const { error, data: updated } = await supabase
         .from('service_requests')
         .update({
           provider_user_id: bid.provider_user_id,
           quote_amount: bid.amount,
-          status: 'accepted',
-          quote_status: 'accepted',
+          quote_status: 'quoted',
         })
         .eq('id', id)
         .select('id');
 
       if (error || !updated || updated.length === 0) {
-        Alert.alert('Erro', 'Não foi possível aceitar o orçamento.');
-      } else {
-        setRequest(prev =>
-          prev
-            ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted', quote_amount: bid.amount, provider_user_id: bid.provider_user_id }
-            : null
-        );
-        await loadBids();
-        // Notifica o prestador via API (sem bloquear o fluxo)
-        fetch(`${API_BASE}/service-requests/${id}/bids/${bidId}/accept`, { method: 'PATCH' }).catch(() => {});
+        Alert.alert('Erro', 'Não foi possível processar o orçamento.');
+        setAcceptingBidId(null);
+        return;
       }
+
+      // Marca o lance selecionado e rejeita os demais (UI)
+      await supabase.from('bids').update({ status: 'accepted' }).eq('id', bidId);
+      await supabase.from('bids').update({ status: 'rejected' }).eq('request_id', id).neq('id', bidId);
+
+      // Atualiza estado local com valor do lance — o CardPaymentSheet usará esse amount
+      setRequest(prev =>
+        prev
+          ? { ...prev, quote_amount: bid.amount, provider_user_id: bid.provider_user_id, quote_status: 'quoted' }
+          : null
+      );
+
+      // Abre o pagamento. Só após aprovação o backend seta status='accepted'
+      // e envia a notificação ao prestador para ir ao local.
+      setShowCardSheet(true);
     } catch {
       Alert.alert('Erro de conexão', 'Verifique sua internet.');
     }
@@ -1129,8 +1135,8 @@ export default function TrackingScreen() {
           <Text style={[styles.statusLabel, { color: statusConf.color }]}>{statusConf.label}</Text>
         </View>
 
-        {/* Bids section — show when waiting for provider */}
-        {request?.status === 'requested' && bids.length > 0 && (
+        {/* Bids section — oculto quando um lance já foi selecionado (aguardando pagamento) */}
+        {request?.status === 'requested' && request?.quote_status !== 'quoted' && bids.length > 0 && (
           <View style={styles.bidsSection}>
             <Text style={styles.bidsSectionTitle}>
               {bids.length} orçamento{bids.length !== 1 ? 's' : ''} recebido{bids.length !== 1 ? 's' : ''}

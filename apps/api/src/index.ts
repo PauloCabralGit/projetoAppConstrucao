@@ -3723,24 +3723,21 @@ app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
     .eq("request_id", requestId)
     .neq("id", bidId);
 
-  // Assign provider and quote to the request
+  // Prepara a SR para o pagamento: define prestador, valor e quote_status='quoted'.
+  // NÃO muda status para 'accepted' — isso só ocorre após a captura do pagamento
+  // via create-card-payment, que também notifica o prestador para ir ao local.
   const { error } = await db(c.env)
     .from("service_requests")
     .update({
       provider_user_id: bid.provider_user_id,
       quote_amount: bid.amount,
-      status: "accepted",
-      quote_status: "accepted",
+      quote_status: "quoted",
     })
     .eq("id", requestId);
 
   if (error) return c.json({ message: error.message }, 400);
 
-  // Notify winning provider
-  const amtStr = `R$ ${Number(bid.amount).toFixed(2).replace(".", ",")}`;
-  await sendPush(c.env, bid.provider_user_id, "✅ Seu orçamento foi aceito!", `O cliente aceitou seu orçamento de ${amtStr}. Prepare-se para o serviço!`);
-
-  return c.json({ message: "Bid aceito. Prestador atribuído ao chamado." });
+  return c.json({ message: "Lance selecionado. Aguardando pagamento do cliente." });
 });
 
 // ── US-012: Cálculo de saldo (compartilhado entre /balance e /withdrawal) ──────
