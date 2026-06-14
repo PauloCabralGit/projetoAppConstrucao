@@ -800,27 +800,6 @@ export default function TrackingScreen() {
             )}
           </View>
 
-          {/* Payment form (if not yet paid) */}
-          {needsPayment && (
-            <View style={styles.paymentCard}>
-              <View style={styles.paymentCardHeader}>
-                <Ionicons name="card-outline" size={18} color={Colors.darkNavy} />
-                <Text style={styles.paymentCardTitle}>Realizar pagamento</Text>
-              </View>
-              {request.quote_amount != null && (
-                <Text style={styles.paymentCardAmount}>
-                  R$ {Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                </Text>
-              )}
-              <TouchableOpacity
-                style={styles.sendPaymentBtn}
-                onPress={() => setShowCardSheet(true)}
-              >
-                <Ionicons name="card-outline" size={18} color={Colors.cardWhite} />
-                <Text style={styles.sendPaymentBtnText}>Pagar com cartão</Text>
-              </TouchableOpacity>
-            </View>
-          )}
 
           {/* Photos by type */}
           {clientPhotos.length > 0 && (
@@ -928,27 +907,6 @@ export default function TrackingScreen() {
           </KeyboardAvoidingView>
         </Modal>
 
-        <CardPaymentSheet
-          visible={showCardSheet}
-          requestId={String(id)}
-          amount={Number(request.quote_amount ?? 0)}
-          onClose={() => {
-            setShowCardSheet(false);
-            fetchRequest();
-          }}
-          onApproved={() => {
-            setShowCardSheet(false);
-            setRequest((prev) =>
-              prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
-            );
-          }}
-          onProcessing={() => {
-            setShowCardSheet(false);
-            setRequest((prev) =>
-              prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
-            );
-          }}
-        />
       </View>
     );
   }
@@ -1064,7 +1022,7 @@ export default function TrackingScreen() {
           </View>
         )}
 
-        {/* Accepted bid — show agreed price while provider is on the way */}
+        {/* Accepted bid — orçamento aceito + status de pagamento */}
         {request?.status === 'accepted' && request?.quote_amount != null && (
           <View style={styles.acceptedBidCard}>
             <View style={styles.acceptedBidHeader}>
@@ -1074,7 +1032,44 @@ export default function TrackingScreen() {
             <Text style={styles.acceptedBidAmount}>
               R$ {Number(request.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
             </Text>
-            <Text style={styles.acceptedBidNote}>O profissional está a caminho</Text>
+
+            {/* Status do pagamento — substituiu o botão "Pagar com cartão" */}
+            {paymentConfirmed && (
+              <View style={styles.paymentStatusRow}>
+                <Ionicons name="lock-closed" size={15} color={Colors.successGreen} />
+                <Text style={[styles.paymentStatusText, { color: Colors.successGreen }]}>
+                  Pagamento garantido via cartão ✓
+                </Text>
+              </View>
+            )}
+            {paymentProcessing && (
+              <View style={styles.paymentStatusRow}>
+                <ActivityIndicator size="small" color={Colors.warningAmber} />
+                <Text style={[styles.paymentStatusText, { color: Colors.warningAmber }]}>
+                  Processando pagamento...
+                </Text>
+              </View>
+            )}
+            {paymentRejected && (
+              <>
+                <View style={styles.paymentStatusRow}>
+                  <Ionicons name="close-circle" size={15} color={Colors.dangerRed} />
+                  <Text style={[styles.paymentStatusText, { color: Colors.dangerRed }]}>
+                    Pagamento recusado
+                  </Text>
+                </View>
+                <TouchableOpacity
+                  style={[styles.sendPaymentBtn, { marginTop: 8 }]}
+                  onPress={() => setShowCardSheet(true)}
+                >
+                  <Ionicons name="refresh-outline" size={16} color={Colors.cardWhite} />
+                  <Text style={styles.sendPaymentBtnText}>Tentar novamente</Text>
+                </TouchableOpacity>
+              </>
+            )}
+            {!paymentConfirmed && !paymentProcessing && !paymentRejected && (
+              <Text style={styles.acceptedBidNote}>O profissional está a caminho</Text>
+            )}
           </View>
         )}
 
@@ -1250,26 +1245,6 @@ export default function TrackingScreen() {
           </View>
         )}
 
-        {needsPayment && (
-          <View style={styles.paymentCard}>
-            <View style={styles.paymentCardHeader}>
-              <Ionicons name="card-outline" size={18} color={Colors.darkNavy} />
-              <Text style={styles.paymentCardTitle}>Realizar pagamento</Text>
-            </View>
-            {request!.quote_amount != null && (
-              <Text style={styles.paymentCardAmount}>
-                R$ {Number(request!.quote_amount).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-              </Text>
-            )}
-            <TouchableOpacity
-              style={styles.sendPaymentBtn}
-              onPress={() => setShowCardSheet(true)}
-            >
-              <Ionicons name="card-outline" size={18} color={Colors.cardWhite} />
-              <Text style={styles.sendPaymentBtnText}>Pagar com cartão</Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
         {/* Evidence photos */}
         {clientPhotos.length > 0 && (
@@ -1466,6 +1441,29 @@ export default function TrackingScreen() {
           )}
         </View>
       </Modal>
+
+      {/* Sheet de pagamento — disponível em qualquer estado do pedido */}
+      <CardPaymentSheet
+        visible={showCardSheet}
+        requestId={String(id)}
+        amount={Number(request?.quote_amount ?? 0)}
+        onClose={() => {
+          setShowCardSheet(false);
+          fetchRequest();
+        }}
+        onApproved={() => {
+          setShowCardSheet(false);
+          setRequest((prev) =>
+            prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
+          );
+        }}
+        onProcessing={() => {
+          setShowCardSheet(false);
+          setRequest((prev) =>
+            prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
+          );
+        }}
+      />
     </View>
   );
 }
@@ -1499,6 +1497,13 @@ const styles = StyleSheet.create({
   acceptedBidTitle: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
   acceptedBidAmount: { fontSize: 28, fontWeight: '800', color: Colors.textPrimary },
   acceptedBidNote: { fontSize: 13, color: Colors.textSecondary },
+  paymentStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  paymentStatusText: { fontSize: 13, fontWeight: '600' },
   reopenBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: Colors.primary, borderRadius: 12, height: 48,
