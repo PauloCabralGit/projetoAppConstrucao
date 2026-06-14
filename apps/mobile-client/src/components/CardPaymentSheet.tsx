@@ -421,6 +421,7 @@ export default function CardPaymentSheet({
     setResult(null);
     setRejectedDetail(null);
     setPayErrorKind(null);
+    setSavedCvv(''); // força reinserção do CVV ao trocar de cartão
     setStep(cards.length > 0 ? 'list' : 'new');
   }
 
@@ -630,9 +631,10 @@ export default function CardPaymentSheet({
                   if (result) {
                     if (result.status === 'in_process' || result.status === 'pending' || result.status === 'authorized') {
                       onProcessing?.(result);
-                    } else {
+                    } else if (result.status === 'approved') {
                       onApproved?.(result);
                     }
+                    // status === 'rejected' ou qualquer outro: não chama onApproved
                   }
                   onClose();
                 }}

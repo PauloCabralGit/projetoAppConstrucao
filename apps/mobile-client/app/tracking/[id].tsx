@@ -1441,7 +1441,8 @@ export default function TrackingScreen() {
           setShowCardSheet(false);
           fetchRequest();
         }}
-        onApproved={() => {
+        onApproved={(result) => {
+          if (result?.status !== 'approved') return; // guarda: nunca aceitar com status não-aprovado
           setShowCardSheet(false);
           // Espelha o que o servidor faz: aceita o chamado e confirma o pagamento.
           // O realtime vai confirmar; atualizamos localmente para UX imediata.
