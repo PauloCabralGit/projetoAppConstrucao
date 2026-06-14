@@ -38,6 +38,7 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 import { API_BASE } from '@/lib/config';
 import * as Linking from 'expo-linking';
+import { fetchSavedCards } from '@/lib/api';
 
 interface AdBanner {
   id: string;
@@ -98,12 +99,19 @@ export default function HomeScreen() {
   const [listening, setListening] = useState(false);
   const [adBanner, setAdBanner] = useState<AdBanner | null>(null);
   const [showAdInfo, setShowAdInfo] = useState(false);
+  const [hasCard, setHasCard] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/ads/banners?placement=home&target=client`)
       .then(r => r.ok ? r.json() : null)
       .then(d => { if (d?.data?.[0]) setAdBanner(d.data[0]); })
       .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    fetchSavedCards()
+      .then(cards => setHasCard(cards.length > 0))
+      .catch(() => setHasCard(null));
   }, []);
 
   useEffect(() => {
@@ -311,6 +319,24 @@ export default function HomeScreen() {
       return;
     }
 
+    // Gate de cartão: pagamento é garantido via cartão ao aceitar o orçamento.
+    // Sem cartão cadastrado → avisar e pedir confirmação antes de criar o pedido.
+    if (hasCard === false) {
+      Alert.alert(
+        'Cartão necessário para pagamento',
+        'O pagamento é feito via cartão ao aceitar o orçamento. Você ainda não tem cartão — poderá cadastrar na hora do aceite.\n\nDeseja continuar com a solicitação?',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Continuar', onPress: () => submitRequest() },
+        ]
+      );
+      return;
+    }
+
+    await submitRequest();
+  }
+
+  async function submitRequest() {
     setSubmitting(true);
 
     const { data: { user } } = await supabase.auth.getUser();
@@ -377,6 +403,7 @@ export default function HomeScreen() {
         }),
       }).catch(() => {});
 
+      setHasCard(true); // após criar pedido, marca que terá cartão (ou já tem)
       setSubmitting(false);
       setSelectedCategory('');
       setDescription('');
@@ -451,6 +478,20 @@ export default function HomeScreen() {
 
         <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Solicitar serviço</Text>
         <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>Selecione a categoria</Text>
+
+        {hasCard === false && (
+          <TouchableOpacity
+            style={styles.noCardBanner}
+            onPress={() => router.push('/(tabs)/profile')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="card-outline" size={16} color="#92400e" />
+            <Text style={styles.noCardBannerText}>
+              Nenhum cartão cadastrado. O pagamento é garantido via cartão ao aceitar o orçamento.
+            </Text>
+            <Ionicons name="chevron-forward" size={14} color="#92400e" />
+          </TouchableOpacity>
+        )}
 
         <ScrollView
           horizontal
@@ -766,6 +807,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.textSecondary,
     marginBottom: 12,
+  },
+  noCardBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fef3c7',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+  },
+  noCardBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#92400e',
+    lineHeight: 17,
   },
   categoriesScroll: {
     paddingRight: 8,

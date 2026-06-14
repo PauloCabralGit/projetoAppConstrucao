@@ -11,6 +11,8 @@ import { Colors } from '@/constants/colors';
 import { useTheme } from '@/contexts/ThemeContext';
 
 import { API_BASE } from '@/lib/config';
+import { fetchSavedCards, deleteSavedCard, setDefaultCard } from '@/lib/api';
+import type { SavedCard } from '@construconnect/shared';
 
 interface UserProfile {
   full_name: string;
@@ -46,6 +48,9 @@ export default function ProfileScreen() {
   const [saveError, setSaveError] = useState('');
   const [telemedicine, setTelemedicine] = useState<{ partner_name: string; partner_description: string; access_url?: string; verified: boolean } | null>(null);
   const [showTelemedicineSheet, setShowTelemedicineSheet] = useState(false);
+  const [cards, setCards] = useState<SavedCard[]>([]);
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [showCardsSheet, setShowCardsSheet] = useState(false);
 
   useEffect(() => { loadProfile(); }, []);
 
@@ -100,6 +105,32 @@ export default function ProfileScreen() {
       .catch(() => {});
 
     setLoading(false);
+  }
+
+  async function loadCards() {
+    setLoadingCards(true);
+    fetchSavedCards()
+      .then(setCards)
+      .catch(() => {})
+      .finally(() => setLoadingCards(false));
+  }
+
+  async function handleDeleteCard(id: string) {
+    Alert.alert('Remover cartão', 'Deseja remover este cartão?', [
+      { text: 'Cancelar', style: 'cancel' },
+      {
+        text: 'Remover', style: 'destructive',
+        onPress: async () => {
+          await deleteSavedCard(id).catch(() => {});
+          setCards(prev => prev.filter(c => c.id !== id));
+        },
+      },
+    ]);
+  }
+
+  async function handleSetDefault(id: string) {
+    await setDefaultCard(id).catch(() => {});
+    setCards(prev => prev.map(c => ({ ...c, isDefault: c.id === id })));
   }
 
   async function handleTelemedicineAccess() {
@@ -277,6 +308,64 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </Modal>
 
+        <TouchableOpacity
+          style={styles.faqBtn}
+          onPress={() => { loadCards(); setShowCardsSheet(true); }}
+        >
+          <Ionicons name="card-outline" size={22} color={Colors.primary} />
+          <Text style={styles.faqBtnText}>Meus Cartões</Text>
+          <Ionicons name="chevron-forward" size={18} color={Colors.textSecondary} />
+        </TouchableOpacity>
+
+        {/* Sheet de gerenciamento de cartões salvos */}
+        <Modal visible={showCardsSheet} transparent animationType="slide" onRequestClose={() => setShowCardsSheet(false)}>
+          <TouchableOpacity style={styles.telemedicineOverlay} activeOpacity={1} onPress={() => setShowCardsSheet(false)}>
+            <View style={[styles.telemedicineSheet, { paddingBottom: 32 }]}>
+              <View style={styles.telemedicineSheetHandle} />
+              <Text style={[styles.telemedicineSheetTitle, { marginBottom: 4 }]}>Meus Cartões</Text>
+              <Text style={[styles.telemedicineSheetDesc, { marginBottom: 16 }]}>
+                O pagamento é reservado no cartão ao aceitar o orçamento e confirmado ao concluir o serviço.
+              </Text>
+              {loadingCards ? (
+                <ActivityIndicator color={Colors.primary} style={{ marginVertical: 16 }} />
+              ) : cards.length === 0 ? (
+                <View style={{ alignItems: 'center', gap: 8, marginVertical: 16 }}>
+                  <Ionicons name="card-outline" size={36} color={Colors.textSecondary} />
+                  <Text style={{ color: Colors.textSecondary, fontSize: 14, textAlign: 'center' }}>
+                    Nenhum cartão cadastrado.{'\n'}Você poderá adicionar ao aceitar um orçamento.
+                  </Text>
+                </View>
+              ) : (
+                cards.map(card => (
+                  <View key={card.id} style={styles.cardItem}>
+                    <Ionicons name="card" size={22} color={Colors.primary} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.cardItemLabel}>
+                        •••• {card.last4}
+                        {card.isDefault ? '  ✓ Padrão' : ''}
+                      </Text>
+                      <Text style={styles.cardItemSub}>
+                        {card.brand?.toUpperCase() ?? 'CARTÃO'} · vence {card.expMonth}/{card.expYear}
+                      </Text>
+                    </View>
+                    {!card.isDefault && (
+                      <TouchableOpacity onPress={() => handleSetDefault(card.id)} hitSlop={8}>
+                        <Text style={{ fontSize: 12, color: Colors.primary, fontWeight: '600' }}>Padrão</Text>
+                      </TouchableOpacity>
+                    )}
+                    <TouchableOpacity onPress={() => handleDeleteCard(card.id)} hitSlop={8} style={{ marginLeft: 8 }}>
+                      <Ionicons name="trash-outline" size={18} color={Colors.dangerRed} />
+                    </TouchableOpacity>
+                  </View>
+                ))
+              )}
+              <TouchableOpacity onPress={() => setShowCardsSheet(false)} style={{ marginTop: 8 }}>
+                <Text style={styles.telemedicineCancelTxt}>Fechar</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
         <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/(tabs)/faq' as any)}>
           <Ionicons name="help-circle-outline" size={22} color={Colors.primary} />
           <Text style={styles.faqBtnText}>FAQ e Suporte</Text>
@@ -446,6 +535,18 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
   },
   faqBtnText: { flex: 1, fontSize: 15, fontWeight: '600', color: Colors.textPrimary },
+  cardItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: Colors.background,
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+    width: '100%',
+  },
+  cardItemLabel: { fontSize: 14, fontWeight: '700', color: Colors.textPrimary },
+  cardItemSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
   themeCard: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     backgroundColor: Colors.cardWhite, borderRadius: 14, padding: 16,
