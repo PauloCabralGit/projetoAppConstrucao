@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import * as Clipboard from 'expo-clipboard';
 import {
   View,
   Text,
@@ -93,6 +94,9 @@ function build3dsHtml(url: string, creq: string): string {
 </body></html>`;
 }
 
+// Sessão de pagamento expira após 15 minutos de inatividade por segurança.
+const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
+
 export default function CardPaymentSheet({
   visible,
   requestId = '',
@@ -106,6 +110,7 @@ export default function CardPaymentSheet({
 }: CardPaymentSheetProps) {
   const isAddCardMode = mode === 'add_card';
   const [step, setStep] = useState<CardStep>(isAddCardMode ? 'new' : 'list');
+  const sessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Cartões salvos ──────────────────────────────────────────────────────
   const [cards, setCards] = useState<SavedCard[]>([]);
@@ -167,9 +172,17 @@ export default function CardPaymentSheet({
     }
   }, []);
 
-  // Reinicia tudo ao abrir.
+  // Reinicia tudo ao abrir; inicia timer de sessão. Limpa clipboard ao fechar.
   useEffect(() => {
-    if (!visible) return;
+    if (!visible) {
+      // Ao fechar, limpa qualquer dado sensível que possa estar na área de transferência.
+      Clipboard.setStringAsync('').catch(() => {});
+      if (sessionTimerRef.current) {
+        clearTimeout(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+      return;
+    }
     setStep(isAddCardMode ? 'new' : 'list');
     setSavedCvv('');
     setNumber('');
@@ -194,7 +207,19 @@ export default function CardPaymentSheet({
     setManageMode(false);
     setCardActionId(null);
     loadCards();
-  }, [visible, loadCards]);
+    // Timer de segurança: expira a sessão após 15 minutos
+    if (sessionTimerRef.current) clearTimeout(sessionTimerRef.current);
+    sessionTimerRef.current = setTimeout(() => {
+      setPayErrorKind('unavailable');
+      setStep('result');
+    }, SESSION_TIMEOUT_MS);
+    return () => {
+      if (sessionTimerRef.current) {
+        clearTimeout(sessionTimerRef.current);
+        sessionTimerRef.current = null;
+      }
+    };
+  }, [visible, loadCards, isAddCardMode]);
 
   // Débito não é salvo (regra do produto).
   useEffect(() => {

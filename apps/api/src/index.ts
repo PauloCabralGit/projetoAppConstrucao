@@ -107,34 +107,97 @@ async function reportError(env: Bindings, err: unknown, context?: Record<string,
   } catch {} // nunca deixar o reporter quebrar a requisição
 }
 
-// ── US-019: Rate limiting simples via KV ──────────────────────────────────────
-// Limite: 120 req/min por IP nos endpoints de escrita
-const RATE_LIMIT_WRITE = 120;
-const rateCache = new Map<string, { count: number; resetAt: number }>();
+// ── Security headers ─────────────────────────────────────────────────────────
+app.use("/v1/*", async (c, next) => {
+  await next();
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("Permissions-Policy", "camera=(), microphone=(), payment=()");
+  c.header("Cache-Control", "no-store");
+});
 
-function checkRateLimit(ip: string, limit = RATE_LIMIT_WRITE): boolean {
+// ── Rate limiting por IP (escrita geral) + anti-carding por userId ───────────
+// Limite geral: 120 req/min por IP para mutações
+// Limite de cartão: 5 tentativas recusadas/hora por usuário → bloqueia 1h
+const RATE_LIMIT_WRITE = 120;
+const CARD_FAIL_LIMIT  = 5;
+const CARD_FAIL_WINDOW = 60 * 60 * 1000; // 1 hora
+
+const rateCache    = new Map<string, { count: number; resetAt: number }>();
+const cardFailCache = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(key: string, limit = RATE_LIMIT_WRITE, windowMs = 60_000): boolean {
   const now = Date.now();
-  const window = 60_000;
-  const entry = rateCache.get(ip);
+  const entry = rateCache.get(key);
   if (!entry || now > entry.resetAt) {
-    rateCache.set(ip, { count: 1, resetAt: now + window });
+    rateCache.set(key, { count: 1, resetAt: now + windowMs });
     return true;
   }
   entry.count++;
-  if (entry.count > limit) return false;
-  return true;
+  return entry.count <= limit;
 }
 
+function checkCardFailLimit(userId: string): boolean {
+  const now = Date.now();
+  const entry = cardFailCache.get(userId);
+  if (!entry || now > entry.resetAt) return true;
+  return entry.count < CARD_FAIL_LIMIT;
+}
+
+function recordCardFail(userId: string): void {
+  const now = Date.now();
+  const entry = cardFailCache.get(userId);
+  if (!entry || now > entry.resetAt) {
+    cardFailCache.set(userId, { count: 1, resetAt: now + CARD_FAIL_WINDOW });
+  } else {
+    entry.count++;
+  }
+}
+
+function clearCardFails(userId: string): void {
+  cardFailCache.delete(userId);
+}
+
+// Middleware de rate limit por IP
 app.use("/v1/*", async (c, next) => {
   const method = c.req.method;
-  // Apenas limitar POST/PATCH/PUT/DELETE
   if (method === "GET" || method === "OPTIONS") return next();
   const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
-  if (!checkRateLimit(ip)) {
+  if (!checkRateLimit(`ip:${ip}`)) {
     return c.json({ message: "Muitas requisições. Tente novamente em 1 minuto." }, 429);
   }
   return next();
 });
+
+// ── Audit log helper (best-effort, nunca falha a requisição principal) ────────
+async function logPaymentEvent(env: Bindings, event: {
+  event_type: string;
+  service_request_id?: string | null;
+  user_id?: string | null;
+  mp_payment_id?: string | null;
+  amount?: number | null;
+  status_before?: string | null;
+  status_after?: string | null;
+  ip?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): Promise<void> {
+  try {
+    await db(env).from("payment_audit_log").insert({
+      event_type:         event.event_type,
+      service_request_id: event.service_request_id ?? null,
+      user_id:            event.user_id ?? null,
+      mp_payment_id:      event.mp_payment_id ?? null,
+      amount:             event.amount ?? null,
+      status_before:      event.status_before ?? null,
+      status_after:       event.status_after ?? null,
+      ip_address:         event.ip ?? null,
+      metadata:           event.metadata ?? null,
+    });
+  } catch (e) {
+    console.error("[audit] falha ao registrar evento de pagamento:", e);
+  }
+}
 
 // ── Auth middleware (JWT) ─────────────────────────────────────────────────────
 // Rotas públicas que não exigem autenticação
@@ -180,22 +243,44 @@ app.use("/v1/*", async (c, next) => {
 });
 
 // ── CRM: controle de acesso por área ────────────────────────────────────────
-// Senhas com PBKDF2-SHA256 (Web Crypto, disponível no Workers).
+// PBKDF2-SHA256 (Web Crypto). Novos hashes: v2 (600 000 iter, OWASP 2024).
+// Hashes legados sem prefixo usavam 100 000 iter e ainda são verificados.
+const toHex = (a: Uint8Array) => [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+
 async function hashSenha(senha: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMat, 256);
-  const toHex = (a: Uint8Array) => [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `${toHex(salt)}:${toHex(new Uint8Array(bits))}`;
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 600_000, hash: "SHA-256" }, keyMat, 256);
+  return `v2:${toHex(salt)}:${toHex(new Uint8Array(bits))}`;
 }
+
 async function verifySenha(senha: string, stored: string): Promise<boolean> {
-  const [saltHex, hashHex] = (stored || "").split(":");
+  if (!stored) return false;
+  let saltHex: string, hashHex: string, iterations: number;
+  if (stored.startsWith("v2:")) {
+    // PBKDF2 600 000 (OWASP 2024)
+    const parts = stored.slice(3).split(":");
+    [saltHex, hashHex] = parts;
+    iterations = 600_000;
+  } else {
+    // Legado: PBKDF2 100 000
+    [saltHex, hashHex] = stored.split(":");
+    iterations = 100_000;
+  }
   if (!saltHex || !hashHex) return false;
   const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
   const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMat, 256);
-  const calc = [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return calc === hashHex;
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, keyMat, 256);
+  // Comparação em tempo constante via HMAC para evitar timing attack
+  const calc = toHex(new Uint8Array(bits));
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode("timing-safe"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const [aSig, bSig] = await Promise.all([
+    crypto.subtle.sign("HMAC", key, enc.encode(calc)),
+    crypto.subtle.sign("HMAC", key, enc.encode(hashHex)),
+  ]);
+  const aArr = new Uint8Array(aSig), bArr = new Uint8Array(bSig);
+  return aArr.length === bArr.length && aArr.every((v, i) => v === bArr[i]);
 }
 function genToken(): string {
   return [...crypto.getRandomValues(new Uint8Array(32))].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -1766,18 +1851,46 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     idempotency_key?: string;
   }>().catch(() => ({} as any));
 
+  // ── Validação de entrada ──────────────────────────────────────────────────
   if (!body.token || !body.installments || !body.payment_method_id || !body.payer_email) {
     return c.json({ message: "Campos obrigatórios: token, installments, payment_method_id, payer_email." }, 400);
   }
-  if (typeof body.installments !== "number" || !Number.isInteger(body.installments) || body.installments < 1) {
-    return c.json({ message: "installments deve ser um inteiro positivo." }, 400);
+  if (typeof body.installments !== "number" || !Number.isInteger(body.installments) || body.installments < 1 || body.installments > 24) {
+    return c.json({ message: "installments deve ser inteiro entre 1 e 24." }, 400);
+  }
+  // idempotency_key obrigatória para evitar cobranças duplas
+  if (!body.idempotency_key || !UUID_RE.test(body.idempotency_key)) {
+    return c.json({ message: "idempotency_key inválida ou ausente (UUID v4 obrigatório)." }, 400);
+  }
+  // Tokens MP são strings não-vazias de no máximo 256 chars
+  if (typeof body.token !== "string" || body.token.length < 4 || body.token.length > 256) {
+    return c.json({ message: "Token de cartão inválido." }, 400);
+  }
+  // payer_email básico
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.payer_email)) {
+    return c.json({ message: "payer_email inválido." }, 400);
   }
 
   if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
     return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
   }
 
+  // ── Anti-carding: bloqueia após 5 recusas/hora por usuário ───────────────
+  if (!checkCardFailLimit(clientId)) {
+    const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+    console.warn("[card-payment] anti-carding: usuário bloqueado", { clientId, ip });
+    await logPaymentEvent(c.env, {
+      event_type: "blocked_carding",
+      service_request_id: id,
+      user_id: clientId,
+      ip,
+      metadata: { reason: "exceeded_card_fail_limit" },
+    });
+    return c.json({ message: "Muitas tentativas recusadas. Aguarde 1 hora antes de tentar novamente." }, 429);
+  }
+
   const adminDb = db(c.env);
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? null;
 
   const { data: req } = await adminDb
     .from("service_requests")
@@ -1793,6 +1906,13 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   // Authz por dono: só o cliente da SR pode disparar a cobrança (corrige IDOR).
   if (req.client_user_id !== clientId) {
     console.warn("[card-payment] tentativa de cobrar SR alheia", { id, clientId });
+    await logPaymentEvent(c.env, {
+      event_type: "unauthorized_attempt",
+      service_request_id: id,
+      user_id: clientId,
+      ip,
+      metadata: { owner: req.client_user_id, attacker: clientId },
+    });
     return c.json({ message: "Não autorizado." }, 403);
   }
   if (!req.quote_amount) {
@@ -1801,6 +1921,17 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   if (req.payment_status === "confirmed") {
     return c.json({ message: "Este serviço já foi pago." }, 409);
   }
+
+  // Log da tentativa antes de chamar o MP
+  await logPaymentEvent(c.env, {
+    event_type: "attempt",
+    service_request_id: id,
+    user_id: clientId,
+    amount: Number(req.quote_amount),
+    status_before: req.payment_status,
+    ip,
+    metadata: { installments: body.installments, method: body.payment_method_id },
+  });
 
   // Telefone do cliente p/ enriquecer o pagador — ajuda no antifraude do MP.
   const { data: client } = await adminDb
@@ -1920,6 +2051,12 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   // Recusa: não registra split nem confirma; devolve o motivo (status_detail).
   if (mpPayment.status === "rejected") {
     console.warn("[card-payment] pagamento recusado", { id, mpPaymentId, statusDetail: mpPayment.status_detail });
+    // Contador anti-carding: incrementa falha para esse usuário
+    recordCardFail(clientId);
+    const failEntry = cardFailCache.get(clientId);
+    const failCount = failEntry?.count ?? 1;
+    console.warn("[card-payment] anti-carding contador", { clientId, failCount });
+
     // Auditoria best-effort (não falha o fluxo se duplicar em retry).
     const { error: rejErr } = await adminDb.from("payments").insert({
       service_request_id: id,
@@ -1930,10 +2067,23 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
       payment_method: "card",
       status: "rejected",
       payer_email: body.payer_email,
+      installments: body.installments,
     });
     if (rejErr && (rejErr as any).code !== "23505") {
       console.error("[card-payment] auditoria de recusa falhou", id, rejErr.message);
     }
+    // Registra no audit log de pagamentos
+    await logPaymentEvent(c.env, {
+      event_type: "rejected",
+      service_request_id: id,
+      user_id: clientId,
+      mp_payment_id: mpPaymentId,
+      amount,
+      status_before: req.payment_status,
+      status_after: "rejected",
+      ip,
+      metadata: { statusDetail: mpPayment.status_detail, failCount },
+    });
     // Marca a SR como recusada (o cliente pode tentar de novo) e notifica.
     await adminDb
       .from("service_requests")
@@ -1990,6 +2140,22 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   }
 
   if (approved) {
+    // Pagamento aprovado: zera o contador anti-carding deste usuário
+    clearCardFails(clientId);
+
+    // Registra aprovação no audit log
+    await logPaymentEvent(c.env, {
+      event_type: "approved",
+      service_request_id: id,
+      user_id: clientId,
+      mp_payment_id: mpPaymentId,
+      amount,
+      status_before: req.payment_status,
+      status_after: "confirmed",
+      ip,
+      metadata: { installments: body.installments, mpFee, providerAmount, platformFee },
+    });
+
     // Confirma pagamento E aceita o chamado atomicamente: o prestador só é
     // notificado para ir ao local após o dinheiro ser capturado.
     await adminDb
@@ -2579,20 +2745,24 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     let body: { type?: string; data?: { id?: string } };
     try { body = JSON.parse(rawBody); } catch { return c.json({ ok: true }); }
 
-    // Validar assinatura HMAC antes de processar
-    if (c.env.MERCADOPAGO_WEBHOOK_SECRET) {
-      const xSignature = c.req.header("x-signature");
-      const xRequestId = c.req.header("x-request-id");
-      const isValid = await validateMPWebhookSignature(
-        c.env.MERCADOPAGO_WEBHOOK_SECRET,
-        xSignature,
-        xRequestId,
-        body.data?.id
-      );
-      if (!isValid) {
-        console.warn("[Webhook MP] Assinatura inválida rejeitada.");
-        return c.json({ ok: false }, 400);
-      }
+    // ── Verificação HMAC obrigatória ─────────────────────────────────────────
+    // Se MERCADOPAGO_WEBHOOK_SECRET não estiver configurado, rejeitamos o webhook
+    // para evitar processamento de eventos não autenticados.
+    if (!c.env.MERCADOPAGO_WEBHOOK_SECRET) {
+      console.error("[Webhook MP] MERCADOPAGO_WEBHOOK_SECRET não configurado — webhook rejeitado.");
+      return c.json({ ok: false }, 500);
+    }
+    const xSignature = c.req.header("x-signature");
+    const xRequestId = c.req.header("x-request-id");
+    const isValid = await validateMPWebhookSignature(
+      c.env.MERCADOPAGO_WEBHOOK_SECRET,
+      xSignature,
+      xRequestId,
+      body.data?.id
+    );
+    if (!isValid) {
+      console.warn("[Webhook MP] Assinatura inválida rejeitada.", { xSignature: xSignature?.slice(0, 30) });
+      return c.json({ ok: false }, 400);
     }
 
     if (body.type !== "payment" || !body.data?.id) return c.json({ ok: true });
@@ -2610,7 +2780,11 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     }
 
     const serviceRequestId = payment.external_reference;
-    if (!serviceRequestId) return c.json({ ok: true });
+    // Valida que external_reference é um UUID válido antes de qualquer operação no DB
+    if (!serviceRequestId || !UUID_RE.test(serviceRequestId)) {
+      console.warn("[Webhook MP] external_reference inválido ou ausente:", serviceRequestId);
+      return c.json({ ok: true }); // retorna 200 para o MP não retentar
+    }
 
     const adminDb = db(c.env);
 
@@ -2621,6 +2795,8 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       .maybeSingle();
 
     if (!req || req.payment_status === "confirmed") return c.json({ ok: true });
+
+    const webhookIp = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
 
     // Recusado/cancelado: se o pagamento estava EM PROCESSAMENTO, marca a SR como
     // recusada e notifica o cliente (permite nova tentativa). Não mexe se já foi
@@ -2634,6 +2810,16 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
         await adminDb.from("payments")
           .update({ status: payment.status })
           .eq("mp_payment_id", String(payment.id));
+        await logPaymentEvent(c.env, {
+          event_type: "webhook_rejected",
+          service_request_id: serviceRequestId,
+          user_id: req.client_user_id ?? null,
+          mp_payment_id: String(payment.id),
+          status_before: "processing",
+          status_after: "rejected",
+          ip: webhookIp,
+          metadata: { mp_status: payment.status, payment_type_id: payment.payment_type_id },
+        });
         if (req.client_user_id) {
           await sendPush(c.env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
         }
@@ -2658,7 +2844,7 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       .from("payments")
       .update({ status: "approved", confirmed_at: new Date().toISOString() })
       .eq("mp_payment_id", String(payment.id))
-      .select("id, provider_amount")
+      .select("id, provider_amount, amount")
       .maybeSingle();
 
     if (paymentRecord && req.provider_user_id) {
@@ -2670,6 +2856,18 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
         transferred_at: new Date().toISOString(),
       }, { onConflict: "payment_id" });
     }
+
+    await logPaymentEvent(c.env, {
+      event_type: "webhook_approved",
+      service_request_id: serviceRequestId,
+      user_id: req.client_user_id ?? null,
+      mp_payment_id: String(payment.id),
+      amount: paymentRecord?.amount ?? null,
+      status_before: req.payment_status,
+      status_after: "confirmed",
+      ip: webhookIp,
+      metadata: { payment_type_id: payment.payment_type_id, derived_method: derivedMethod },
+    });
 
     const methodLabel = derivedMethod === "card" ? "cartão" : "Pix";
     if (req.client_user_id) {
