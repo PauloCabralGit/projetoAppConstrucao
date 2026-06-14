@@ -26,7 +26,7 @@ import { useFlags } from '@/contexts/FeatureFlagsContext';
 import CardPaymentSheet from '@/components/CardPaymentSheet';
 
 import { API_BASE } from '@/lib/config';
-import { syncCardPayment, fetchSavedCards } from '@/lib/api';
+import { syncCardPayment } from '@/lib/api';
 
 type RequestStatus =
   | 'draft'
@@ -111,7 +111,7 @@ export default function TrackingScreen() {
   const [cancelling, setCancelling] = useState(false);
 
   // Quote negotiation state
-  const [acceptingQuote, setAcceptingQuote] = useState(false);
+
   const [countering, setCountering] = useState(false);
   const [showCounterModal, setShowCounterModal] = useState(false);
   const [counterInput, setCounterInput] = useState('');
@@ -292,8 +292,8 @@ export default function TrackingScreen() {
           if (updated.status === 'in_progress') {
             loadPhotos();
           }
-          if (updated.payment_status === 'confirmed') {
-            Alert.alert('Pagamento confirmado!', 'O prestador confirmou o recebimento do pagamento.');
+          if (updated.status === 'accepted' && updated.payment_status === 'confirmed') {
+            // Status já é atualizado localmente via onApproved; realtime só confirma.
           }
         }
       )
@@ -320,44 +320,10 @@ export default function TrackingScreen() {
     return () => { supabase.removeChannel(channel); };
   }
 
-  async function handleAcceptQuote() {
-    if (!request) return;
-
-    // Gate de cartão: verificar antes de aceitar o orçamento
-    const cards = await fetchSavedCards().catch(() => [] as Awaited<ReturnType<typeof fetchSavedCards>>);
-    if (cards.length === 0) {
-      Alert.alert(
-        'Cartão necessário',
-        'Adicione um cartão de crédito ou débito antes de aceitar o orçamento.',
-        [
-          { text: 'Adicionar cartão', onPress: () => setShowCardSheet(true) },
-          { text: 'Cancelar', style: 'cancel' },
-        ]
-      );
-      return;
-    }
-
-    setAcceptingQuote(true);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      const { error, data: updated } = await supabase
-        .from('service_requests')
-        .update({ status: 'accepted', quote_status: 'accepted' })
-        .eq('id', id)
-        .eq('client_user_id', user?.id)
-        .eq('quote_status', 'quoted')
-        .select('id');
-      if (!error && updated && updated.length > 0) {
-        setRequest(prev => prev ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted' } : null);
-        // Abre o pagamento imediatamente após aceitar o orçamento
-        setShowCardSheet(true);
-      } else {
-        Alert.alert('Erro', 'Não foi possível aceitar o orçamento. Tente novamente.');
-      }
-    } catch {
-      Alert.alert('Erro de conexão', 'Verifique sua internet e tente novamente.');
-    }
-    setAcceptingQuote(false);
+  function handleAcceptQuote() {
+    // O chamado só é aceito e o prestador notificado APÓS o pagamento ser capturado.
+    // O CardPaymentSheet gerencia a seleção/adição de cartão e processa a cobrança.
+    setShowCardSheet(true);
   }
 
   async function handleCounter() {
@@ -678,10 +644,6 @@ export default function TrackingScreen() {
   const paymentConfirmed = request?.payment_status === 'confirmed';
   const paymentProcessing = request?.payment_status === 'processing';
   const paymentRejected = request?.payment_status === 'rejected';
-  // Pagamento agora ocorre no aceite do orçamento, não na conclusão.
-  // Em processamento (3DS), esconde o botão para evitar cobrança dupla.
-  const needsPayment = isAccepted && !paymentConfirmed && !paymentProcessing;
-
   // ── Completed state: full-screen card, no map ─────────────────────────────
   if (isCompleted && request) {
     const paymentLabel = paymentConfirmed
@@ -988,22 +950,44 @@ export default function TrackingScreen() {
             {!!request?.quote_notes && (
               <Text style={styles.quoteCardNotes}>{request.quote_notes}</Text>
             )}
+
+            {/* Estado do pagamento — visível enquanto o card do orçamento ainda aparece */}
+            {paymentProcessing && (
+              <View style={styles.paymentStatusRow}>
+                <ActivityIndicator size="small" color={Colors.warningAmber} />
+                <Text style={[styles.paymentStatusText, { color: Colors.warningAmber }]}>
+                  Pagamento em análise, aguardando confirmação...
+                </Text>
+              </View>
+            )}
+            {paymentRejected && (
+              <View style={styles.paymentStatusRow}>
+                <Ionicons name="close-circle" size={15} color={Colors.dangerRed} />
+                <Text style={[styles.paymentStatusText, { color: Colors.dangerRed }]}>
+                  Pagamento recusado — escolha outro cartão e tente novamente
+                </Text>
+              </View>
+            )}
+
             <View style={styles.quoteCardButtons}>
               <TouchableOpacity
-                style={styles.counterBtn}
+                style={[styles.counterBtn, paymentProcessing && styles.btnDisabled]}
                 onPress={() => setShowCounterModal(true)}
+                disabled={paymentProcessing}
               >
                 <Text style={styles.counterBtnText}>Contra-proposta</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.acceptQuoteBtn, acceptingQuote && styles.btnDisabled]}
+                style={[styles.acceptQuoteBtn, paymentProcessing && styles.btnDisabled]}
                 onPress={handleAcceptQuote}
-                disabled={acceptingQuote}
+                disabled={paymentProcessing}
               >
-                {acceptingQuote ? (
+                {paymentProcessing ? (
                   <ActivityIndicator color={Colors.cardWhite} size="small" />
                 ) : (
-                  <Text style={styles.acceptQuoteBtnText}>Aceitar</Text>
+                  <Text style={styles.acceptQuoteBtnText}>
+                    {paymentRejected ? 'Tentar novamente' : 'Aceitar e pagar'}
+                  </Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -1453,12 +1437,15 @@ export default function TrackingScreen() {
         }}
         onApproved={() => {
           setShowCardSheet(false);
+          // Espelha o que o servidor faz: aceita o chamado e confirma o pagamento.
+          // O realtime vai confirmar; atualizamos localmente para UX imediata.
           setRequest((prev) =>
-            prev ? { ...prev, payment_status: 'confirmed', payment_method: 'card' } : prev
+            prev ? { ...prev, status: 'accepted' as RequestStatus, quote_status: 'accepted', payment_status: 'confirmed', payment_method: 'card' } : prev
           );
         }}
         onProcessing={() => {
           setShowCardSheet(false);
+          // 3DS / análise: ainda não aceito — o webhook resolve e notifica depois.
           setRequest((prev) =>
             prev ? { ...prev, payment_status: 'processing', payment_method: 'card' } : prev
           );

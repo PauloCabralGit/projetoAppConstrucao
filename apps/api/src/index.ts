@@ -1781,12 +1781,14 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
 
   const { data: req } = await adminDb
     .from("service_requests")
-    .select("quote_amount, category, client_user_id, provider_user_id, status, payment_status")
+    .select("quote_amount, category, client_user_id, provider_user_id, status, payment_status, quote_status")
     .eq("id", id)
     .maybeSingle();
 
-  if (!req || req.status !== "completed") {
-    return c.json({ message: "Serviço não encontrado ou não concluído." }, 400);
+  // Aceita pagamento quando orçamento foi enviado pelo prestador (quoted) e ainda não foi pago.
+  // Cobre tanto o pagamento inicial quanto a retentativa após recusa.
+  if (!req || req.quote_status !== "quoted") {
+    return c.json({ message: "Orçamento não disponível para pagamento." }, 400);
   }
   // Authz por dono: só o cliente da SR pode disparar a cobrança (corrige IDOR).
   if (req.client_user_id !== clientId) {
@@ -1988,9 +1990,11 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   }
 
   if (approved) {
+    // Confirma pagamento E aceita o chamado atomicamente: o prestador só é
+    // notificado para ir ao local após o dinheiro ser capturado.
     await adminDb
       .from("service_requests")
-      .update({ payment_status: "confirmed", payment_method: "card" })
+      .update({ payment_status: "confirmed", payment_method: "card", status: "accepted", quote_status: "accepted" })
       .eq("id", id);
 
     // Criar split para o prestador imediatamente (cartão aprova na hora)
@@ -2039,10 +2043,10 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     }
 
     if (req.client_user_id) {
-      await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento no cartão foi aprovado.");
+      await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento foi confirmado. O profissional está a caminho.");
     }
     if (req.provider_user_id) {
-      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O cliente pagou R$ ${providerAmount.toFixed(2).replace(".", ",")} via cartão.`);
+      await sendPush(c.env, req.provider_user_id, "🔔 Chamado aceito e pago!", `R$ ${providerAmount.toFixed(2).replace(".", ",")} reservado. Dirija-se ao local para iniciar o serviço.`);
     }
   } else {
     // in_process / pending: pagamento em análise (ex.: antifraude / 3DS). NÃO
@@ -2097,7 +2101,7 @@ async function resolveCardPaymentFinal(
   if (payment.status === "approved") {
     const mpType = String(payment.payment_type_id ?? "");
     const method = mpType.includes("card") ? "card" : mpType ? "pix" : null;
-    const srUpdate: Record<string, unknown> = { payment_status: "confirmed" };
+    const srUpdate: Record<string, unknown> = { payment_status: "confirmed", status: "accepted", quote_status: "accepted" };
     if (method) srUpdate.payment_method = method;
     await adminDb.from("service_requests").update(srUpdate).eq("id", serviceRequestId);
 
@@ -2117,8 +2121,8 @@ async function resolveCardPaymentFinal(
       }, { onConflict: "payment_id" });
     }
     const label = method === "card" ? "cartão" : "Pix";
-    if (req.client_user_id) await sendPush(env, req.client_user_id, "✅ Pagamento confirmado!", `Seu pagamento via ${label} foi aprovado.`);
-    if (req.provider_user_id) await sendPush(env, req.provider_user_id, "💳 Pagamento recebido!", `O pagamento via ${label} foi aprovado.`);
+    if (req.client_user_id) await sendPush(env, req.client_user_id, "✅ Pagamento aprovado!", `Seu pagamento via ${label} foi confirmado. O profissional está a caminho.`);
+    if (req.provider_user_id) await sendPush(env, req.provider_user_id, "🔔 Chamado aceito e pago!", `Pagamento via ${label} aprovado. Dirija-se ao local para iniciar o serviço.`);
   } else if ((payment.status === "rejected" || payment.status === "cancelled") && req.payment_status === "processing") {
     await adminDb.from("service_requests")
       .update({ payment_status: "rejected", payment_method: "card" })
