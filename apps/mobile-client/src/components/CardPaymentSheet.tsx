@@ -30,6 +30,7 @@ import {
   createCardPayment,
   pollCardPaymentStatus,
   randomUUID,
+  addCard,
 } from '@/lib/api';
 import {
   detectBrand,
@@ -55,17 +56,23 @@ type CardType = 'credit' | 'debit';
 
 interface CardPaymentSheetProps {
   visible: boolean;
-  /** ID do service_request — usado em /installments e /create-card-payment. */
-  requestId: string;
-  /** Valor do serviço em reais. */
-  amount: number;
+  /** ID do service_request — usado em /installments e /create-card-payment. Ignorado no modo add_card. */
+  requestId?: string;
+  /** Valor do serviço em reais. Ignorado no modo add_card. */
+  amount?: number;
   /** E-mail do pagador (payer_email). Se ausente, é obtido da sessão Supabase. */
   payerEmail?: string;
   onClose: () => void;
   /** Chamado quando a cobrança é aprovada e o usuário toca em "Concluir". */
-  onApproved: (result: CardPaymentResult) => void;
+  onApproved?: (result: CardPaymentResult) => void;
   /** Chamado quando a cobrança fica EM PROCESSAMENTO (in_process/pending). */
-  onProcessing: (result: CardPaymentResult) => void;
+  onProcessing?: (result: CardPaymentResult) => void;
+  /**
+   * 'add_card' — abre direto no formulário de novo cartão e salva sem cobrar.
+   * Chama onCardAdded() após sucesso.
+   */
+  mode?: 'add_card';
+  onCardAdded?: () => void;
 }
 
 const HIT = { top: 8, bottom: 8, left: 8, right: 8 };
@@ -88,14 +95,17 @@ function build3dsHtml(url: string, creq: string): string {
 
 export default function CardPaymentSheet({
   visible,
-  requestId,
-  amount,
+  requestId = '',
+  amount = 0,
   payerEmail,
   onClose,
   onApproved,
   onProcessing,
+  mode,
+  onCardAdded,
 }: CardPaymentSheetProps) {
-  const [step, setStep] = useState<CardStep>('list');
+  const isAddCardMode = mode === 'add_card';
+  const [step, setStep] = useState<CardStep>(isAddCardMode ? 'new' : 'list');
 
   // ── Cartões salvos ──────────────────────────────────────────────────────
   const [cards, setCards] = useState<SavedCard[]>([]);
@@ -160,7 +170,7 @@ export default function CardPaymentSheet({
   // Reinicia tudo ao abrir.
   useEffect(() => {
     if (!visible) return;
-    setStep('list');
+    setStep(isAddCardMode ? 'new' : 'list');
     setSavedCvv('');
     setNumber('');
     setExpiry('');
@@ -274,8 +284,43 @@ export default function CardPaymentSheet({
 
   function handleContinueFromNew() {
     if (!validateNewCard()) return;
+    if (isAddCardMode) {
+      handleSaveCardOnly();
+      return;
+    }
     setUsingSaved(false);
     loadInstallments(false, cardType === 'debit');
+  }
+
+  async function handleSaveCardOnly() {
+    setProcessing(true);
+    setPayErrorKind(null);
+    try {
+      const pk = await getMpPublicKey();
+      const [mm, yy] = expiry.split('/');
+      const token = await tokenizeNewCard(pk, {
+        number: onlyDigits(number),
+        securityCode: onlyDigits(cvv),
+        expMonth: Number(mm),
+        expYear: Number(`20${yy}`),
+        name: holder.trim().toUpperCase(),
+        cpf: onlyDigits(cpf),
+      });
+      await addCard(token, true);
+      await loadCards();
+      setStep('result');
+      // Sinaliza sucesso para o pai.
+      setResult({ status: 'card_saved', statusDetail: 'ok', mpPaymentId: '', amount: 0, platformFee: 0, mpFee: 0, providerAmount: 0, installments: 1 } as any);
+    } catch (e) {
+      if (e instanceof CardTokenError) {
+        setRejectedDetail('card_token_invalid');
+      } else {
+        setPayErrorKind('unavailable');
+      }
+      setStep('result');
+    } finally {
+      setProcessing(false);
+    }
   }
 
   const savedCvvValid = onlyDigits(savedCvv).length === 3;
@@ -409,12 +454,12 @@ export default function CardPaymentSheet({
   }
 
   const headerTitle: Record<CardStep, string> = {
-    list: 'Pagar com cartão',
-    new: 'Novo cartão',
+    list: isAddCardMode ? 'Meus cartões' : 'Pagar com cartão',
+    new: isAddCardMode ? 'Adicionar cartão' : 'Novo cartão',
     installments: 'Parcelamento',
     review: 'Revisar pagamento',
     threeds: 'Autenticação',
-    result: 'Resultado',
+    result: isAddCardMode ? 'Cartão salvo' : 'Resultado',
   };
 
   const canGoBack = step !== 'list' && step !== 'result' && step !== 'threeds' && !processing;
@@ -469,10 +514,12 @@ export default function CardPaymentSheet({
             </TouchableOpacity>
           </View>
 
-          <View style={styles.amountStrip}>
-            <Text style={styles.amountStripLabel}>Valor do serviço</Text>
-            <Text style={styles.amountStripValue}>{formatBRL(amount)}</Text>
-          </View>
+          {!isAddCardMode && (
+            <View style={styles.amountStrip}>
+              <Text style={styles.amountStripLabel}>Valor do serviço</Text>
+              <Text style={styles.amountStripValue}>{formatBRL(amount)}</Text>
+            </View>
+          )}
 
           <ScrollView
             style={styles.body}
@@ -573,17 +620,23 @@ export default function CardPaymentSheet({
                 payErrorKind={payErrorKind}
                 rejectedDetail={rejectedDetail}
                 result={result}
+                isAddCardMode={isAddCardMode}
                 onConcluir={() => {
+                  if (isAddCardMode) {
+                    onCardAdded?.();
+                    onClose();
+                    return;
+                  }
                   if (result) {
                     if (result.status === 'in_process' || result.status === 'pending' || result.status === 'authorized') {
-                      onProcessing(result);
+                      onProcessing?.(result);
                     } else {
-                      onApproved(result);
+                      onApproved?.(result);
                     }
                   }
                   onClose();
                 }}
-                onRetry={handlePay}
+                onRetry={isAddCardMode ? handleSaveCardOnly : handlePay}
                 onTryAnotherCard={resetToPaymentStart}
                 onUseOtherMethod={onClose}
                 onShareReceipt={() => {
@@ -609,7 +662,12 @@ export default function CardPaymentSheet({
             />
           )}
           {step === 'new' && (
-            <Footer label="Continuar" onPress={handleContinueFromNew} />
+            <Footer
+              label={isAddCardMode ? (processing ? 'Salvando...' : 'Salvar cartão') : 'Continuar'}
+              disabled={isAddCardMode && processing}
+              loading={isAddCardMode && processing}
+              onPress={handleContinueFromNew}
+            />
           )}
           {step === 'installments' && (
             <Footer
@@ -1132,18 +1190,34 @@ function StepReview({
 }
 
 function StepResult({
-  payErrorKind, rejectedDetail, result,
+  payErrorKind, rejectedDetail, result, isAddCardMode,
   onConcluir, onRetry, onTryAnotherCard, onUseOtherMethod, onShareReceipt,
 }: {
   payErrorKind: PayErrorKind;
   rejectedDetail: string | null;
   result: CardPaymentResult | null;
+  isAddCardMode?: boolean;
   onConcluir: () => void;
   onRetry: () => void;
   onTryAnotherCard: () => void;
   onUseOtherMethod: () => void;
   onShareReceipt: () => void;
 }) {
+  // Modo adicionar cartão: resultado de sucesso
+  if (isAddCardMode && result && (result as any).status === 'card_saved') {
+    return (
+      <View style={styles.centerBox}>
+        <View style={[styles.resultIcon, { backgroundColor: '#ECFDF5' }]}>
+          <Ionicons name="checkmark-circle" size={48} color={Colors.successGreen} />
+        </View>
+        <Text style={styles.resultTitle}>Cartão adicionado!</Text>
+        <Text style={styles.emptyDesc}>Seu cartão foi salvo com sucesso.</Text>
+        <TouchableOpacity style={styles.primaryBtn} onPress={onConcluir} accessibilityRole="button">
+          <Text style={styles.primaryBtnText}>Concluir</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
   // 503 / offline — infra indisponível.
   if (payErrorKind === 'unavailable') {
     return (

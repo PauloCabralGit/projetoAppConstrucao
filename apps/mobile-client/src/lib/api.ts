@@ -84,6 +84,23 @@ export async function fetchSavedCards(): Promise<SavedCard[]> {
   return data.cards ?? [];
 }
 
+/** Salva um cartão de crédito via token MP, sem cobrança. Retorna o cartão salvo. */
+export async function addCard(token: string, setDefault = false): Promise<SavedCard> {
+  const headers = await authHeaders();
+  const res = await fetch(`${API_BASE}/cards`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify({ token, setDefault }),
+  });
+  if (res.status === 401) throw new AuthError('unauthorized');
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({})) as { message?: string };
+    throw new Error(data.message ?? 'add_card_failed');
+  }
+  const data = (await res.json()) as { card: SavedCard };
+  return data.card;
+}
+
 export async function deleteSavedCard(id: string): Promise<void> {
   const headers = await authHeaders();
   const res = await fetch(`${API_BASE}/cards/${id}`, { method: 'DELETE', headers });

@@ -319,17 +319,23 @@ export default function HomeScreen() {
       return;
     }
 
-    // Gate de cartão: pagamento é garantido via cartão ao aceitar o orçamento.
-    // Sem cartão cadastrado → avisar e pedir confirmação antes de criar o pedido.
+    // Gate de cartão obrigatório: sem cartão cadastrado, o cliente não pode solicitar
+    // serviços pois o pagamento é exigido ao aceitar o orçamento.
     if (hasCard === false) {
       Alert.alert(
-        'Cartão necessário para pagamento',
-        'O pagamento é feito via cartão ao aceitar o orçamento. Você ainda não tem cartão — poderá cadastrar na hora do aceite.\n\nDeseja continuar com a solicitação?',
+        'Cartão necessário',
+        'Cadastre um cartão de crédito ou débito antes de solicitar um serviço. O pagamento é garantido via cartão ao aceitar o orçamento.',
         [
           { text: 'Cancelar', style: 'cancel' },
-          { text: 'Continuar', onPress: () => submitRequest() },
+          { text: 'Ir para Meus Cartões', onPress: () => router.push('/(tabs)/profile' as any) },
         ]
       );
+      return;
+    }
+
+    // Aguarda o resultado da verificação de cartão (ainda carregando)
+    if (hasCard === null) {
+      Alert.alert('Aguarde', 'Verificando seus dados. Tente novamente em instantes.');
       return;
     }
 
@@ -487,7 +493,7 @@ export default function HomeScreen() {
           >
             <Ionicons name="card-outline" size={16} color="#92400e" />
             <Text style={styles.noCardBannerText}>
-              Nenhum cartão cadastrado. O pagamento é garantido via cartão ao aceitar o orçamento.
+              Cartão necessário para solicitar serviços. Toque para adicionar.
             </Text>
             <Ionicons name="chevron-forward" size={14} color="#92400e" />
           </TouchableOpacity>

@@ -13,6 +13,7 @@ import { useTheme } from '@/contexts/ThemeContext';
 import { API_BASE } from '@/lib/config';
 import { fetchSavedCards, deleteSavedCard, setDefaultCard } from '@/lib/api';
 import type { SavedCard } from '@construconnect/shared';
+import CardPaymentSheet from '@/components/CardPaymentSheet';
 
 interface UserProfile {
   full_name: string;
@@ -51,6 +52,7 @@ export default function ProfileScreen() {
   const [cards, setCards] = useState<SavedCard[]>([]);
   const [loadingCards, setLoadingCards] = useState(false);
   const [showCardsSheet, setShowCardsSheet] = useState(false);
+  const [showAddCardSheet, setShowAddCardSheet] = useState(false);
 
   useEffect(() => { loadProfile(); }, []);
 
@@ -359,12 +361,26 @@ export default function ProfileScreen() {
                   </View>
                 ))
               )}
-              <TouchableOpacity onPress={() => setShowCardsSheet(false)} style={{ marginTop: 8 }}>
+              <TouchableOpacity
+                style={[styles.faqBtn, { marginTop: 12, borderColor: Colors.primary, borderWidth: 1.5, borderRadius: 12, borderStyle: 'dashed' }]}
+                onPress={() => { setShowCardsSheet(false); setShowAddCardSheet(true); }}
+              >
+                <Ionicons name="add-circle-outline" size={20} color={Colors.primary} />
+                <Text style={[styles.faqBtnText, { color: Colors.primary }]}>Adicionar novo cartão</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setShowCardsSheet(false)} style={{ marginTop: 12 }}>
                 <Text style={styles.telemedicineCancelTxt}>Fechar</Text>
               </TouchableOpacity>
             </View>
           </TouchableOpacity>
         </Modal>
+
+        <CardPaymentSheet
+          visible={showAddCardSheet}
+          mode="add_card"
+          onClose={() => setShowAddCardSheet(false)}
+          onCardAdded={() => { setShowAddCardSheet(false); loadCards(); setShowCardsSheet(true); }}
+        />
 
         <TouchableOpacity style={styles.faqBtn} onPress={() => router.push('/(tabs)/faq' as any)}>
           <Ionicons name="help-circle-outline" size={22} color={Colors.primary} />
