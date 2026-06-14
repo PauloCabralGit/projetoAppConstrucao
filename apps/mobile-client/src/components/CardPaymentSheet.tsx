@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import * as Clipboard from 'expo-clipboard';
+import * as ScreenCapture from 'expo-screen-capture';
 import {
   View,
   Text,
@@ -172,10 +173,11 @@ export default function CardPaymentSheet({
     }
   }, []);
 
-  // Reinicia tudo ao abrir; inicia timer de sessão. Limpa clipboard ao fechar.
+  // Reinicia tudo ao abrir; ativa proteção de tela e timer de sessão. Limpa ao fechar.
   useEffect(() => {
     if (!visible) {
-      // Ao fechar, limpa qualquer dado sensível que possa estar na área de transferência.
+      // Ao fechar: libera captura de tela, limpa clipboard e cancela o timer.
+      ScreenCapture.allowScreenCaptureAsync().catch(() => {});
       Clipboard.setStringAsync('').catch(() => {});
       if (sessionTimerRef.current) {
         clearTimeout(sessionTimerRef.current);
@@ -183,6 +185,8 @@ export default function CardPaymentSheet({
       }
       return;
     }
+    // Ao abrir: impede prints e gravações de tela enquanto dados de cartão estão visíveis.
+    ScreenCapture.preventScreenCaptureAsync().catch(() => {});
     setStep(isAddCardMode ? 'new' : 'list');
     setSavedCvv('');
     setNumber('');
