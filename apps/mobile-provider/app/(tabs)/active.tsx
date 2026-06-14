@@ -21,6 +21,7 @@ import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
 
 import { API_BASE } from '@/lib/config';
+import { useFlags } from '@/contexts/FeatureFlagsContext';
 
 // Jobs confirmed or dismissed by the provider this session — won't reappear on focus.
 const dismissedJobIds = new Set<string>();
@@ -88,6 +89,7 @@ async function requestCameraPermission(): Promise<boolean> {
 }
 
 export default function ActiveScreen() {
+  const { provider_tracking } = useFlags();
   const mapRef = useRef<MapView>(null);
   const locationSubRef = useRef<Location.LocationSubscription | null>(null);
   const userIdRef = useRef<string | null>(null);
@@ -238,6 +240,7 @@ export default function ActiveScreen() {
   }
 
   async function startLocationTracking(userId: string) {
+    if (!provider_tracking) return;
     try {
       const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {

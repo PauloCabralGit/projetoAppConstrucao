@@ -16,7 +16,7 @@ import {
 import MapView, { Marker, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import * as ImagePicker from 'expo-image-picker';
-import { router, useLocalSearchParams } from 'expo-router';
+import { router, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
@@ -38,6 +38,7 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 
 import { API_BASE } from '@/lib/config';
 import * as Linking from 'expo-linking';
+import { fetchSavedCards } from '@/lib/api';
 
 interface AdBanner {
   id: string;
@@ -98,6 +99,7 @@ export default function HomeScreen() {
   const [listening, setListening] = useState(false);
   const [adBanner, setAdBanner] = useState<AdBanner | null>(null);
   const [showAdInfo, setShowAdInfo] = useState(false);
+  const [hasCard, setHasCard] = useState<boolean | null>(null);
 
   useEffect(() => {
     fetch(`${API_BASE}/ads/banners?placement=home&target=client`)
@@ -105,6 +107,14 @@ export default function HomeScreen() {
       .then(d => { if (d?.data?.[0]) setAdBanner(d.data[0]); })
       .catch(() => {});
   }, []);
+
+  // Re-verifica a cada vez que a tela ganha foco (inclusive ao voltar do perfil
+  // após adicionar um cartão).
+  useFocusEffect(useCallback(() => {
+    fetchSavedCards()
+      .then(cards => setHasCard(cards.length > 0))
+      .catch(() => setHasCard(null));
+  }, []));
 
   useEffect(() => {
     requestLocation();
@@ -311,6 +321,30 @@ export default function HomeScreen() {
       return;
     }
 
+    // Gate de cartão obrigatório: sem cartão cadastrado, o cliente não pode solicitar
+    // serviços pois o pagamento é exigido ao aceitar o orçamento.
+    if (hasCard === false) {
+      Alert.alert(
+        'Cartão necessário',
+        'Cadastre um cartão de crédito ou débito antes de solicitar um serviço. O pagamento é garantido via cartão ao aceitar o orçamento.',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          { text: 'Ir para Meus Cartões', onPress: () => router.push('/(tabs)/profile' as any) },
+        ]
+      );
+      return;
+    }
+
+    // Aguarda o resultado da verificação de cartão (ainda carregando)
+    if (hasCard === null) {
+      Alert.alert('Aguarde', 'Verificando seus dados. Tente novamente em instantes.');
+      return;
+    }
+
+    await submitRequest();
+  }
+
+  async function submitRequest() {
     setSubmitting(true);
 
     const { data: { user } } = await supabase.auth.getUser();
@@ -377,6 +411,7 @@ export default function HomeScreen() {
         }),
       }).catch(() => {});
 
+      setHasCard(true); // após criar pedido, marca que terá cartão (ou já tem)
       setSubmitting(false);
       setSelectedCategory('');
       setDescription('');
@@ -451,6 +486,20 @@ export default function HomeScreen() {
 
         <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Solicitar serviço</Text>
         <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>Selecione a categoria</Text>
+
+        {hasCard === false && (
+          <TouchableOpacity
+            style={styles.noCardBanner}
+            onPress={() => router.push('/(tabs)/profile')}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="card-outline" size={16} color="#92400e" />
+            <Text style={styles.noCardBannerText}>
+              Cartão necessário para solicitar serviços. Toque para adicionar.
+            </Text>
+            <Ionicons name="chevron-forward" size={14} color="#92400e" />
+          </TouchableOpacity>
+        )}
 
         <ScrollView
           horizontal
@@ -766,6 +815,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.textSecondary,
     marginBottom: 12,
+  },
+  noCardBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#fef3c7',
+    borderRadius: 10,
+    padding: 10,
+    marginBottom: 12,
+  },
+  noCardBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#92400e',
+    lineHeight: 17,
   },
   categoriesScroll: {
     paddingRight: 8,

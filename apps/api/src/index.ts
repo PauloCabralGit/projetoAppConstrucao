@@ -107,34 +107,97 @@ async function reportError(env: Bindings, err: unknown, context?: Record<string,
   } catch {} // nunca deixar o reporter quebrar a requisição
 }
 
-// ── US-019: Rate limiting simples via KV ──────────────────────────────────────
-// Limite: 120 req/min por IP nos endpoints de escrita
-const RATE_LIMIT_WRITE = 120;
-const rateCache = new Map<string, { count: number; resetAt: number }>();
+// ── Security headers ─────────────────────────────────────────────────────────
+app.use("/v1/*", async (c, next) => {
+  await next();
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("Permissions-Policy", "camera=(), microphone=(), payment=()");
+  c.header("Cache-Control", "no-store");
+});
 
-function checkRateLimit(ip: string, limit = RATE_LIMIT_WRITE): boolean {
+// ── Rate limiting por IP (escrita geral) + anti-carding por userId ───────────
+// Limite geral: 120 req/min por IP para mutações
+// Limite de cartão: 5 tentativas recusadas/hora por usuário → bloqueia 1h
+const RATE_LIMIT_WRITE = 120;
+const CARD_FAIL_LIMIT  = 5;
+const CARD_FAIL_WINDOW = 60 * 60 * 1000; // 1 hora
+
+const rateCache    = new Map<string, { count: number; resetAt: number }>();
+const cardFailCache = new Map<string, { count: number; resetAt: number }>();
+
+function checkRateLimit(key: string, limit = RATE_LIMIT_WRITE, windowMs = 60_000): boolean {
   const now = Date.now();
-  const window = 60_000;
-  const entry = rateCache.get(ip);
+  const entry = rateCache.get(key);
   if (!entry || now > entry.resetAt) {
-    rateCache.set(ip, { count: 1, resetAt: now + window });
+    rateCache.set(key, { count: 1, resetAt: now + windowMs });
     return true;
   }
   entry.count++;
-  if (entry.count > limit) return false;
-  return true;
+  return entry.count <= limit;
 }
 
+function checkCardFailLimit(userId: string): boolean {
+  const now = Date.now();
+  const entry = cardFailCache.get(userId);
+  if (!entry || now > entry.resetAt) return true;
+  return entry.count < CARD_FAIL_LIMIT;
+}
+
+function recordCardFail(userId: string): void {
+  const now = Date.now();
+  const entry = cardFailCache.get(userId);
+  if (!entry || now > entry.resetAt) {
+    cardFailCache.set(userId, { count: 1, resetAt: now + CARD_FAIL_WINDOW });
+  } else {
+    entry.count++;
+  }
+}
+
+function clearCardFails(userId: string): void {
+  cardFailCache.delete(userId);
+}
+
+// Middleware de rate limit por IP
 app.use("/v1/*", async (c, next) => {
   const method = c.req.method;
-  // Apenas limitar POST/PATCH/PUT/DELETE
   if (method === "GET" || method === "OPTIONS") return next();
   const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
-  if (!checkRateLimit(ip)) {
+  if (!checkRateLimit(`ip:${ip}`)) {
     return c.json({ message: "Muitas requisições. Tente novamente em 1 minuto." }, 429);
   }
   return next();
 });
+
+// ── Audit log helper (best-effort, nunca falha a requisição principal) ────────
+async function logPaymentEvent(env: Bindings, event: {
+  event_type: string;
+  service_request_id?: string | null;
+  user_id?: string | null;
+  mp_payment_id?: string | null;
+  amount?: number | null;
+  status_before?: string | null;
+  status_after?: string | null;
+  ip?: string | null;
+  metadata?: Record<string, unknown> | null;
+}): Promise<void> {
+  try {
+    await db(env).from("payment_audit_log").insert({
+      event_type:         event.event_type,
+      service_request_id: event.service_request_id ?? null,
+      user_id:            event.user_id ?? null,
+      mp_payment_id:      event.mp_payment_id ?? null,
+      amount:             event.amount ?? null,
+      status_before:      event.status_before ?? null,
+      status_after:       event.status_after ?? null,
+      ip_address:         event.ip ?? null,
+      metadata:           event.metadata ?? null,
+    });
+  } catch (e) {
+    console.error("[audit] falha ao registrar evento de pagamento:", e);
+  }
+}
 
 // ── Auth middleware (JWT) ─────────────────────────────────────────────────────
 // Rotas públicas que não exigem autenticação
@@ -180,22 +243,44 @@ app.use("/v1/*", async (c, next) => {
 });
 
 // ── CRM: controle de acesso por área ────────────────────────────────────────
-// Senhas com PBKDF2-SHA256 (Web Crypto, disponível no Workers).
+// PBKDF2-SHA256 (Web Crypto). Novos hashes: v2 (600 000 iter, OWASP 2024).
+// Hashes legados sem prefixo usavam 100 000 iter e ainda são verificados.
+const toHex = (a: Uint8Array) => [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
+
 async function hashSenha(senha: string): Promise<string> {
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMat, 256);
-  const toHex = (a: Uint8Array) => [...a].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `${toHex(salt)}:${toHex(new Uint8Array(bits))}`;
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 600_000, hash: "SHA-256" }, keyMat, 256);
+  return `v2:${toHex(salt)}:${toHex(new Uint8Array(bits))}`;
 }
+
 async function verifySenha(senha: string, stored: string): Promise<boolean> {
-  const [saltHex, hashHex] = (stored || "").split(":");
+  if (!stored) return false;
+  let saltHex: string, hashHex: string, iterations: number;
+  if (stored.startsWith("v2:")) {
+    // PBKDF2 600 000 (OWASP 2024)
+    const parts = stored.slice(3).split(":");
+    [saltHex, hashHex] = parts;
+    iterations = 600_000;
+  } else {
+    // Legado: PBKDF2 100 000
+    [saltHex, hashHex] = stored.split(":");
+    iterations = 100_000;
+  }
   if (!saltHex || !hashHex) return false;
   const salt = new Uint8Array(saltHex.match(/.{2}/g)!.map((h) => parseInt(h, 16)));
   const keyMat = await crypto.subtle.importKey("raw", new TextEncoder().encode(senha), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations: 100000, hash: "SHA-256" }, keyMat, 256);
-  const calc = [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
-  return calc === hashHex;
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, keyMat, 256);
+  // Comparação em tempo constante via HMAC para evitar timing attack
+  const calc = toHex(new Uint8Array(bits));
+  const enc = new TextEncoder();
+  const key = await crypto.subtle.importKey("raw", enc.encode("timing-safe"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const [aSig, bSig] = await Promise.all([
+    crypto.subtle.sign("HMAC", key, enc.encode(calc)),
+    crypto.subtle.sign("HMAC", key, enc.encode(hashHex)),
+  ]);
+  const aArr = new Uint8Array(aSig), bArr = new Uint8Array(bSig);
+  return aArr.length === bArr.length && aArr.every((v, i) => v === bArr[i]);
 }
 function genToken(): string {
   return [...crypto.getRandomValues(new Uint8Array(32))].map((x) => x.toString(16).padStart(2, "0")).join("");
@@ -373,6 +458,8 @@ app.get("/health", (c) => c.json({
 // ── Push notification helper ───────────────────────────────────────────────
 async function sendPush(env: Bindings, userId: string, title: string, body: string) {
   try {
+    const pushFlag = await env.FEATURE_FLAGS.get("push_notifications", "json") as { enabled: boolean } | null;
+    if (pushFlag != null && !pushFlag.enabled) return;
     const { data, error: dbErr } = await db(env)
       .from("app_users")
       .select("push_token")
@@ -581,7 +668,20 @@ app.patch("/v1/service-requests/:id/cancel", async (c) => {
     return c.json({ message: "Parâmetros obrigatórios ausentes." }, 400);
   }
 
-  const { error } = await db(c.env)
+  const adminDb = db(c.env);
+
+  const { data: sr } = await adminDb
+    .from("service_requests")
+    .select("status, payment_status, client_user_id")
+    .eq("id", jobId)
+    .maybeSingle();
+
+  if (!sr) return c.json({ message: "Pedido não encontrado." }, 404);
+  if (sr.client_user_id !== body.client_user_id) return c.json({ message: "Não autorizado." }, 403);
+  if (sr.status === "completed") return c.json({ message: "Não é possível cancelar um pedido já concluído." }, 422);
+  if (sr.status === "cancelled") return c.json({ message: "Pedido já cancelado." }, 409);
+
+  const { error } = await adminDb
     .from("service_requests")
     .update({ status: "cancelled" })
     .eq("id", jobId)
@@ -589,7 +689,63 @@ app.patch("/v1/service-requests/:id/cancel", async (c) => {
 
   if (error) return c.json({ message: error.message }, 400);
 
-  return c.json({ message: "Pedido cancelado com sucesso." });
+  // Estorno automático apenas se o pagamento já foi confirmado
+  let refund_status: "none" | "ok" | "failed" = "none";
+
+  if (sr.payment_status === "confirmed" && c.env.MERCADOPAGO_ACCESS_TOKEN) {
+    const { data: pay } = await adminDb
+      .from("payments")
+      .select("mp_payment_id")
+      .eq("service_request_id", jobId)
+      .eq("status", "approved")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (pay?.mp_payment_id) {
+      try {
+        const mpRes = await fetch(
+          `https://api.mercadopago.com/v1/payments/${pay.mp_payment_id}/refunds`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
+            },
+            body: "{}",
+          }
+        );
+
+        if (mpRes.ok) {
+          await adminDb
+            .from("service_requests")
+            .update({ payment_status: "refunded" })
+            .eq("id", jobId);
+          await adminDb
+            .from("payments")
+            .update({ status: "refunded" })
+            .eq("mp_payment_id", pay.mp_payment_id);
+          refund_status = "ok";
+        } else {
+          await adminDb
+            .from("service_requests")
+            .update({ payment_status: "refund_failed" })
+            .eq("id", jobId);
+          refund_status = "failed";
+          console.error("[Refund] MP error:", mpRes.status, "jobId:", jobId, "mp_id:", pay.mp_payment_id);
+        }
+      } catch (err) {
+        await adminDb
+          .from("service_requests")
+          .update({ payment_status: "refund_failed" })
+          .eq("id", jobId);
+        refund_status = "failed";
+        console.error("[Refund] Exception:", err, "jobId:", jobId);
+      }
+    }
+  }
+
+  return c.json({ message: "Pedido cancelado com sucesso.", refund_status });
 });
 
 app.post("/v1/service-requests", async (c) => {
@@ -1351,7 +1507,7 @@ app.post("/v1/service-requests/:id/rate", async (c) => {
 
   const { data: req } = await db(c.env)
     .from("service_requests")
-    .select("provider_user_id, client_rating, status, client_user_id")
+    .select("provider_user_id, client_rating, status, client_user_id, payment_status")
     .eq("id", id)
     .maybeSingle();
 
@@ -1359,6 +1515,7 @@ app.post("/v1/service-requests/:id/rate", async (c) => {
   if (req.status !== "completed") return c.json({ message: "Serviço não concluído." }, 400);
   if (req.client_rating != null) return c.json({ message: "Pedido já avaliado." }, 400);
   if (req.client_user_id !== body.client_user_id) return c.json({ message: "Não autorizado." }, 403);
+  if (req.payment_status !== "confirmed") return c.json({ message: "Avalie após a confirmação do pagamento." }, 422);
 
   await db(c.env)
     .from("service_requests")
@@ -1694,31 +1851,68 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     idempotency_key?: string;
   }>().catch(() => ({} as any));
 
+  // ── Validação de entrada ──────────────────────────────────────────────────
   if (!body.token || !body.installments || !body.payment_method_id || !body.payer_email) {
     return c.json({ message: "Campos obrigatórios: token, installments, payment_method_id, payer_email." }, 400);
   }
-  if (typeof body.installments !== "number" || !Number.isInteger(body.installments) || body.installments < 1) {
-    return c.json({ message: "installments deve ser um inteiro positivo." }, 400);
+  if (typeof body.installments !== "number" || !Number.isInteger(body.installments) || body.installments < 1 || body.installments > 24) {
+    return c.json({ message: "installments deve ser inteiro entre 1 e 24." }, 400);
+  }
+  // idempotency_key obrigatória para evitar cobranças duplas
+  if (!body.idempotency_key || !UUID_RE.test(body.idempotency_key)) {
+    return c.json({ message: "idempotency_key inválida ou ausente (UUID v4 obrigatório)." }, 400);
+  }
+  // Tokens MP são strings não-vazias de no máximo 256 chars
+  if (typeof body.token !== "string" || body.token.length < 4 || body.token.length > 256) {
+    return c.json({ message: "Token de cartão inválido." }, 400);
+  }
+  // payer_email básico
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(body.payer_email)) {
+    return c.json({ message: "payer_email inválido." }, 400);
   }
 
   if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
     return c.json({ message: "Integração com Mercado Pago não configurada." }, 503);
   }
 
+  // ── Anti-carding: bloqueia após 5 recusas/hora por usuário ───────────────
+  if (!checkCardFailLimit(clientId)) {
+    const ip = c.req.header("cf-connecting-ip") ?? "unknown";
+    console.warn("[card-payment] anti-carding: usuário bloqueado", { clientId, ip });
+    await logPaymentEvent(c.env, {
+      event_type: "blocked_carding",
+      service_request_id: id,
+      user_id: clientId,
+      ip,
+      metadata: { reason: "exceeded_card_fail_limit" },
+    });
+    return c.json({ message: "Muitas tentativas recusadas. Aguarde 1 hora antes de tentar novamente." }, 429);
+  }
+
   const adminDb = db(c.env);
+  const ip = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? null;
 
   const { data: req } = await adminDb
     .from("service_requests")
-    .select("quote_amount, category, client_user_id, provider_user_id, status, payment_status")
+    .select("quote_amount, category, client_user_id, provider_user_id, status, payment_status, quote_status")
     .eq("id", id)
     .maybeSingle();
 
-  if (!req || req.status !== "completed") {
-    return c.json({ message: "Serviço não encontrado ou não concluído." }, 400);
+  // Aceita pagamento quando orçamento foi enviado pelo prestador (quoted) e ainda não foi pago.
+  // Cobre tanto o pagamento inicial quanto a retentativa após recusa.
+  if (!req || req.quote_status !== "quoted") {
+    return c.json({ message: "Orçamento não disponível para pagamento." }, 400);
   }
   // Authz por dono: só o cliente da SR pode disparar a cobrança (corrige IDOR).
   if (req.client_user_id !== clientId) {
     console.warn("[card-payment] tentativa de cobrar SR alheia", { id, clientId });
+    await logPaymentEvent(c.env, {
+      event_type: "unauthorized_attempt",
+      service_request_id: id,
+      user_id: clientId,
+      ip,
+      metadata: { owner: req.client_user_id, attacker: clientId },
+    });
     return c.json({ message: "Não autorizado." }, 403);
   }
   if (!req.quote_amount) {
@@ -1727,6 +1921,17 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   if (req.payment_status === "confirmed") {
     return c.json({ message: "Este serviço já foi pago." }, 409);
   }
+
+  // Log da tentativa antes de chamar o MP
+  await logPaymentEvent(c.env, {
+    event_type: "attempt",
+    service_request_id: id,
+    user_id: clientId,
+    amount: Number(req.quote_amount),
+    status_before: req.payment_status,
+    ip,
+    metadata: { installments: body.installments, method: body.payment_method_id },
+  });
 
   // Telefone do cliente p/ enriquecer o pagador — ajuda no antifraude do MP.
   const { data: client } = await adminDb
@@ -1846,6 +2051,12 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   // Recusa: não registra split nem confirma; devolve o motivo (status_detail).
   if (mpPayment.status === "rejected") {
     console.warn("[card-payment] pagamento recusado", { id, mpPaymentId, statusDetail: mpPayment.status_detail });
+    // Contador anti-carding: incrementa falha para esse usuário
+    recordCardFail(clientId);
+    const failEntry = cardFailCache.get(clientId);
+    const failCount = failEntry?.count ?? 1;
+    console.warn("[card-payment] anti-carding contador", { clientId, failCount });
+
     // Auditoria best-effort (não falha o fluxo se duplicar em retry).
     const { error: rejErr } = await adminDb.from("payments").insert({
       service_request_id: id,
@@ -1856,10 +2067,23 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
       payment_method: "card",
       status: "rejected",
       payer_email: body.payer_email,
+      installments: body.installments,
     });
     if (rejErr && (rejErr as any).code !== "23505") {
       console.error("[card-payment] auditoria de recusa falhou", id, rejErr.message);
     }
+    // Registra no audit log de pagamentos
+    await logPaymentEvent(c.env, {
+      event_type: "rejected",
+      service_request_id: id,
+      user_id: clientId,
+      mp_payment_id: mpPaymentId,
+      amount,
+      status_before: req.payment_status,
+      status_after: "rejected",
+      ip,
+      metadata: { statusDetail: mpPayment.status_detail, failCount },
+    });
     // Marca a SR como recusada (o cliente pode tentar de novo) e notifica.
     await adminDb
       .from("service_requests")
@@ -1916,9 +2140,27 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
   }
 
   if (approved) {
+    // Pagamento aprovado: zera o contador anti-carding deste usuário
+    clearCardFails(clientId);
+
+    // Registra aprovação no audit log
+    await logPaymentEvent(c.env, {
+      event_type: "approved",
+      service_request_id: id,
+      user_id: clientId,
+      mp_payment_id: mpPaymentId,
+      amount,
+      status_before: req.payment_status,
+      status_after: "confirmed",
+      ip,
+      metadata: { installments: body.installments, mpFee, providerAmount, platformFee },
+    });
+
+    // Confirma pagamento E aceita o chamado atomicamente: o prestador só é
+    // notificado para ir ao local após o dinheiro ser capturado.
     await adminDb
       .from("service_requests")
-      .update({ payment_status: "confirmed", payment_method: "card" })
+      .update({ payment_status: "confirmed", payment_method: "card", status: "accepted", quote_status: "accepted" })
       .eq("id", id);
 
     // Criar split para o prestador imediatamente (cartão aprova na hora)
@@ -1967,10 +2209,10 @@ app.post("/v1/service-requests/:id/create-card-payment", async (c) => {
     }
 
     if (req.client_user_id) {
-      await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento no cartão foi aprovado.");
+      await sendPush(c.env, req.client_user_id, "✅ Pagamento aprovado!", "Seu pagamento foi confirmado. O profissional está a caminho.");
     }
     if (req.provider_user_id) {
-      await sendPush(c.env, req.provider_user_id, "💳 Pagamento recebido!", `O cliente pagou R$ ${providerAmount.toFixed(2).replace(".", ",")} via cartão.`);
+      await sendPush(c.env, req.provider_user_id, "🔔 Chamado aceito e pago!", `R$ ${providerAmount.toFixed(2).replace(".", ",")} reservado. Dirija-se ao local para iniciar o serviço.`);
     }
   } else {
     // in_process / pending: pagamento em análise (ex.: antifraude / 3DS). NÃO
@@ -2025,7 +2267,7 @@ async function resolveCardPaymentFinal(
   if (payment.status === "approved") {
     const mpType = String(payment.payment_type_id ?? "");
     const method = mpType.includes("card") ? "card" : mpType ? "pix" : null;
-    const srUpdate: Record<string, unknown> = { payment_status: "confirmed" };
+    const srUpdate: Record<string, unknown> = { payment_status: "confirmed", status: "accepted", quote_status: "accepted" };
     if (method) srUpdate.payment_method = method;
     await adminDb.from("service_requests").update(srUpdate).eq("id", serviceRequestId);
 
@@ -2045,8 +2287,8 @@ async function resolveCardPaymentFinal(
       }, { onConflict: "payment_id" });
     }
     const label = method === "card" ? "cartão" : "Pix";
-    if (req.client_user_id) await sendPush(env, req.client_user_id, "✅ Pagamento confirmado!", `Seu pagamento via ${label} foi aprovado.`);
-    if (req.provider_user_id) await sendPush(env, req.provider_user_id, "💳 Pagamento recebido!", `O pagamento via ${label} foi aprovado.`);
+    if (req.client_user_id) await sendPush(env, req.client_user_id, "✅ Pagamento aprovado!", `Seu pagamento via ${label} foi confirmado. O profissional está a caminho.`);
+    if (req.provider_user_id) await sendPush(env, req.provider_user_id, "🔔 Chamado aceito e pago!", `Pagamento via ${label} aprovado. Dirija-se ao local para iniciar o serviço.`);
   } else if ((payment.status === "rejected" || payment.status === "cancelled") && req.payment_status === "processing") {
     await adminDb.from("service_requests")
       .update({ payment_status: "rejected", payment_method: "card" })
@@ -2503,20 +2745,24 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     let body: { type?: string; data?: { id?: string } };
     try { body = JSON.parse(rawBody); } catch { return c.json({ ok: true }); }
 
-    // Validar assinatura HMAC antes de processar
-    if (c.env.MERCADOPAGO_WEBHOOK_SECRET) {
-      const xSignature = c.req.header("x-signature");
-      const xRequestId = c.req.header("x-request-id");
-      const isValid = await validateMPWebhookSignature(
-        c.env.MERCADOPAGO_WEBHOOK_SECRET,
-        xSignature,
-        xRequestId,
-        body.data?.id
-      );
-      if (!isValid) {
-        console.warn("[Webhook MP] Assinatura inválida rejeitada.");
-        return c.json({ ok: false }, 400);
-      }
+    // ── Verificação HMAC obrigatória ─────────────────────────────────────────
+    // Se MERCADOPAGO_WEBHOOK_SECRET não estiver configurado, rejeitamos o webhook
+    // para evitar processamento de eventos não autenticados.
+    if (!c.env.MERCADOPAGO_WEBHOOK_SECRET) {
+      console.error("[Webhook MP] MERCADOPAGO_WEBHOOK_SECRET não configurado — webhook rejeitado.");
+      return c.json({ ok: false }, 500);
+    }
+    const xSignature = c.req.header("x-signature");
+    const xRequestId = c.req.header("x-request-id");
+    const isValid = await validateMPWebhookSignature(
+      c.env.MERCADOPAGO_WEBHOOK_SECRET,
+      xSignature,
+      xRequestId,
+      body.data?.id
+    );
+    if (!isValid) {
+      console.warn("[Webhook MP] Assinatura inválida rejeitada.", { xSignature: xSignature?.slice(0, 30) });
+      return c.json({ ok: false }, 400);
     }
 
     if (body.type !== "payment" || !body.data?.id) return c.json({ ok: true });
@@ -2534,7 +2780,11 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
     }
 
     const serviceRequestId = payment.external_reference;
-    if (!serviceRequestId) return c.json({ ok: true });
+    // Valida que external_reference é um UUID válido antes de qualquer operação no DB
+    if (!serviceRequestId || !UUID_RE.test(serviceRequestId)) {
+      console.warn("[Webhook MP] external_reference inválido ou ausente:", serviceRequestId);
+      return c.json({ ok: true }); // retorna 200 para o MP não retentar
+    }
 
     const adminDb = db(c.env);
 
@@ -2545,6 +2795,8 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       .maybeSingle();
 
     if (!req || req.payment_status === "confirmed") return c.json({ ok: true });
+
+    const webhookIp = c.req.header("cf-connecting-ip") ?? c.req.header("x-forwarded-for") ?? "unknown";
 
     // Recusado/cancelado: se o pagamento estava EM PROCESSAMENTO, marca a SR como
     // recusada e notifica o cliente (permite nova tentativa). Não mexe se já foi
@@ -2558,6 +2810,16 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
         await adminDb.from("payments")
           .update({ status: payment.status })
           .eq("mp_payment_id", String(payment.id));
+        await logPaymentEvent(c.env, {
+          event_type: "webhook_rejected",
+          service_request_id: serviceRequestId,
+          user_id: req.client_user_id ?? null,
+          mp_payment_id: String(payment.id),
+          status_before: "processing",
+          status_after: "rejected",
+          ip: webhookIp,
+          metadata: { mp_status: payment.status, payment_type_id: payment.payment_type_id },
+        });
         if (req.client_user_id) {
           await sendPush(c.env, req.client_user_id, "❌ Pagamento recusado", "Seu pagamento com cartão não foi aprovado. Tente outro cartão ou outra forma de pagamento.");
         }
@@ -2582,7 +2844,7 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
       .from("payments")
       .update({ status: "approved", confirmed_at: new Date().toISOString() })
       .eq("mp_payment_id", String(payment.id))
-      .select("id, provider_amount")
+      .select("id, provider_amount, amount")
       .maybeSingle();
 
     if (paymentRecord && req.provider_user_id) {
@@ -2594,6 +2856,18 @@ app.post("/v1/webhooks/mercadopago", async (c) => {
         transferred_at: new Date().toISOString(),
       }, { onConflict: "payment_id" });
     }
+
+    await logPaymentEvent(c.env, {
+      event_type: "webhook_approved",
+      service_request_id: serviceRequestId,
+      user_id: req.client_user_id ?? null,
+      mp_payment_id: String(payment.id),
+      amount: paymentRecord?.amount ?? null,
+      status_before: req.payment_status,
+      status_after: "confirmed",
+      ip: webhookIp,
+      metadata: { payment_type_id: payment.payment_type_id, derived_method: derivedMethod },
+    });
 
     const methodLabel = derivedMethod === "card" ? "cartão" : "Pix";
     if (req.client_user_id) {
@@ -3562,6 +3836,11 @@ app.post("/v1/complaints", async (c) => {
 
 // ── Bids: provider submits a bid ──────────────────────────────────────────
 app.post("/v1/service-requests/:id/bids", async (c) => {
+  const biddingFlag = await c.env.FEATURE_FLAGS.get("provider_bidding", "json") as { enabled: boolean } | null;
+  if (biddingFlag != null && !biddingFlag.enabled) {
+    return c.json({ message: "Sistema de lances desabilitado." }, 503);
+  }
+
   const requestId = c.req.param("id");
   const body = await c.req.json<{
     provider_user_id: string;
@@ -3642,24 +3921,21 @@ app.patch("/v1/service-requests/:id/bids/:bidId/accept", async (c) => {
     .eq("request_id", requestId)
     .neq("id", bidId);
 
-  // Assign provider and quote to the request
+  // Prepara a SR para o pagamento: define prestador, valor e quote_status='quoted'.
+  // NÃO muda status para 'accepted' — isso só ocorre após a captura do pagamento
+  // via create-card-payment, que também notifica o prestador para ir ao local.
   const { error } = await db(c.env)
     .from("service_requests")
     .update({
       provider_user_id: bid.provider_user_id,
       quote_amount: bid.amount,
-      status: "accepted",
-      quote_status: "accepted",
+      quote_status: "quoted",
     })
     .eq("id", requestId);
 
   if (error) return c.json({ message: error.message }, 400);
 
-  // Notify winning provider
-  const amtStr = `R$ ${Number(bid.amount).toFixed(2).replace(".", ",")}`;
-  await sendPush(c.env, bid.provider_user_id, "✅ Seu orçamento foi aceito!", `O cliente aceitou seu orçamento de ${amtStr}. Prepare-se para o serviço!`);
-
-  return c.json({ message: "Bid aceito. Prestador atribuído ao chamado." });
+  return c.json({ message: "Lance selecionado. Aguardando pagamento do cliente." });
 });
 
 // ── US-012: Cálculo de saldo (compartilhado entre /balance e /withdrawal) ──────
@@ -3920,76 +4196,9 @@ app.get("/v1/providers/:id/subscription", async (c) => {
   });
 });
 
-// Criar / atualizar assinatura Pro ou Premium
+// Planos pagos descontinuados — todos os prestadores operam no plano básico.
 app.post("/v1/providers/:id/subscription", async (c) => {
-  const providerId = c.req.param("id");
-  const userId = c.get("userId");
-  if (userId !== providerId) return c.json({ message: "Não autorizado." }, 403);
-
-  const body = await c.req.json<{ plan: string; payer_email: string }>().catch(() => ({} as any));
-  const planId = body.plan as PlanId;
-  if (!planId || !(planId in PLAN_CONFIG)) {
-    return c.json({ message: "Plano inválido. Use: free, pro ou premium." }, 400);
-  }
-
-  // Plano free → apenas atualizar no banco, sem MP
-  if (planId === "free") {
-    await db(c.env).from("provider_subscriptions").upsert({
-      provider_user_id: providerId,
-      plan: "free",
-      status: "active",
-      commission_rate: 0.10,
-      mp_subscription_id: null,
-      current_period_end: null,
-    }, { onConflict: "provider_user_id" });
-    return c.json({ plan: "free", message: "Plano gratuito ativado." });
-  }
-
-  if (!c.env.MERCADOPAGO_ACCESS_TOKEN) {
-    return c.json({ message: "Integração com MercadoPago não configurada." }, 503);
-  }
-
-  const planConf = PLAN_CONFIG[planId];
-
-  // Criar preapproval no MP
-  const mpRes = await fetch("https://api.mercadopago.com/preapproval", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${c.env.MERCADOPAGO_ACCESS_TOKEN}`,
-    },
-    body: JSON.stringify({
-      reason: `ConstruConnect — Plano ${planConf.label}`,
-      auto_recurring: {
-        frequency: 1,
-        frequency_type: "months",
-        transaction_amount: planConf.price,
-        currency_id: "BRL",
-      },
-      back_url: "construconnect://subscription-success",
-      payer_email: body.payer_email,
-      external_reference: providerId,
-    }),
-  });
-
-  if (!mpRes.ok) {
-    const err = await mpRes.text();
-    return c.json({ message: `Erro MercadoPago: ${err}` }, 400);
-  }
-
-  const mpSub = await mpRes.json() as { id: string; init_point: string; status: string };
-
-  // Salvar assinatura pendente
-  await db(c.env).from("provider_subscriptions").upsert({
-    provider_user_id: providerId,
-    plan: planId,
-    status: "pending",
-    commission_rate: planConf.commission,
-    mp_subscription_id: mpSub.id,
-    current_period_end: null,
-  }, { onConflict: "provider_user_id" });
-
-  return c.json({ initPoint: mpSub.init_point, subscriptionId: mpSub.id });
+  return c.json({ message: "Planos pagos descontinuados. Todos os prestadores operam no plano básico (10% de comissão)." }, 410);
 });
 
 // Webhook de assinatura MP (preapproval)
