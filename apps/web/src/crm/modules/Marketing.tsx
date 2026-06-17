@@ -94,10 +94,12 @@ interface AdBanner {
   starts_at: string | null;
   ends_at: string | null;
   priority: number;
+  cost_per_click?: number;
+  clicks_total?: number;
 }
 
 function emptyBannerForm(): Omit<AdBanner, "id"> {
-  return { title: "", advertiser_name: "", image_url: "", link_url: null, target: "both", placement: "home", active: false, starts_at: null, ends_at: null, priority: 0 };
+  return { title: "", advertiser_name: "", image_url: "", link_url: null, target: "both", placement: "home", active: false, starts_at: null, ends_at: null, priority: 0, cost_per_click: undefined, clicks_total: undefined };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -142,6 +144,43 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
   const [sponsoredOpen, setSponsoredOpen] = useState(false);
   const [sponsoredEditId, setSponsoredEditId] = useState<string | null>(null);
   const [sponsoredForm, setSponsoredForm] = useState<Omit<SponsoredProvider, "id">>(emptySponsoredForm());
+
+  // Banners — filtro de período (MVP: placeholder visual, sem filtragem real)
+  const [bannerPeriodFrom, setBannerPeriodFrom] = useState<string>("");
+  const [bannerPeriodTo, setBannerPeriodTo] = useState<string>("");
+
+  // Banners — validacao inline de cost_per_click
+  const [bannerCpcError, setBannerCpcError] = useState<string>("");
+
+  async function exportarBannersCSV() {
+    try {
+      const response = await fetch(`${CRM_API_BASE}/mkt/banners/export-csv`, {
+        headers: { Authorization: `Bearer ${adminKey}` },
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `banners-export-${new Date().toISOString().split("T")[0]}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error("[Marketing] Falha ao exportar CSV de banners:", err);
+    }
+  }
+
+  function salvarBanner() {
+    if (!bannerForm.title.trim() || !bannerForm.image_url.trim()) return;
+    const cpc = bannerForm.cost_per_click;
+    if (cpc !== undefined && cpc < 0) {
+      setBannerCpcError("O valor por clique não pode ser negativo.");
+      return;
+    }
+    setBannerCpcError("");
+    bannerEditId ? updateBanner(bannerEditId, bannerForm) : addBanner(bannerForm);
+    setBannerOpen(false);
+  }
 
   // KPIs
   const investimento = items.reduce((s, c) => s + (c.gasto || 0), 0);
@@ -281,7 +320,47 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
       )}
 
       {tab === "banners" && (
-        <SectionCard title="Banners externos" actions={<Button tone="green" onClick={() => { setBannerForm(emptyBannerForm()); setBannerEditId(null); setBannerOpen(true); }}>+ Novo banner</Button>}>
+        <SectionCard
+          title="Banners externos"
+          actions={
+            <>
+              <Button tone="muted" onClick={exportarBannersCSV}>Exportar CSV</Button>
+              <Button tone="green" onClick={() => { setBannerForm(emptyBannerForm()); setBannerEditId(null); setBannerCpcError(""); setBannerOpen(true); }}>+ Novo banner</Button>
+            </>
+          }
+        >
+          {/* Filtro de período — MVP: placeholder visual */}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 13, color: "#555", fontWeight: 500 }}>Período:</span>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+              De
+              <input
+                type="date"
+                value={bannerPeriodFrom}
+                onChange={(e) => setBannerPeriodFrom(e.target.value)}
+                title="Filtragem por período disponível em breve — exibindo total acumulado"
+                aria-label="Data inicial do período"
+                style={{ fontSize: 13, padding: "3px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+              />
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+              Até
+              <input
+                type="date"
+                value={bannerPeriodTo}
+                onChange={(e) => setBannerPeriodTo(e.target.value)}
+                title="Filtragem por período disponível em breve — exibindo total acumulado"
+                aria-label="Data final do período"
+                style={{ fontSize: 13, padding: "3px 8px", borderRadius: 4, border: "1px solid #ccc" }}
+              />
+            </label>
+            {(bannerPeriodFrom || bannerPeriodTo) && (
+              <span style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>
+                Filtragem por período disponível em breve — exibindo total acumulado
+              </span>
+            )}
+          </div>
+
           <DataTable
             columns={[
               { key: "title", label: "Título", render: (r: AdBanner) => <strong>{r.title}</strong> },
@@ -290,7 +369,28 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
               { key: "target", label: "Público", render: (r: AdBanner) => <Badge tone="purple">{r.target}</Badge> },
               { key: "active", label: "Status", render: (r: AdBanner) => <Badge tone={r.active ? "green" : "gray"}>{r.active ? "Ativo" : "Inativo"}</Badge> },
               { key: "priority", label: "Prioridade", align: "right" as const, render: (r: AdBanner) => r.priority },
-              { key: "acoes", label: "", align: "right" as const, render: (r: AdBanner) => <Button tone="ghost" size="sm" onClick={() => { const { id, ...rest } = r; setBannerForm(rest); setBannerEditId(id); setBannerOpen(true); }}>Editar</Button> },
+              {
+                key: "clicks_total",
+                label: "Cliques",
+                align: "right" as const,
+                render: (r: AdBanner) => r.clicks_total != null ? r.clicks_total : "—",
+              },
+              {
+                key: "cost_per_click",
+                label: "R$/Clique",
+                align: "right" as const,
+                render: (r: AdBanner) => r.cost_per_click != null ? brl(r.cost_per_click) : "—",
+              },
+              {
+                key: "total_rs",
+                label: "Total (R$)",
+                align: "right" as const,
+                render: (r: AdBanner) =>
+                  r.clicks_total != null && r.cost_per_click != null
+                    ? <strong style={{ color: "#8B0000" }}>{brl(r.clicks_total * r.cost_per_click)}</strong>
+                    : "—",
+              },
+              { key: "acoes", label: "", align: "right" as const, render: (r: AdBanner) => <Button tone="ghost" size="sm" onClick={() => { const { id, ...rest } = r; setBannerForm(rest); setBannerEditId(id); setBannerCpcError(""); setBannerOpen(true); }}>Editar</Button> },
             ]}
             rows={banners}
             empty="Nenhum banner cadastrado."
@@ -326,7 +426,7 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
             {bannerEditId && <Button tone="danger" onClick={() => { if (bannerEditId) removeBanner(bannerEditId); setBannerOpen(false); }}>Excluir</Button>}
             <span style={{ flex: 1 }} />
             <Button tone="muted" onClick={() => setBannerOpen(false)}>Cancelar</Button>
-            <Button tone="green" onClick={() => { if (!bannerForm.title.trim() || !bannerForm.image_url.trim()) return; bannerEditId ? updateBanner(bannerEditId, bannerForm) : addBanner(bannerForm); setBannerOpen(false); }} disabled={!bannerForm.title.trim() || !bannerForm.image_url.trim()}>Salvar</Button>
+            <Button tone="green" onClick={salvarBanner} disabled={!bannerForm.title.trim() || !bannerForm.image_url.trim()}>Salvar</Button>
           </>
         }
       >
@@ -341,6 +441,27 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
         </Field>
         <Field label="URL de destino (opcional)">
           <TextInput value={bannerForm.link_url ?? ""} onChange={(v) => setBannerForm({ ...bannerForm, link_url: v || null })} placeholder="https://anunciante.com/oferta" />
+          <p style={{ margin: "4px 0 0", fontSize: 12, color: "#666" }}>
+            wa.me &rarr; botao &ldquo;Falar no WhatsApp&rdquo; | outros links &rarr; &ldquo;Ver oferta&rdquo;
+          </p>
+        </Field>
+        <Field
+          label="Valor por clique (R$)"
+          hint={bannerCpcError || undefined}
+        >
+          <TextInput
+            value={bannerForm.cost_per_click != null ? String(bannerForm.cost_per_click) : ""}
+            onChange={(v) => {
+              setBannerCpcError("");
+              const parsed = v === "" ? undefined : parseFloat(v);
+              setBannerForm({ ...bannerForm, cost_per_click: parsed != null && !isNaN(parsed) ? parsed : undefined });
+            }}
+            type="number"
+            placeholder="0,00"
+          />
+          {bannerCpcError && (
+            <p role="alert" style={{ margin: "4px 0 0", fontSize: 12, color: "#c00" }}>{bannerCpcError}</p>
+          )}
         </Field>
         <div className="crm-grid-2">
           <Field label="Posição">

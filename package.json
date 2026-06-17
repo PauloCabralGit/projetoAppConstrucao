@@ -21,11 +21,13 @@
     "test:perf": "npm --workspace apps/api run test:perf",
     "test": "npm run test:e2e && npm run test:perf",
     "deploy:staging": "bash scripts/deploy-staging.sh",
-    "deploy:production": "bash scripts/deploy-production.sh"
+    "deploy:production": "bash scripts/deploy-production.sh",
+    "generate-icon": "node scripts/generate-icon.mjs"
   },
   "devDependencies": {
     "babel-plugin-module-resolver": "^5.0.3",
-    "babel-preset-expo": "^54.0.10"
+    "babel-preset-expo": "^54.0.10",
+    "sharp": "^0.35.1"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.100.1",
