@@ -199,6 +199,42 @@ async function logPaymentEvent(env: Bindings, event: {
   }
 }
 
+// ── Ads: registrar clique (anônimo — antes do middleware de auth) ────────────
+// Endpoint público: qualquer cliente pode registrar um clique em um anúncio.
+// Race condition intencional documentada: MVP anônimo aceita pequeno desvio de
+// contagem em cenários de alta concorrência (aceitável para billing estimado).
+app.post("/v1/ads/:id/click", async (c) => {
+  const id = c.req.param("id");
+
+  // Valida que o id tem formato UUID para evitar injeção via path
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+    return c.json({ message: "ID inválido." }, 400);
+  }
+
+  const adminDb = db(c.env);
+
+  // Busca o valor atual para garantir que o anúncio existe
+  const { data: ad } = await adminDb
+    .from("ads")
+    .select("clicks_total")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (!ad) return c.json({ message: "Anúncio não encontrado." }, 404);
+
+  const { error } = await adminDb
+    .from("ads")
+    .update({ clicks_total: ad.clicks_total + 1 })
+    .eq("id", id);
+
+  if (error) {
+    console.error("[ads/click] erro ao incrementar clique:", error.message, "ad_id:", id);
+    return c.json({ message: "Erro ao registrar clique." }, 500);
+  }
+
+  return c.json({ ok: true });
+});
+
 // ── Auth middleware (JWT) ─────────────────────────────────────────────────────
 // Rotas públicas que não exigem autenticação
 const PUBLIC_PATHS = new Set([
@@ -4581,10 +4617,11 @@ app.post("/v1/admin/crm/mkt/banners", async (c) => {
   const b = await c.req.json<{
     title: string; advertiser_name?: string; image_url: string; link_url?: string;
     target?: string; placement?: string; active?: boolean;
-    starts_at?: string; ends_at?: string; priority?: number;
+    starts_at?: string; ends_at?: string; priority?: number; cost_per_click?: number;
   }>();
   if (!b.title || !b.image_url) return c.json({ message: "title e image_url são obrigatórios." }, 400);
   if (!b.image_url.startsWith("https://")) return c.json({ message: "image_url deve começar com https://." }, 400);
+  if (b.cost_per_click !== undefined && Number(b.cost_per_click) < 0) return c.json({ message: "cost_per_click não pode ser negativo." }, 400);
   const row = {
     title: b.title,
     advertiser_name: b.advertiser_name ?? "",
@@ -4596,10 +4633,60 @@ app.post("/v1/admin/crm/mkt/banners", async (c) => {
     starts_at: b.starts_at ?? null,
     ends_at: b.ends_at ?? null,
     priority: b.priority ?? 0,
+    cost_per_click: b.cost_per_click ?? 0,
   };
   const { data, error } = await db(c.env).from("ads").insert(row).select("*").maybeSingle();
   if (error) return c.json({ message: error.message }, 500);
   return c.json({ item: data }, 201);
+});
+
+// IMPORTANTE: registrado antes de /:id para que "export-csv" não seja
+// interpretado como um parâmetro de ID pelo roteador do Hono.
+app.get("/v1/admin/crm/mkt/banners/export-csv", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+
+  const { data, error } = await db(c.env)
+    .from("ads")
+    .select("id, title, advertiser_name, placement, target, active, clicks_total, cost_per_click, starts_at, ends_at, created_at")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("[banners/export-csv] erro ao buscar banners:", error.message);
+    return c.json({ message: error.message }, 500);
+  }
+
+  // RFC 4180 — campos com vírgula, aspas ou quebra de linha são escapados
+  const escape = (v: unknown): string => {
+    const s = String(v ?? "");
+    return s.includes(",") || s.includes('"') || s.includes("\n")
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const header = "id,title,advertiser_name,placement,target,active,clicks_total,cost_per_click,total_cost,starts_at,ends_at,created_at";
+  const rows = (data ?? []).map(b => [
+    escape(b.id),
+    escape(b.title),
+    escape(b.advertiser_name),
+    escape(b.placement),
+    escape(b.target),
+    escape(b.active),
+    escape(b.clicks_total ?? 0),
+    escape(b.cost_per_click ?? 0),
+    escape(((b.clicks_total ?? 0) * (b.cost_per_click ?? 0)).toFixed(2)),
+    escape(b.starts_at),
+    escape(b.ends_at),
+    escape(b.created_at),
+  ].join(",")).join("\n");
+
+  const csv = `${header}\n${rows}`;
+  const date = new Date().toISOString().split("T")[0];
+
+  return new Response(csv, {
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="banners-export-${date}.csv"`,
+    },
+  });
 });
 
 app.get("/v1/admin/crm/mkt/banners/:id", async (c) => {
@@ -4613,10 +4700,13 @@ app.get("/v1/admin/crm/mkt/banners/:id", async (c) => {
 async function handleBannerPatch(c: any) {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const b = await c.req.json() as Record<string, any>;
-  const allowed = ["title", "advertiser_name", "image_url", "link_url", "target", "placement", "active", "starts_at", "ends_at", "priority"];
+  const allowed = ["title", "advertiser_name", "image_url", "link_url", "target", "placement", "active", "starts_at", "ends_at", "priority", "cost_per_click"];
   const patch: Record<string, any> = {};
   for (const k of allowed) if (b[k] !== undefined) patch[k] = b[k];
   if (patch.image_url && !String(patch.image_url).startsWith("https://")) return c.json({ message: "image_url deve começar com https://." }, 400);
+  if (patch.cost_per_click !== undefined && Number(patch.cost_per_click) < 0) {
+    return c.json({ message: "cost_per_click não pode ser negativo." }, 400);
+  }
   const { data, error } = await db(c.env).from("ads").update(patch).eq("id", c.req.param("id")).select("*").maybeSingle();
   if (error) return c.json({ message: error.message }, 500);
   if (!data) return c.json({ message: "Não encontrado." }, 404);

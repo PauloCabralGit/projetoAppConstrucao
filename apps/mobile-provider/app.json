@@ -11,7 +11,7 @@
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#1E2A38"
+      "backgroundColor": "#8B0000"
     },
     "ios": {
       "supportsTablet": true,
@@ -25,7 +25,7 @@
       "googleServicesFile": "./google-services-provider.json",
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#1E2A38"
+        "backgroundColor": "#8B0000"
       },
       "config": {
         "googleMaps": {

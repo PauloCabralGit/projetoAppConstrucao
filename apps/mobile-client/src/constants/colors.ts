@@ -1,7 +1,10 @@
 export const Colors = {
-  primary: '#FF6B35',
-  darkNavy: '#1E2A38',
-  background: '#F7F8FA',
+  primary: '#8B0000',
+  secondary: '#D4860A',
+  background: '#FFFFFF',
+  surface: '#FFF5F5',
+  dark: '#0A0A0A',
+  darkNavy: '#0A0A0A',
   cardWhite: '#FFFFFF',
   successGreen: '#12B76A',
   dangerRed: '#EF4444',
@@ -9,4 +12,5 @@ export const Colors = {
   textPrimary: '#101828',
   textSecondary: '#6B7280',
   border: '#E5E7EB',
+  whatsapp: '#25D366',
 } as const;
