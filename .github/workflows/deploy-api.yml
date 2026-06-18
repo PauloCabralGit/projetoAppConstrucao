@@ -20,9 +20,9 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
+      # Instala na raiz do monorepo para resolver os workspaces (ex.: @construconnect/shared)
       - name: Install dependencies
         run: npm install
-        working-directory: apps/api
 
       - name: Deploy to Cloudflare Workers
         uses: cloudflare/wrangler-action@v3
