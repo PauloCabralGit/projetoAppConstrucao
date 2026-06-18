@@ -1000,6 +1000,8 @@ app.post("/v1/register", async (c) => {
       phone: payload.phone ?? "",
       document_number: payload.document ?? "",
       city: payload.city ?? "",
+      terms_version: payload.termsVersion ?? null,
+      terms_accepted_at: payload.termsAcceptedAt ?? null,
     }, { onConflict: "id" });
 
   if (userError) return c.json({ message: userError.message }, 400);
@@ -4563,7 +4565,7 @@ app.get("/v1/ads/banners", async (c) => {
 
   const { data, error } = await db(c.env)
     .from("ads")
-    .select("id, title, advertiser_name, image_url, link_url, target, placement, priority")
+    .select("id, title, advertiser_name, image_url, image_urls, link_url, target, placement, priority")
     .eq("active", true)
     .in("target", [target, "both"])
     .eq("placement", placement)
@@ -4615,17 +4617,25 @@ app.get("/v1/admin/crm/mkt/banners", async (c) => {
 app.post("/v1/admin/crm/mkt/banners", async (c) => {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const b = await c.req.json<{
-    title: string; advertiser_name?: string; image_url: string; link_url?: string;
+    title: string; advertiser_name?: string; image_url: string; image_urls?: string[]; link_url?: string;
     target?: string; placement?: string; active?: boolean;
     starts_at?: string; ends_at?: string; priority?: number; cost_per_click?: number;
   }>();
   if (!b.title || !b.image_url) return c.json({ message: "title e image_url são obrigatórios." }, 400);
   if (!b.image_url.startsWith("https://")) return c.json({ message: "image_url deve começar com https://." }, 400);
   if (b.cost_per_click !== undefined && Number(b.cost_per_click) < 0) return c.json({ message: "cost_per_click não pode ser negativo." }, 400);
+  // Galeria: usa image_urls se vier; senão inicia com a capa. Valida cada URL.
+  const gallery = (Array.isArray(b.image_urls) && b.image_urls.length > 0 ? b.image_urls : [b.image_url])
+    .map((u) => String(u).trim())
+    .filter(Boolean);
+  if (gallery.some((u) => !u.startsWith("https://"))) {
+    return c.json({ message: "Todas as imagens devem começar com https://." }, 400);
+  }
   const row = {
     title: b.title,
     advertiser_name: b.advertiser_name ?? "",
     image_url: b.image_url,
+    image_urls: gallery,
     link_url: b.link_url ?? null,
     target: b.target ?? "both",
     placement: b.placement ?? "home",
@@ -4700,10 +4710,17 @@ app.get("/v1/admin/crm/mkt/banners/:id", async (c) => {
 async function handleBannerPatch(c: any) {
   if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
   const b = await c.req.json() as Record<string, any>;
-  const allowed = ["title", "advertiser_name", "image_url", "link_url", "target", "placement", "active", "starts_at", "ends_at", "priority", "cost_per_click"];
+  const allowed = ["title", "advertiser_name", "image_url", "image_urls", "link_url", "target", "placement", "active", "starts_at", "ends_at", "priority", "cost_per_click"];
   const patch: Record<string, any> = {};
   for (const k of allowed) if (b[k] !== undefined) patch[k] = b[k];
   if (patch.image_url && !String(patch.image_url).startsWith("https://")) return c.json({ message: "image_url deve começar com https://." }, 400);
+  if (patch.image_urls !== undefined) {
+    if (!Array.isArray(patch.image_urls)) return c.json({ message: "image_urls deve ser uma lista." }, 400);
+    patch.image_urls = patch.image_urls.map((u: unknown) => String(u).trim()).filter(Boolean);
+    if (patch.image_urls.some((u: string) => !u.startsWith("https://"))) {
+      return c.json({ message: "Todas as imagens devem começar com https://." }, 400);
+    }
+  }
   if (patch.cost_per_click !== undefined && Number(patch.cost_per_click) < 0) {
     return c.json({ message: "cost_per_click não pode ser negativo." }, 400);
   }

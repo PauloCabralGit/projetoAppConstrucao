@@ -51,6 +51,8 @@ export interface RegistrationPayload {
   specialties?: string;
   companyName?: string;
   acceptsEmergencyJobs?: boolean;
+  termsVersion?: string;
+  termsAcceptedAt?: string;
 }
 
 export interface DashboardMetric {

@@ -16,6 +16,8 @@ import { Link, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '@/lib/supabase';
 import { Colors } from '@/constants/colors';
+import TermsModal from '@/components/TermsModal';
+import { TERMS_VERSION } from '@/constants/terms';
 
 import { API_BASE } from '@/lib/config';
 
@@ -38,6 +40,8 @@ export default function RegisterScreen() {
   const [specialties, setSpecialties] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [acceptsUrgent, setAcceptsUrgent] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
+  const [termsVisible, setTermsVisible] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -46,6 +50,10 @@ export default function RegisterScreen() {
   async function handleRegister() {
     if (!name.trim() || !email.trim() || !password.trim() || !phone.trim() || !city.trim()) {
       setError('Preencha todos os campos obrigatórios.');
+      return;
+    }
+    if (!acceptedTerms) {
+      setError('Você precisa aceitar o Termo de Uso para concluir o cadastro.');
       return;
     }
     setError('');
@@ -60,6 +68,8 @@ export default function RegisterScreen() {
         city: city.trim(),
         document: document.trim(),
         role,
+        termsVersion: TERMS_VERSION,
+        termsAcceptedAt: new Date().toISOString(),
       };
 
       if (isProvider) {
@@ -220,6 +230,25 @@ export default function RegisterScreen() {
               </>
             )}
 
+            <View style={styles.termsRow}>
+              <TouchableOpacity
+                style={[styles.checkbox, acceptedTerms && styles.checkboxChecked]}
+                onPress={() => setAcceptedTerms((v) => !v)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: acceptedTerms }}
+                accessibilityLabel="Aceitar o termo de uso"
+              >
+                {acceptedTerms && <Ionicons name="checkmark" size={16} color={Colors.cardWhite} />}
+              </TouchableOpacity>
+              <Text style={styles.termsText}>
+                Li e concordo com o{' '}
+                <Text style={styles.termsLink} onPress={() => setTermsVisible(true)}>
+                  Termo de Uso e Política de Privacidade
+                </Text>
+                .
+              </Text>
+            </View>
+
             {error !== '' && (
               <View style={styles.errorContainer}>
                 <Ionicons name="alert-circle-outline" size={16} color={Colors.dangerRed} />
@@ -228,9 +257,9 @@ export default function RegisterScreen() {
             )}
 
             <TouchableOpacity
-              style={[styles.primaryButton, loading && styles.primaryButtonDisabled]}
+              style={[styles.primaryButton, (loading || !acceptedTerms) && styles.primaryButtonDisabled]}
               onPress={handleRegister}
-              disabled={loading}
+              disabled={loading || !acceptedTerms}
             >
               {loading ? (
                 <ActivityIndicator color={Colors.cardWhite} />
@@ -250,6 +279,15 @@ export default function RegisterScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <TermsModal
+        visible={termsVisible}
+        onClose={() => setTermsVisible(false)}
+        onAccept={() => {
+          setAcceptedTerms(true);
+          setTermsVisible(false);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -442,6 +480,37 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.textSecondary,
     marginTop: 2,
+  },
+  termsRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginTop: 8,
+    marginBottom: 16,
+    gap: 10,
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: 1,
+  },
+  checkboxChecked: {
+    backgroundColor: Colors.primary,
+    borderColor: Colors.primary,
+  },
+  termsText: {
+    flex: 1,
+    fontSize: 13,
+    color: Colors.textSecondary,
+    lineHeight: 18,
+  },
+  termsLink: {
+    color: Colors.primary,
+    fontWeight: '700',
   },
   errorContainer: {
     flexDirection: 'row',

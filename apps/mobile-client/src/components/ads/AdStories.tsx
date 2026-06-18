@@ -7,6 +7,7 @@ export interface AdBanner {
   title: string;
   advertiser_name: string;
   image_url: string;
+  image_urls?: string[] | null;
   link_url: string | null;
   priority: number;
 }

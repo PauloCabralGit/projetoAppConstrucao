@@ -87,6 +87,7 @@ interface AdBanner {
   title: string;
   advertiser_name: string;
   image_url: string;
+  image_urls?: string[];
   link_url: string | null;
   target: AdTarget;
   placement: AdPlacement;
@@ -99,7 +100,7 @@ interface AdBanner {
 }
 
 function emptyBannerForm(): Omit<AdBanner, "id"> {
-  return { title: "", advertiser_name: "", image_url: "", link_url: null, target: "both", placement: "home", active: false, starts_at: null, ends_at: null, priority: 0, cost_per_click: undefined, clicks_total: undefined };
+  return { title: "", advertiser_name: "", image_url: "", image_urls: [], link_url: null, target: "both", placement: "home", active: false, starts_at: null, ends_at: null, priority: 0, cost_per_click: undefined, clicks_total: undefined };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -171,14 +172,24 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
   }
 
   function salvarBanner() {
-    if (!bannerForm.title.trim() || !bannerForm.image_url.trim()) return;
+    // Galeria: usa as URLs preenchidas; a primeira vira a capa (image_url).
+    const gallery = (bannerForm.image_urls ?? [])
+      .map((u) => u.trim())
+      .filter(Boolean);
+    const cover = gallery[0] ?? bannerForm.image_url.trim();
+    if (!bannerForm.title.trim() || !cover) return;
+    if (gallery.some((u) => !u.startsWith("https://"))) {
+      setBannerCpcError("Todas as imagens devem começar com https://.");
+      return;
+    }
     const cpc = bannerForm.cost_per_click;
     if (cpc !== undefined && cpc < 0) {
       setBannerCpcError("O valor por clique não pode ser negativo.");
       return;
     }
     setBannerCpcError("");
-    bannerEditId ? updateBanner(bannerEditId, bannerForm) : addBanner(bannerForm);
+    const payload = { ...bannerForm, image_url: cover, image_urls: gallery };
+    bannerEditId ? updateBanner(bannerEditId, payload) : addBanner(payload);
     setBannerOpen(false);
   }
 
@@ -426,7 +437,7 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
             {bannerEditId && <Button tone="danger" onClick={() => { if (bannerEditId) removeBanner(bannerEditId); setBannerOpen(false); }}>Excluir</Button>}
             <span style={{ flex: 1 }} />
             <Button tone="muted" onClick={() => setBannerOpen(false)}>Cancelar</Button>
-            <Button tone="green" onClick={salvarBanner} disabled={!bannerForm.title.trim() || !bannerForm.image_url.trim()}>Salvar</Button>
+            <Button tone="green" onClick={salvarBanner} disabled={!bannerForm.title.trim() || !((bannerForm.image_urls?.some((u) => u.trim())) || bannerForm.image_url.trim())}>Salvar</Button>
           </>
         }
       >
@@ -436,8 +447,20 @@ export function MarketingModule({ adminKey }: { adminKey: string }) {
         <Field label="Anunciante">
           <TextInput value={bannerForm.advertiser_name} onChange={(v) => setBannerForm({ ...bannerForm, advertiser_name: v })} placeholder="Nome do anunciante" />
         </Field>
-        <Field label="URL da imagem" hint="Deve começar com https://">
-          <TextInput value={bannerForm.image_url} onChange={(v) => setBannerForm({ ...bannerForm, image_url: v })} placeholder="https://cdn.anunciante.com/banner.jpg" />
+        <Field label="URLs das imagens (uma por linha)" hint="A primeira imagem é a capa exibida no círculo. Cada URL deve começar com https://">
+          <textarea
+            value={(bannerForm.image_urls && bannerForm.image_urls.length > 0
+              ? bannerForm.image_urls
+              : (bannerForm.image_url ? [bannerForm.image_url] : [])
+            ).join("\n")}
+            onChange={(e) => {
+              const urls = e.target.value.split("\n");
+              setBannerForm({ ...bannerForm, image_urls: urls, image_url: urls.find((u) => u.trim()) ?? "" });
+            }}
+            rows={4}
+            placeholder={"https://cdn.anunciante.com/img1.jpg\nhttps://cdn.anunciante.com/img2.jpg"}
+            style={{ width: "100%", padding: 8, borderRadius: 6, border: "1px solid #ccc", fontFamily: "inherit", fontSize: 14, resize: "vertical", boxSizing: "border-box" }}
+          />
         </Field>
         <Field label="URL de destino (opcional)">
           <TextInput value={bannerForm.link_url ?? ""} onChange={(v) => setBannerForm({ ...bannerForm, link_url: v || null })} placeholder="https://anunciante.com/oferta" />
