@@ -1000,8 +1000,10 @@ app.post("/v1/register", async (c) => {
       phone: payload.phone ?? "",
       document_number: payload.document ?? "",
       city: payload.city ?? "",
-      terms_version: payload.termsVersion ?? null,
-      terms_accepted_at: payload.termsAcceptedAt ?? null,
+      // Só inclui o aceite quando enviado pelo app (evita falha caso a migration
+      // de termos ainda não tenha sido aplicada no banco).
+      ...(payload.termsVersion ? { terms_version: payload.termsVersion } : {}),
+      ...(payload.termsAcceptedAt ? { terms_accepted_at: payload.termsAcceptedAt } : {}),
     }, { onConflict: "id" });
 
   if (userError) return c.json({ message: userError.message }, 400);
