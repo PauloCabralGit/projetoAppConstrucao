@@ -24,10 +24,12 @@ function getCTA(linkUrl: string | null): { label: string; color: string } | null
   return { label: 'Ver oferta', color: '#D4860A' };
 }
 
-function registerClick(adId: string) {
-  fetch(`${API_BASE}/ads/${adId}/click`, { method: 'POST' }).catch(() => {
-    // fire-and-forget — silencia erros de rede
-  });
+async function registerClick(adId: string) {
+  try {
+    await fetch(`${API_BASE}/ads/${adId}/click`, { method: 'POST' });
+  } catch {
+    // silencia erros de rede
+  }
 }
 
 export default function AdFullscreen({ ad, onClose }: AdFullscreenProps) {
@@ -36,7 +38,7 @@ export default function AdFullscreen({ ad, onClose }: AdFullscreenProps) {
   const cta = getCTA(ad.link_url);
 
   const handleCTA = async () => {
-    registerClick(ad.id);
+    await registerClick(ad.id);
     if (ad.link_url) {
       await Linking.openURL(ad.link_url).catch(() => {});
     }
