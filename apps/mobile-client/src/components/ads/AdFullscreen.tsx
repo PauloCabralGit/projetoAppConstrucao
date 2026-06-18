@@ -54,11 +54,13 @@ export default function AdFullscreen({ ad, onClose }: AdFullscreenProps) {
     >
       <StatusBar hidden />
       <View style={styles.container}>
-        <Image
-          source={{ uri: ad.image_url }}
-          style={styles.image}
-          resizeMode="cover"
-        />
+        <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+          <Image
+            source={{ uri: ad.image_url }}
+            style={styles.image}
+            resizeMode="cover"
+          />
+        </View>
 
         {/* Botao fechar */}
         <SafeAreaView style={styles.header}>
