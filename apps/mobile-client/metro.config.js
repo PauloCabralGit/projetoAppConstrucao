@@ -6,7 +6,8 @@ const monorepoRoot = path.resolve(projectRoot, '../..');
 
 const config = getDefaultConfig(projectRoot);
 
-config.watchFolders = [monorepoRoot];
+// Mescla com os defaults do Expo (não sobrescreve) e adiciona a raiz do monorepo.
+config.watchFolders = [...new Set([...(config.watchFolders ?? []), monorepoRoot])];
 
 config.resolver.nodeModulesPaths = [
   path.resolve(projectRoot, 'node_modules'),
