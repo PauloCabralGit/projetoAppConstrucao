@@ -4156,6 +4156,45 @@ app.delete("/v1/providers/:id/withdrawal/:wid", async (c) => {
   return c.json({ message: "Saque cancelado. O valor voltou ao seu saldo." });
 });
 
+// ── Listar todos os saques (admin) ────────────────────────────────────────────
+// Suporta filtro por status (?status=requested). Enriquece com nome/email do
+// prestador para exibição no painel.
+app.get("/v1/admin/withdrawals", async (c) => {
+  if (!isAdmin(c)) return c.json({ message: "Não autorizado." }, 401);
+  const status = c.req.query("status");
+  const adminDb = db(c.env);
+
+  let query = adminDb
+    .from("provider_withdrawals")
+    .select("id, provider_user_id, amount, pix_key, status, created_at, processed_at")
+    .order("created_at", { ascending: false });
+  if (status) query = query.eq("status", status);
+
+  const { data, error } = await query;
+  if (error) return c.json({ message: error.message }, 500);
+
+  // Enriquece com dados do prestador (join manual, sem depender do nome da FK).
+  const ids = [...new Set((data ?? []).map((w: any) => w.provider_user_id))];
+  let usersById: Record<string, { full_name: string; email: string }> = {};
+  if (ids.length > 0) {
+    const { data: users } = await adminDb
+      .from("app_users")
+      .select("id, full_name, email")
+      .in("id", ids);
+    usersById = Object.fromEntries(
+      (users ?? []).map((u: any) => [u.id, { full_name: u.full_name, email: u.email }]),
+    );
+  }
+
+  const items = (data ?? []).map((w: any) => ({
+    ...w,
+    provider_name: usersById[w.provider_user_id]?.full_name ?? "—",
+    provider_email: usersById[w.provider_user_id]?.email ?? "",
+  }));
+
+  return c.json({ items });
+});
+
 // ── Aprovar/Reprovar saque (admin) ────────────────────────────────────────────
 // approve → status "completed" (valor debitado do total).
 // reject  → status "rejected" (valor volta ao saldo disponível).

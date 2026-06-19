@@ -15,7 +15,7 @@ import { AuditoriaModule } from "./crm/modules/Auditoria";
 const API = import.meta.env.VITE_API_URL ?? "https://construconnect-api.orionsystem.workers.dev";
 
 type Page =
-  | "dashboard" | "requests" | "providers" | "users" | "payments" | "complaints" | "flags" | "verifications"
+  | "dashboard" | "requests" | "providers" | "users" | "payments" | "withdrawals" | "complaints" | "flags" | "verifications"
   | "vendas" | "marketing" | "financeiro" | "relatorios"
   | "juridico" | "rh" | "fornecedores" | "suporte" | "agenda"
   | "acesso" | "auditoria"
@@ -24,7 +24,7 @@ type Page =
 // Mapeia cada página para a "área" de permissão correspondente.
 const PAGE_AREA: Record<Page, string> = {
   dashboard: "operacao", requests: "operacao", providers: "operacao", users: "operacao",
-  payments: "operacao", complaints: "operacao", flags: "operacao", verifications: "operacao",
+  payments: "operacao", withdrawals: "operacao", complaints: "operacao", flags: "operacao", verifications: "operacao",
   vendas: "vendas", marketing: "marketing", financeiro: "financeiro", relatorios: "relatorios", telemedicina: "marketing",
   juridico: "juridico", rh: "rh", fornecedores: "fornecedores", suporte: "suporte", agenda: "agenda",
   acesso: "__master__",
@@ -1026,6 +1026,166 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
   );
 }
 
+// ── Withdrawals (Saques) ────────────────────────────────────────────────────────
+interface AdminWithdrawal {
+  id: string;
+  provider_user_id: string;
+  provider_name: string;
+  provider_email: string;
+  amount: number;
+  pix_key: string;
+  status: string;
+  created_at: string;
+  processed_at: string | null;
+}
+
+const WITHDRAWAL_LABEL: Record<string, string> = {
+  requested: "Solicitado",
+  processing: "Processando",
+  completed: "Concluído",
+  rejected: "Reprovado",
+  failed: "Falhou",
+};
+const WITHDRAWAL_COLOR: Record<string, string> = {
+  requested: "badge-amber",
+  processing: "badge-amber",
+  completed: "badge-green",
+  rejected: "badge-muted",
+  failed: "badge-red",
+};
+
+function WithdrawalsPage({ adminKey }: { adminKey: string }) {
+  const [rows, setRows] = useState<AdminWithdrawal[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [acting, setActing] = useState<string | null>(null);
+
+  function load() {
+    setLoading(true);
+    apiFetch("/v1/admin/withdrawals", adminKey)
+      .then((r) => r.json())
+      .then((d) => { setRows(d.items ?? []); setLoading(false); })
+      .catch(() => { setError("Erro ao carregar saques."); setLoading(false); });
+  }
+
+  useEffect(load, [adminKey]);
+
+  async function handleAction(id: string, action: "approve" | "reject") {
+    const verbo = action === "approve" ? "aprovar" : "reprovar";
+    if (!confirm(`Confirma ${verbo} este saque?`)) return;
+    setActing(id);
+    try {
+      const res = await apiFetch(`/v1/admin/withdrawals/${id}`, adminKey, {
+        method: "PATCH",
+        body: JSON.stringify({ action }),
+      });
+      if (res.ok) {
+        const newStatus = action === "approve" ? "completed" : "rejected";
+        setRows((prev) => prev.map((r) => r.id === id ? { ...r, status: newStatus, processed_at: new Date().toISOString() } : r));
+      } else {
+        const d = await res.json() as { message?: string };
+        alert(d.message ?? "Erro ao processar saque.");
+      }
+    } catch {
+      alert("Erro de rede ao processar saque.");
+    } finally {
+      setActing(null);
+    }
+  }
+
+  const pendentes = rows.filter((r) => r.status === "requested" || r.status === "processing");
+  const totalPendente = pendentes.reduce((s, r) => s + Number(r.amount), 0);
+  const totalPago = rows.filter((r) => r.status === "completed").reduce((s, r) => s + Number(r.amount), 0);
+
+  return (
+    <div>
+      <h2 className="page-title">Saques</h2>
+      {!loading && !error && (
+        <div className="summary-row">
+          <div className="summary-card warning">
+            <span>Aguardando aprovação</span>
+            <strong>{fmt(totalPendente, true)}</strong>
+          </div>
+          <div className="summary-card success">
+            <span>Total pago</span>
+            <strong>{fmt(totalPago, true)}</strong>
+          </div>
+          <div className="summary-card info">
+            <span>Solicitações pendentes</span>
+            <strong>{pendentes.length}</strong>
+          </div>
+        </div>
+      )}
+      {loading ? (
+        <div className="loading">Carregando...</div>
+      ) : error ? (
+        <div className="error-msg">{error}</div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Prestador</th>
+                <th>Valor</th>
+                <th>Chave Pix</th>
+                <th>Status</th>
+                <th>Ações</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.id}>
+                  <td>{fmtDate(r.created_at)}</td>
+                  <td>
+                    {r.provider_name}
+                    {r.provider_email && <div className="text-muted" style={{ fontSize: 12 }}>{r.provider_email}</div>}
+                  </td>
+                  <td><strong>{fmt(r.amount, true)}</strong></td>
+                  <td style={{ fontFamily: "monospace", fontSize: 13 }}>{r.pix_key}</td>
+                  <td>
+                    <span className={`badge ${WITHDRAWAL_COLOR[r.status] ?? "badge-muted"}`}>
+                      {WITHDRAWAL_LABEL[r.status] ?? r.status}
+                    </span>
+                  </td>
+                  <td>
+                    {(r.status === "requested" || r.status === "processing") ? (
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <button
+                          className="btn-sm"
+                          style={{ background: "var(--success-bg)", color: "var(--success)" }}
+                          disabled={acting === r.id}
+                          onClick={() => handleAction(r.id, "approve")}
+                        >
+                          {acting === r.id ? "..." : "Aprovar"}
+                        </button>
+                        <button
+                          className="btn-sm btn-danger"
+                          disabled={acting === r.id}
+                          onClick={() => handleAction(r.id, "reject")}
+                        >
+                          Reprovar
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-muted" style={{ fontSize: 12 }}>
+                        {r.processed_at ? fmtDate(r.processed_at) : "—"}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr><td colSpan={6} className="empty-row">Nenhum saque solicitado.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Complaints ────────────────────────────────────────────────────────────────
 const COMPLAINT_STATUS_LABEL: Record<string, string> = {
   open: "Aberta",
@@ -1732,6 +1892,7 @@ const NAV_GROUPS: { label: string; items: { key: Page; label: string; icon: stri
       { key: "providers", label: "Prestadores", icon: "👷" },
       { key: "users", label: "Usuários", icon: "👥" },
       { key: "payments", label: "Pagamentos", icon: "💰" },
+      { key: "withdrawals", label: "Saques", icon: "💸" },
       { key: "complaints", label: "Reclamações", icon: "⚠️" },
       { key: "verifications", label: "Verificações", icon: "🪪" },
       { key: "flags", label: "Feature Flags", icon: "🚩" },
@@ -2012,6 +2173,7 @@ export function App() {
           {page === "providers" && <ProvidersPage adminKey={adminKey} />}
           {page === "users" && <UsersPage adminKey={adminKey} />}
           {page === "payments" && <PaymentsPage adminKey={adminKey} />}
+          {page === "withdrawals" && <WithdrawalsPage adminKey={adminKey} />}
           {page === "complaints" && <ComplaintsPage adminKey={adminKey} />}
           {page === "verifications" && <VerificationsPage adminKey={adminKey} />}
           {page === "flags" && <FeatureFlagsPage adminKey={adminKey} />}
