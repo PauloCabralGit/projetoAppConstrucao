@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { VendasModule } from "./crm/modules/Vendas";
 import { MarketingModule } from "./crm/modules/Marketing";
 import { TeleMedicinaModule } from "./crm/modules/Telemedicina";
@@ -1026,6 +1027,55 @@ function PaymentsPage({ adminKey }: { adminKey: string }) {
   );
 }
 
+// ── Geração de Pix "Copia e Cola" (BR Code / padrão EMV do Banco Central) ───────
+// Gera o payload estático que o app do banco lê para já preencher chave + valor.
+function emvField(id: string, value: string): string {
+  const len = value.length.toString().padStart(2, "0");
+  return `${id}${len}${value}`;
+}
+
+// Remove acentos e caracteres fora do padrão aceito no BR Code.
+function sanitizePix(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Za-z0-9 ]/g, "")
+    .toUpperCase()
+    .trim();
+}
+
+function crc16(payload: string): string {
+  let crc = 0xffff;
+  for (let i = 0; i < payload.length; i++) {
+    crc ^= payload.charCodeAt(i) << 8;
+    for (let j = 0; j < 8; j++) {
+      crc = crc & 0x8000 ? (crc << 1) ^ 0x1021 : crc << 1;
+      crc &= 0xffff;
+    }
+  }
+  return crc.toString(16).toUpperCase().padStart(4, "0");
+}
+
+function buildPixCode(pixKey: string, amount: number, name: string, city: string): string {
+  const merchantName = (sanitizePix(name) || "RECEBEDOR").substring(0, 25);
+  const merchantCity = (sanitizePix(city) || "BRASIL").substring(0, 15);
+  const gui = emvField("00", "br.gov.bcb.pix");
+  const key = emvField("01", pixKey.trim());
+  const merchantAccount = emvField("26", gui + key);
+  const payload =
+    emvField("00", "01") +            // Payload Format Indicator
+    merchantAccount +                 // Merchant Account Information (Pix)
+    emvField("52", "0000") +          // Merchant Category Code
+    emvField("53", "986") +           // Moeda: BRL
+    emvField("54", amount.toFixed(2)) + // Valor
+    emvField("58", "BR") +            // País
+    emvField("59", merchantName) +    // Nome do recebedor
+    emvField("60", merchantCity) +    // Cidade
+    emvField("62", emvField("05", "***")) + // Additional Data (txid)
+    "6304";                            // CRC16 (id + len), valor calculado a seguir
+  return payload + crc16(payload);
+}
+
 // ── Withdrawals (Saques) ────────────────────────────────────────────────────────
 interface AdminWithdrawal {
   id: string;
@@ -1059,6 +1109,8 @@ function WithdrawalsPage({ adminKey }: { adminKey: string }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [acting, setActing] = useState<string | null>(null);
+  const [qrFor, setQrFor] = useState<AdminWithdrawal | null>(null);
+  const [copied, setCopied] = useState(false);
 
   function load() {
     setLoading(true);
@@ -1100,6 +1152,9 @@ function WithdrawalsPage({ adminKey }: { adminKey: string }) {
   return (
     <div>
       <h2 className="page-title">Saques</h2>
+      <div style={{ background: "#fff7ed", border: "1px solid #fed7aa", color: "#9a3412", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13 }}>
+        💡 O Pix é feito manualmente pelo seu banco. Clique em <strong>QR Pix</strong> para escanear com chave e valor já preenchidos, faça o pagamento e depois clique em <strong>Marcar como pago</strong> para debitar do saldo do prestador.
+      </div>
       {!loading && !error && (
         <div className="summary-row">
           <div className="summary-card warning">
@@ -1153,11 +1208,18 @@ function WithdrawalsPage({ adminKey }: { adminKey: string }) {
                       <div style={{ display: "flex", gap: 8 }}>
                         <button
                           className="btn-sm"
+                          style={{ background: "var(--info-bg, #e0f2fe)", color: "var(--info, #0369a1)" }}
+                          onClick={() => { setQrFor(r); setCopied(false); }}
+                        >
+                          QR Pix
+                        </button>
+                        <button
+                          className="btn-sm"
                           style={{ background: "var(--success-bg)", color: "var(--success)" }}
                           disabled={acting === r.id}
                           onClick={() => handleAction(r.id, "approve")}
                         >
-                          {acting === r.id ? "..." : "Aprovar"}
+                          {acting === r.id ? "..." : "Marcar como pago"}
                         </button>
                         <button
                           className="btn-sm btn-danger"
@@ -1182,6 +1244,50 @@ function WithdrawalsPage({ adminKey }: { adminKey: string }) {
           </table>
         </div>
       )}
+
+      {qrFor && (() => {
+        const pixCode = buildPixCode(qrFor.pix_key, Number(qrFor.amount), qrFor.provider_name, "");
+        return (
+          <div
+            onClick={() => setQrFor(null)}
+            style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              style={{ background: "#fff", borderRadius: 12, padding: 24, width: 360, maxWidth: "90vw", textAlign: "center" }}
+            >
+              <h3 style={{ margin: "0 0 4px" }}>Pagar via Pix</h3>
+              <p style={{ margin: "0 0 16px", color: "#666", fontSize: 13 }}>
+                {qrFor.provider_name} — <strong>{fmt(Number(qrFor.amount), true)}</strong>
+              </p>
+
+              <div style={{ display: "flex", justifyContent: "center", padding: 12, background: "#fff", border: "1px solid #eee", borderRadius: 8 }}>
+                <QRCodeSVG value={pixCode} size={200} level="M" />
+              </div>
+
+              <p style={{ margin: "12px 0 4px", fontSize: 12, color: "#666" }}>Chave Pix do prestador</p>
+              <p style={{ margin: 0, fontFamily: "monospace", fontSize: 14, wordBreak: "break-all" }}>{qrFor.pix_key}</p>
+
+              <button
+                className="btn-sm"
+                style={{ marginTop: 16, width: "100%", background: "var(--success-bg)", color: "var(--success)" }}
+                onClick={() => {
+                  navigator.clipboard?.writeText(pixCode).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+                }}
+              >
+                {copied ? "Copiado!" : "Copiar código Pix (copia e cola)"}
+              </button>
+              <button
+                className="btn-sm"
+                style={{ marginTop: 8, width: "100%" }}
+                onClick={() => setQrFor(null)}
+              >
+                Fechar
+              </button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
