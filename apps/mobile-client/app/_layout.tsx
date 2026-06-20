@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Platform, Modal, View, Text, StyleSheet, TouchableOpacity, Linking, AppState, AppStateStatus } from 'react-native';
 import { Stack, router } from 'expo-router';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
 import Constants from 'expo-constants';
@@ -274,15 +275,17 @@ export default function RootLayout() {
   }, []);
 
   return (
-    <FeatureFlagsProvider>
-      <ThemeProvider>
-        <NotificationProvider>
-          <RootLayoutInner blockedUntil={blockedUntil} />
-          {authUserId && <VerificationGate userId={authUserId} role="client" />}
-          {/* WebView oculta que captura o device id do MP (antifraude). */}
-          <MpDeviceProbe />
-        </NotificationProvider>
-      </ThemeProvider>
-    </FeatureFlagsProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <FeatureFlagsProvider>
+        <ThemeProvider>
+          <NotificationProvider>
+            <RootLayoutInner blockedUntil={blockedUntil} />
+            {authUserId && <VerificationGate userId={authUserId} role="client" />}
+            {/* WebView oculta que captura o device id do MP (antifraude). */}
+            <MpDeviceProbe />
+          </NotificationProvider>
+        </ThemeProvider>
+      </FeatureFlagsProvider>
+    </SafeAreaProvider>
   );
 }

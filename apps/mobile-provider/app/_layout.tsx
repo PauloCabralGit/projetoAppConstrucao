@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Platform, View, ActivityIndicator, StyleSheet, Modal, Text, TouchableOpacity, Linking, AppState, AppStateStatus } from 'react-native';
 import { Stack, router } from 'expo-router';
+import { SafeAreaProvider, initialWindowMetrics } from 'react-native-safe-area-context';
 import { Session } from '@supabase/supabase-js';
 import * as Notifications from 'expo-notifications';
 import * as SecureStore from 'expo-secure-store';
@@ -309,29 +310,31 @@ export default function RootLayout() {
   }, [session, loading, onboardingDone]);
 
   return (
-    <FeatureFlagsProvider>
-      <ThemeProvider>
-        <NotificationProvider>
-          <RootLayoutInner blockedUntil={blockedUntil} loading={loading}>
-            <Stack screenOptions={{ headerShown: false }}>
-              <Stack.Screen name="index" />
-              <Stack.Screen name="(auth)" />
-              <Stack.Screen name="(tabs)" />
-              <Stack.Screen name="job/[id]" />
-              <Stack.Screen name="onboarding" />
-            </Stack>
-          </RootLayoutInner>
-          {loading && (
-            <View style={[StyleSheet.absoluteFillObject, styles.loadingContainer]}>
-              <ActivityIndicator size="large" color={Colors.primary} />
-            </View>
-          )}
-          {!loading && session && (
-            <VerificationGate userId={session.user.id} role="provider" />
-          )}
-        </NotificationProvider>
-      </ThemeProvider>
-    </FeatureFlagsProvider>
+    <SafeAreaProvider initialMetrics={initialWindowMetrics}>
+      <FeatureFlagsProvider>
+        <ThemeProvider>
+          <NotificationProvider>
+            <RootLayoutInner blockedUntil={blockedUntil} loading={loading}>
+              <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="index" />
+                <Stack.Screen name="(auth)" />
+                <Stack.Screen name="(tabs)" />
+                <Stack.Screen name="job/[id]" />
+                <Stack.Screen name="onboarding" />
+              </Stack>
+            </RootLayoutInner>
+            {loading && (
+              <View style={[StyleSheet.absoluteFillObject, styles.loadingContainer]}>
+                <ActivityIndicator size="large" color={Colors.primary} />
+              </View>
+            )}
+            {!loading && session && (
+              <VerificationGate userId={session.user.id} role="provider" />
+            )}
+          </NotificationProvider>
+        </ThemeProvider>
+      </FeatureFlagsProvider>
+    </SafeAreaProvider>
   );
 }
 

@@ -2,6 +2,7 @@ import { Tabs } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/colors';
 import { Platform, StyleSheet, View, Text } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNotifications } from '@/contexts/NotificationContext';
 import { useTheme } from '@/contexts/ThemeContext';
 
@@ -37,13 +38,23 @@ const badgeStyles = StyleSheet.create({
 
 export default function TabsLayout() {
   const { colors } = useTheme();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Platform.OS === 'ios' ? Math.max(insets.bottom, 24) : insets.bottom;
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarActiveTintColor: colors.darkNavy,
         tabBarInactiveTintColor: colors.textSecondary,
-        tabBarStyle: [styles.tabBar, { backgroundColor: colors.cardWhite, borderTopColor: colors.border }],
+        tabBarStyle: [
+          styles.tabBar,
+          {
+            backgroundColor: colors.cardWhite,
+            borderTopColor: colors.border,
+            height: BASE_TAB_BAR_HEIGHT + bottomInset,
+            paddingBottom: 8 + bottomInset,
+          },
+        ],
         tabBarLabelStyle: styles.tabBarLabel,
       }}
     >
@@ -107,13 +118,13 @@ export default function TabsLayout() {
   );
 }
 
+const BASE_TAB_BAR_HEIGHT = 60;
+
 const styles = StyleSheet.create({
   tabBar: {
     backgroundColor: Colors.cardWhite,
     borderTopColor: Colors.border,
     borderTopWidth: 1,
-    height: Platform.OS === 'ios' ? 84 : 64,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 8,
     paddingTop: 8,
     elevation: 8,
     shadowColor: '#000',
